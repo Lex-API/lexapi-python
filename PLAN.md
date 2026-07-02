@@ -85,6 +85,9 @@ Priority order: **P0** first (`info` + `search` + `documentContent`), then P1 â†
 | [x] | webhooks | `getWebhook` / `updateWebhook` / `deleteWebhook` | `GET/PUT/DELETE /webhooks/{id}` | P3 |
 | [x] | webhooks | `testWebhook` | `POST /webhooks/{id}/test` | P3 |
 | [x] | webhooks | `getWebhookDeliveries` | `GET /webhooks/{id}/deliveries` | P3 |
+| [x] | versions | `listDocumentVersions` | `GET /documents/{celex}/versions` | P3 |
+| [x] | versions | `getDocumentVersion` | `GET /documents/{celex}/versions/{version}` | P3 |
+| [x] | versions | `getDocumentAtDate` | `GET /documents/{celex}/at/{date}` | P3 |
 
 Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageInfo`, `CreditsInfo` (P0); search filter enums driven from `/info` capability map where possible instead of hardcoding.
 ## 3. Language-specific architecture

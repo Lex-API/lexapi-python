@@ -26,6 +26,8 @@ from lexapi.models import (
     DocumentByUrlResponse,
     DocumentMetadataResponse,
     DocumentResponse,
+    DocumentVersionResponse,
+    DocumentVersionsResponse,
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
@@ -214,6 +216,44 @@ class AsyncLexAPI:
         """POST /resolve — see :meth:`lexapi.LexAPI.resolve`."""
         return await self._request(
             "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+        )
+
+    # ── Point-in-time versions ────────────────────────────────────────
+    async def list_document_versions(
+        self, celex: str, *, language: str | None = None
+    ) -> DocumentVersionsResponse:
+        """GET /documents/{celex}/versions — see :meth:`lexapi.LexAPI.list_document_versions`."""
+        params = _payloads.drop_none({"language": language})
+        return await self._request(
+            "GET",
+            f"/documents/{celex}/versions",
+            params=params,
+            cast=DocumentVersionsResponse,
+        )
+
+    async def get_document_version(
+        self, celex: str, version: int, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/versions/{version} — see
+        :meth:`lexapi.LexAPI.get_document_version`."""
+        params = _payloads.drop_none({"language": language})
+        return await self._request(
+            "GET",
+            f"/documents/{celex}/versions/{version}",
+            params=params,
+            cast=DocumentVersionResponse,
+        )
+
+    async def get_document_at_date(
+        self, celex: str, date: str, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/at/{date} — see :meth:`lexapi.LexAPI.get_document_at_date`."""
+        params = _payloads.drop_none({"language": language})
+        return await self._request(
+            "GET",
+            f"/documents/{celex}/at/{date}",
+            params=params,
+            cast=DocumentVersionResponse,
         )
 
     # ── Semantic search ───────────────────────────────────────────────
