@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lex-api"
+name = "lexapi-client"
 version = "0.1.0"
 description = "Official Python SDK for LexAPI - European legal data, made queryable."
 readme = "README.md"
