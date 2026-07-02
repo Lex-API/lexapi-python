@@ -61,30 +61,30 @@ Source of truth: `openapi.yaml` (LexAPI 2.0.0, OpenAPI 3.1.0). Production base U
 
 Priority order: **P0** first (`info` + `search` + `documentContent`), then P1 → P3. One group per release increment where practical.
 
-| Group | Operation | Method + Path | Priority |
-| --- | --- | --- | --- |
-| user/info | `getInfo` | `GET /info` | **P0** (scaffolded) |
-| search | `search` | `POST /search` | **P0** |
-| documents/content | `getDocumentContent` | `POST /documentContent` | **P0** |
-| documents/content | `getDocumentContentBatch` | `POST /documentContent/batch` | P1 |
-| documents/content | `getRecentDocuments` | `GET /documents/recent` | P1 |
-| documents/content | `getDocumentByUrl` | `POST /documents/url` | P1 |
-| documents/content | `getDocumentMetadata` | `POST /documents/metadata` | P1 |
-| resolve | `resolveIdentifier` | `POST /resolve` | P1 |
-| citations | `extractCitations` | `POST /citations/extract` | P2 |
-| citations | `getCitedBy` | `GET /citations/cited-by/{celexNumber}` | P2 |
-| citations | `getCites` | `GET /citations/cites/{celexNumber}` | P2 |
-| citations | `getCitationNetwork` | `GET /citations/network/{celexNumber}` | P2 |
-| citations | `getCitationStats` | `GET /citations/stats` | P2 |
-| citations | `getCitationPath` | `GET /citations/path/{from}/{to}` | P2 |
-| citations | `getRelatedDocuments` | `GET /citations/related/{celexNumber}` | P2 |
-| semantic | `semanticCaseLawSearch` | `POST /search/semantic` | P2 |
-| semantic | `semanticLegislationSearch` | `POST /legislation/semantic` | P2 |
-| export | `exportCorpus` | `GET /export` | P3 |
-| webhooks | `listWebhooks` / `createWebhook` | `GET/POST /webhooks` | P3 |
-| webhooks | `getWebhook` / `updateWebhook` / `deleteWebhook` | `GET/PUT/DELETE /webhooks/{id}` | P3 |
-| webhooks | `testWebhook` | `POST /webhooks/{id}/test` | P3 |
-| webhooks | `getWebhookDeliveries` | `GET /webhooks/{id}/deliveries` | P3 |
+| Status | Group | Operation | Method + Path | Priority |
+| --- | --- | --- | --- | --- |
+| [x] | user/info | `getInfo` | `GET /info` | **P0** |
+| [ ] | search | `search` | `POST /search` | **P0** |
+| [ ] | documents/content | `getDocumentContent` | `POST /documentContent` | **P0** |
+| [ ] | documents/content | `getDocumentContentBatch` | `POST /documentContent/batch` | P1 |
+| [ ] | documents/content | `getRecentDocuments` | `GET /documents/recent` | P1 |
+| [ ] | documents/content | `getDocumentByUrl` | `POST /documents/url` | P1 |
+| [ ] | documents/content | `getDocumentMetadata` | `POST /documents/metadata` | P1 |
+| [ ] | resolve | `resolveIdentifier` | `POST /resolve` | P1 |
+| [ ] | citations | `extractCitations` | `POST /citations/extract` | P2 |
+| [ ] | citations | `getCitedBy` | `GET /citations/cited-by/{celexNumber}` | P2 |
+| [ ] | citations | `getCites` | `GET /citations/cites/{celexNumber}` | P2 |
+| [ ] | citations | `getCitationNetwork` | `GET /citations/network/{celexNumber}` | P2 |
+| [ ] | citations | `getCitationStats` | `GET /citations/stats` | P2 |
+| [ ] | citations | `getCitationPath` | `GET /citations/path/{from}/{to}` | P2 |
+| [ ] | citations | `getRelatedDocuments` | `GET /citations/related/{celexNumber}` | P2 |
+| [ ] | semantic | `semanticCaseLawSearch` | `POST /search/semantic` | P2 |
+| [ ] | semantic | `semanticLegislationSearch` | `POST /legislation/semantic` | P2 |
+| [ ] | export | `exportCorpus` | `GET /export` | P3 |
+| [ ] | webhooks | `listWebhooks` / `createWebhook` | `GET/POST /webhooks` | P3 |
+| [ ] | webhooks | `getWebhook` / `updateWebhook` / `deleteWebhook` | `GET/PUT/DELETE /webhooks/{id}` | P3 |
+| [ ] | webhooks | `testWebhook` | `POST /webhooks/{id}/test` | P3 |
+| [ ] | webhooks | `getWebhookDeliveries` | `GET /webhooks/{id}/deliveries` | P3 |
 
 Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageInfo`, `CreditsInfo` (P0); search filter enums driven from `/info` capability map where possible instead of hardcoding.
 ## 3. Language-specific architecture
