@@ -64,13 +64,13 @@ Priority order: **P0** first (`info` + `search` + `documentContent`), then P1 â†
 | Status | Group | Operation | Method + Path | Priority |
 | --- | --- | --- | --- | --- |
 | [x] | user/info | `getInfo` | `GET /info` | **P0** |
-| [ ] | search | `search` | `POST /search` | **P0** |
-| [ ] | documents/content | `getDocumentContent` | `POST /documentContent` | **P0** |
-| [ ] | documents/content | `getDocumentContentBatch` | `POST /documentContent/batch` | P1 |
-| [ ] | documents/content | `getRecentDocuments` | `GET /documents/recent` | P1 |
-| [ ] | documents/content | `getDocumentByUrl` | `POST /documents/url` | P1 |
-| [ ] | documents/content | `getDocumentMetadata` | `POST /documents/metadata` | P1 |
-| [ ] | resolve | `resolveIdentifier` | `POST /resolve` | P1 |
+| [x] | search | `search` | `POST /search` | **P0** |
+| [x] | documents/content | `getDocumentContent` | `POST /documentContent` | **P0** |
+| [x] | documents/content | `getDocumentContentBatch` | `POST /documentContent/batch` | P1 |
+| [x] | documents/content | `getRecentDocuments` | `GET /documents/recent` | P1 |
+| [x] | documents/content | `getDocumentByUrl` | `POST /documents/url` | P1 |
+| [x] | documents/content | `getDocumentMetadata` | `POST /documents/metadata` | P1 |
+| [x] | resolve | `resolveIdentifier` | `POST /resolve` | P1 |
 | [ ] | citations | `extractCitations` | `POST /citations/extract` | P2 |
 | [ ] | citations | `getCitedBy` | `GET /citations/cited-by/{celexNumber}` | P2 |
 | [ ] | citations | `getCites` | `GET /citations/cites/{celexNumber}` | P2 |

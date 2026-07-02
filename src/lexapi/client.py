@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 import httpx
 
+from lexapi import _payloads
 from lexapi._base import (
     DEFAULT_BASE_URL,
     build_httpx_kwargs,
@@ -18,6 +19,15 @@ from lexapi._base import (
 )
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
+from lexapi.models import (
+    DocumentBatchResponse,
+    DocumentByUrlResponse,
+    DocumentMetadataResponse,
+    DocumentResponse,
+    RecentDocumentsResponse,
+    ResolveResponse,
+    SearchResponse,
+)
 
 R = TypeVar("R", bound=APIResponse)
 
@@ -68,6 +78,164 @@ class LexAPI:
         Free operation (0 credits).
         """
         return self._request("GET", "/info")
+
+    # ── Search ────────────────────────────────────────────────────────
+    def search(
+        self,
+        query: str | None = None,
+        *,
+        text_scope: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        year: int | list[int] | None = None,
+        month: int | list[int] | None = None,
+        document_type: str | list[str] | None = None,
+        author: str | list[str] | None = None,
+        procedure: str | list[str] | None = None,
+        domain: str | None = None,
+        subdomain: str | list[str] | None = None,
+        language: str | None = None,
+        max_pages: int | None = None,
+    ) -> SearchResponse:
+        """POST /search — search EUR-Lex with structured filters.
+
+        At least one filter is required by the server. ``max_pages`` is
+        clamped to the subscription tier; check ``response.truncated`` /
+        ``response.partial`` / ``response.warning`` for capping signals.
+        Prefer 1-3 distinctive query terms — EUR-Lex keyword matching is
+        literal (use semantic search for concept queries).
+        """
+        body = _payloads.search_body(
+            query,
+            text_scope=text_scope,
+            date_from=date_from,
+            date_to=date_to,
+            year=year,
+            month=month,
+            document_type=document_type,
+            author=author,
+            procedure=procedure,
+            domain=domain,
+            subdomain=subdomain,
+            language=language,
+            max_pages=max_pages,
+        )
+        return self._request("POST", "/search", json=body, cast=SearchResponse)
+
+    # ── Documents ─────────────────────────────────────────────────────
+    def get_document(
+        self,
+        celex: str,
+        *,
+        bypass_corpus: bool | None = None,
+        language: str | None = None,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentResponse:
+        """POST /documentContent — fetch one fully-parsed document by CELEX.
+
+        Corpus-first read path: ``response.source`` reports ``corpus`` or
+        ``live``; pass ``bypass_corpus=True`` to force a live scrape.
+        ``include``/``fields`` trim the payload to the listed pieces
+        (``metadata``, ``fullText``, ``articles``, ``recitals``, ``sections``,
+        ``tables``, ``annexes``); ``article_id`` narrows to one article.
+        """
+        body = _payloads.document_content_body(
+            celex,
+            bypass_corpus=bypass_corpus,
+            language=language,
+            include=include,
+            fields=fields,
+            article_id=article_id,
+        )
+        return self._request("POST", "/documentContent", json=body, cast=DocumentResponse)
+
+    def get_documents_batch(
+        self,
+        celexes: list[str],
+        *,
+        bypass_corpus: bool | None = None,
+        language: str | None = None,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentBatchResponse:
+        """POST /documentContent/batch — fetch multiple documents at once.
+
+        Per-CELEX failures land in ``response.errors`` instead of aborting
+        the batch. The batch size is clamped to the tier ceiling —
+        ``response.trimmed`` / ``trimmed_to`` / ``trimmed_reason`` (and the
+        ``X-Warning`` header via ``response.warning``) report clamping.
+        """
+        body = _payloads.document_batch_body(
+            celexes,
+            bypass_corpus=bypass_corpus,
+            language=language,
+            include=include,
+            fields=fields,
+            article_id=article_id,
+        )
+        return self._request(
+            "POST", "/documentContent/batch", json=body, cast=DocumentBatchResponse
+        )
+
+    def get_recent_documents(
+        self,
+        *,
+        days: int | None = None,
+        document_type: str | None = None,
+        author: str | None = None,
+        domain: str | None = None,
+        subdomain: str | None = None,
+        language: str | None = None,
+        limit: int | None = None,
+    ) -> RecentDocumentsResponse:
+        """GET /documents/recent — documents published in the last ``days`` days."""
+        params = _payloads.recent_documents_params(
+            days=days,
+            document_type=document_type,
+            author=author,
+            domain=domain,
+            subdomain=subdomain,
+            language=language,
+            limit=limit,
+        )
+        return self._request(
+            "GET", "/documents/recent", params=params, cast=RecentDocumentsResponse
+        )
+
+    def get_document_by_url(
+        self,
+        url: str,
+        *,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentByUrlResponse:
+        """POST /documents/url — fetch a document by any EUR-Lex URL.
+
+        The response echoes ``source_url`` and the ``extracted_celex``.
+        """
+        body = _payloads.document_by_url_body(
+            url, include=include, fields=fields, article_id=article_id
+        )
+        return self._request("POST", "/documents/url", json=body, cast=DocumentByUrlResponse)
+
+    def get_document_metadata(
+        self, celex: str, *, bypass_corpus: bool | None = None
+    ) -> DocumentMetadataResponse:
+        """POST /documents/metadata — metadata only (faster/cheaper than content)."""
+        body = _payloads.drop_none({"celexNumber": celex, "bypassCorpus": bypass_corpus})
+        return self._request(
+            "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse
+        )
+
+    def resolve(self, identifier: str) -> ResolveResponse:
+        """POST /resolve — resolve a CELEX / EUR-Lex URL / ELI / ECLI to a CELEX."""
+        return self._request(
+            "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+        )
 
     # ── Request core ──────────────────────────────────────────────────
     def _request(

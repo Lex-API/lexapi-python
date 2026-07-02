@@ -22,6 +22,57 @@ print(info["subscription"]["tier"], info["usage"]["remaining"])
 
 Keys come from the [LexAPI dashboard](https://lex-api.com) and are prefixed `lex_`. Keep them server-side — never ship them in client-side code.
 
+### Search
+
+```python
+results = client.search(
+    "cybersecurity",
+    author=["court-of-justice"],
+    year=2024,
+    document_type="judgment",
+    max_pages=1,
+)
+for hit in results.results:
+    print(hit.celex, hit.document_type_code, hit.title)
+
+# Capping is surfaced, never hidden:
+if results.truncated:
+    print("tier-capped:", results.truncated_reason)
+if results.partial:
+    print("an upstream page timed out:", results.partial_reason)
+if results.post_filtered_by:
+    print("controller post-filter fired on:", results.post_filtered_by)
+```
+
+### Documents
+
+```python
+doc = client.get_document("32016R0679", language="en").document
+print(doc.title, doc.date_of_document_iso)
+for article in doc.content.articles[:3]:
+    print(article.number, article.title)
+
+# Trim the payload: only metadata + one article
+resp = client.get_document("32016R0679", include=["metadata", "articles"], article_id="17")
+print(resp.source)  # "corpus" or "live" (X-Source header)
+
+# Batch — per-CELEX failures don't abort the batch
+batch = client.get_documents_batch(["32016R0679", "62018CJ0311"])
+print(batch.successful, "ok /", batch.failed, "failed")
+if batch.trimmed:  # tier ceiling hit — mirrored from X-Warning too
+    print(batch.trimmed_reason)
+
+recent = client.get_recent_documents(days=3, document_type="regulation")
+by_url = client.get_document_by_url(
+    "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679"
+)
+meta = client.get_document_metadata("32016R0679").metadata  # faster, no body parse
+celex = client.resolve("ECLI:EU:C:2020:559").celex          # CELEX/URL/ELI/ECLI → CELEX
+```
+
+Typed responses stay mapping-compatible (`results["totalResults"]` works) and
+every typed model keeps the raw payload on `.raw`.
+
 ### Async
 
 Every operation is also available on the async client:
