@@ -64,27 +64,30 @@ Priority order: **P0** first (`info` + `search` + `documentContent`), then P1 â†
 | Status | Group | Operation | Method + Path | Priority |
 | --- | --- | --- | --- | --- |
 | [x] | user/info | `getInfo` | `GET /info` | **P0** |
-| [ ] | search | `search` | `POST /search` | **P0** |
-| [ ] | documents/content | `getDocumentContent` | `POST /documentContent` | **P0** |
-| [ ] | documents/content | `getDocumentContentBatch` | `POST /documentContent/batch` | P1 |
-| [ ] | documents/content | `getRecentDocuments` | `GET /documents/recent` | P1 |
-| [ ] | documents/content | `getDocumentByUrl` | `POST /documents/url` | P1 |
-| [ ] | documents/content | `getDocumentMetadata` | `POST /documents/metadata` | P1 |
-| [ ] | resolve | `resolveIdentifier` | `POST /resolve` | P1 |
-| [ ] | citations | `extractCitations` | `POST /citations/extract` | P2 |
-| [ ] | citations | `getCitedBy` | `GET /citations/cited-by/{celexNumber}` | P2 |
-| [ ] | citations | `getCites` | `GET /citations/cites/{celexNumber}` | P2 |
-| [ ] | citations | `getCitationNetwork` | `GET /citations/network/{celexNumber}` | P2 |
-| [ ] | citations | `getCitationStats` | `GET /citations/stats` | P2 |
-| [ ] | citations | `getCitationPath` | `GET /citations/path/{from}/{to}` | P2 |
-| [ ] | citations | `getRelatedDocuments` | `GET /citations/related/{celexNumber}` | P2 |
-| [ ] | semantic | `semanticCaseLawSearch` | `POST /search/semantic` | P2 |
-| [ ] | semantic | `semanticLegislationSearch` | `POST /legislation/semantic` | P2 |
-| [ ] | export | `exportCorpus` | `GET /export` | P3 |
-| [ ] | webhooks | `listWebhooks` / `createWebhook` | `GET/POST /webhooks` | P3 |
-| [ ] | webhooks | `getWebhook` / `updateWebhook` / `deleteWebhook` | `GET/PUT/DELETE /webhooks/{id}` | P3 |
-| [ ] | webhooks | `testWebhook` | `POST /webhooks/{id}/test` | P3 |
-| [ ] | webhooks | `getWebhookDeliveries` | `GET /webhooks/{id}/deliveries` | P3 |
+| [x] | search | `search` | `POST /search` | **P0** |
+| [x] | documents/content | `getDocumentContent` | `POST /documentContent` | **P0** |
+| [x] | documents/content | `getDocumentContentBatch` | `POST /documentContent/batch` | P1 |
+| [x] | documents/content | `getRecentDocuments` | `GET /documents/recent` | P1 |
+| [x] | documents/content | `getDocumentByUrl` | `POST /documents/url` | P1 |
+| [x] | documents/content | `getDocumentMetadata` | `POST /documents/metadata` | P1 |
+| [x] | resolve | `resolveIdentifier` | `POST /resolve` | P1 |
+| [x] | citations | `extractCitations` | `POST /citations/extract` | P2 |
+| [x] | citations | `getCitedBy` | `GET /citations/cited-by/{celexNumber}` | P2 |
+| [x] | citations | `getCites` | `GET /citations/cites/{celexNumber}` | P2 |
+| [x] | citations | `getCitationNetwork` | `GET /citations/network/{celexNumber}` | P2 |
+| [x] | citations | `getCitationStats` | `GET /citations/stats` | P2 |
+| [x] | citations | `getCitationPath` | `GET /citations/path/{from}/{to}` | P2 |
+| [x] | citations | `getRelatedDocuments` | `GET /citations/related/{celexNumber}` | P2 |
+| [x] | semantic | `semanticCaseLawSearch` | `POST /search/semantic` | P2 |
+| [x] | semantic | `semanticLegislationSearch` | `POST /legislation/semantic` | P2 |
+| [x] | export | `exportCorpus` | `GET /export` | P3 |
+| [x] | webhooks | `listWebhooks` / `createWebhook` | `GET/POST /webhooks` | P3 |
+| [x] | webhooks | `getWebhook` / `updateWebhook` / `deleteWebhook` | `GET/PUT/DELETE /webhooks/{id}` | P3 |
+| [x] | webhooks | `testWebhook` | `POST /webhooks/{id}/test` | P3 |
+| [x] | webhooks | `getWebhookDeliveries` | `GET /webhooks/{id}/deliveries` | P3 |
+| [x] | versions | `listDocumentVersions` | `GET /documents/{celex}/versions` | P3 |
+| [x] | versions | `getDocumentVersion` | `GET /documents/{celex}/versions/{version}` | P3 |
+| [x] | versions | `getDocumentAtDate` | `GET /documents/{celex}/at/{date}` | P3 |
 
 Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageInfo`, `CreditsInfo` (P0); search filter enums driven from `/info` capability map where possible instead of hardcoding.
 ## 3. Language-specific architecture

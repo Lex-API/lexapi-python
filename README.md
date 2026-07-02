@@ -22,6 +22,151 @@ print(info["subscription"]["tier"], info["usage"]["remaining"])
 
 Keys come from the [LexAPI dashboard](https://lex-api.com) and are prefixed `lex_`. Keep them server-side — never ship them in client-side code.
 
+### Search
+
+```python
+results = client.search(
+    "cybersecurity",
+    author=["court-of-justice"],
+    year=2024,
+    document_type="judgment",
+    max_pages=1,
+)
+for hit in results.results:
+    print(hit.celex, hit.document_type_code, hit.title)
+
+# Capping is surfaced, never hidden:
+if results.truncated:
+    print("tier-capped:", results.truncated_reason)
+if results.partial:
+    print("an upstream page timed out:", results.partial_reason)
+if results.post_filtered_by:
+    print("controller post-filter fired on:", results.post_filtered_by)
+```
+
+### Documents
+
+```python
+doc = client.get_document("32016R0679", language="en").document
+print(doc.title, doc.date_of_document_iso)
+for article in doc.content.articles[:3]:
+    print(article.number, article.title)
+
+# Trim the payload: only metadata + one article
+resp = client.get_document("32016R0679", include=["metadata", "articles"], article_id="17")
+print(resp.source)  # "corpus" or "live" (X-Source header)
+
+# Batch — per-CELEX failures don't abort the batch
+batch = client.get_documents_batch(["32016R0679", "62018CJ0311"])
+print(batch.successful, "ok /", batch.failed, "failed")
+if batch.trimmed:  # tier ceiling hit — mirrored from X-Warning too
+    print(batch.trimmed_reason)
+
+recent = client.get_recent_documents(days=3, document_type="regulation")
+by_url = client.get_document_by_url(
+    "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679"
+)
+meta = client.get_document_metadata("32016R0679").metadata  # faster, no body parse
+celex = client.resolve("ECLI:EU:C:2020:559").celex          # CELEX/URL/ELI/ECLI → CELEX
+```
+
+Typed responses stay mapping-compatible (`results["totalResults"]` works) and
+every typed model keeps the raw payload on `.raw`.
+
+### Citations
+
+The typed citation graph lives under `client.citations`:
+
+```python
+client.citations.extract("32016R0679")          # crawl + persist edges (idempotent)
+
+inbound = client.citations.cited_by("31995L0046", citation_type="repeal", limit=50)
+print(inbound.total_citations, "edges from", inbound.unique_documents, "documents")
+
+outbound = client.citations.cites("32016R0679")
+network = client.citations.network("32016R0679", limit=100)
+if network.partial:  # server-side budget expired — 200, not an error
+    print(network.message)
+
+path = client.citations.path("32016R0679", "31995L0046", max_depth=4)
+if path.found:
+    print(" -> ".join(node.celex_number for node in path.path))
+
+related = client.citations.related("32016R0679", limit=10)  # bibliographic coupling
+stats = client.citations.stats()
+print(stats.most_cited[0].celex_number)
+```
+
+### Semantic search
+
+```python
+# Case law (CJEU) — concept queries, similarity-ranked
+resp = client.semantic_search(
+    "transfer of personal data to third countries",
+    min_score=0.5,   # widen recall past the ~0.7 default relevance floor
+    limit=10,
+)
+for hit in resp.results:
+    print(f"{hit.score:.2f}", hit.celex, hit.case_number, hit.case_name)
+if resp.hint:        # present only on low-confidence (best-effort) responses
+    print(resp.hint)
+
+# HyDE query rewriting for terse/keyword queries — 15 credits instead of 5
+resp = client.semantic_search("credit scoring article 22", hyde=True)
+print(resp.hyde)                   # False means the LLM fell back — premium auto-refunded
+print(resp.units_charged)          # 15 when HyDE ran, 5 after a fallback
+print(resp.hypothetical_document)  # the LLM-drafted passage (when HyDE ran)
+
+# Legislation — article-level matches (HyDE is case-law only)
+laws = client.semantic_legislation_search("right to be forgotten", limit=5)
+for hit in laws.results:
+    print(hit.law_id, hit.article_ref, hit.law_title)
+```
+
+### Webhooks
+
+```python
+# The secret is returned ONLY on create — store it to verify X-Webhook-Signature
+created = client.webhooks.create(
+    "New CJEU judgments",
+    "https://example.com/webhooks/lexapi",
+    {"documentType": "judgment", "author": ["court-of-justice"]},  # /search body shape
+)
+secret = created.webhook.secret
+
+hooks = client.webhooks.list()
+hook = client.webhooks.get(created.webhook.id)          # incl. 20 recent deliveries
+client.webhooks.update(hook.webhook.id, status="ACTIVE") # also resets failure counter
+result = client.webhooks.test(hook.webhook.id)           # synchronous test delivery
+if not result.ok:                                        # HTTP 200 either way
+    print(result.delivery.error_message)
+
+page = client.webhooks.deliveries(hook.webhook.id, limit=50)
+for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # walks all pages
+    print(delivery.status, delivery.response_status)
+
+client.webhooks.delete(hook.webhook.id)
+```
+
+### Corpus export (BUSINESS tier)
+
+`export()` streams NDJSON rows with constant memory; the `_meta` /
+`_done` envelopes and export headers are exposed on the stream:
+
+```python
+with client.export(document_type="regulation", date_from="2024-01-01", limit=10_000) as stream:
+    print(stream.total, stream.streaming)   # X-Export-Total / X-Export-Streaming
+    for row in stream:                      # one dict per corpus row
+        ingest(row["celex"], row.get("parsedContent"))
+    print(stream.meta)                      # leading _meta envelope
+    print(stream.done, stream.truncated)    # trailing _done line / row-cap flag
+
+# Async
+async with await client.export(fetched_since="2026-06-01T00:00:00Z") as stream:
+    async for row in stream:
+        ingest(row)
+```
+
 ### Async
 
 Every operation is also available on the async client:
@@ -107,6 +252,28 @@ client = LexAPI(
     user_agent_suffix="myapp/1.0",  # appended to lexapi-python/<version>
 )
 ```
+
+## Point-in-time versions
+
+> Requires a LexAPI deployment with the point-in-time endpoints (lex-api PR #72).
+> Versions are LexAPI *observation snapshots* — the document as fetched — not
+> legal in-force reconstructions; history begins at first ingestion.
+
+```python
+history = client.list_document_versions("32016R0679")
+print(history.current_version, history.tracked_since)
+for v in history.versions:
+    print(v.version, v.fetched_at, v.content_hash, "(current)" if v.is_current else "")
+
+snapshot = client.get_document_version("32016R0679", 2)
+print(snapshot.document.parsed_content)
+
+as_of = client.get_document_at_date("32016R0679", "2026-03-20")
+print(as_of.as_of, as_of.document.version)
+```
+
+Each call costs 1 credit. Dates before the document entered the corpus raise
+`NotFoundError` with the tracking start date in the message.
 
 ## Development
 

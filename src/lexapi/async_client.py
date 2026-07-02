@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 import httpx
 
+from lexapi import _payloads
 from lexapi._base import (
     DEFAULT_BASE_URL,
     build_httpx_kwargs,
@@ -18,6 +19,22 @@ from lexapi._base import (
 )
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
+from lexapi.citations import AsyncCitationsResource
+from lexapi.export import AsyncExportStream, export_params
+from lexapi.models import (
+    DocumentBatchResponse,
+    DocumentByUrlResponse,
+    DocumentMetadataResponse,
+    DocumentResponse,
+    DocumentVersionResponse,
+    DocumentVersionsResponse,
+    RecentDocumentsResponse,
+    ResolveResponse,
+    SearchResponse,
+    SemanticLegislationResponse,
+    SemanticSearchResponse,
+)
+from lexapi.webhooks import AsyncWebhooksResource
 
 R = TypeVar("R", bound=APIResponse)
 
@@ -49,6 +66,10 @@ class AsyncLexAPI:
                 api_key, base_url, timeout, connect_timeout, user_agent_suffix
             ),
         )
+        #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
+        self.citations = AsyncCitationsResource(self)
+        #: Webhook subscriptions (``client.webhooks.create(...)``, ...).
+        self.webhooks = AsyncWebhooksResource(self)
 
     # ── Meta ──────────────────────────────────────────────────────────
     async def get_info(self) -> APIResponse:
@@ -57,6 +78,303 @@ class AsyncLexAPI:
         Free operation (0 credits).
         """
         return await self._request("GET", "/info")
+
+    # ── Search ────────────────────────────────────────────────────────
+    async def search(
+        self,
+        query: str | None = None,
+        *,
+        text_scope: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        year: int | list[int] | None = None,
+        month: int | list[int] | None = None,
+        document_type: str | list[str] | None = None,
+        author: str | list[str] | None = None,
+        procedure: str | list[str] | None = None,
+        domain: str | None = None,
+        subdomain: str | list[str] | None = None,
+        language: str | None = None,
+        max_pages: int | None = None,
+    ) -> SearchResponse:
+        """POST /search — see :meth:`lexapi.LexAPI.search`."""
+        body = _payloads.search_body(
+            query,
+            text_scope=text_scope,
+            date_from=date_from,
+            date_to=date_to,
+            year=year,
+            month=month,
+            document_type=document_type,
+            author=author,
+            procedure=procedure,
+            domain=domain,
+            subdomain=subdomain,
+            language=language,
+            max_pages=max_pages,
+        )
+        return await self._request("POST", "/search", json=body, cast=SearchResponse)
+
+    # ── Documents ─────────────────────────────────────────────────────
+    async def get_document(
+        self,
+        celex: str,
+        *,
+        bypass_corpus: bool | None = None,
+        language: str | None = None,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentResponse:
+        """POST /documentContent — see :meth:`lexapi.LexAPI.get_document`."""
+        body = _payloads.document_content_body(
+            celex,
+            bypass_corpus=bypass_corpus,
+            language=language,
+            include=include,
+            fields=fields,
+            article_id=article_id,
+        )
+        return await self._request(
+            "POST", "/documentContent", json=body, cast=DocumentResponse
+        )
+
+    async def get_documents_batch(
+        self,
+        celexes: list[str],
+        *,
+        bypass_corpus: bool | None = None,
+        language: str | None = None,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentBatchResponse:
+        """POST /documentContent/batch — see :meth:`lexapi.LexAPI.get_documents_batch`."""
+        body = _payloads.document_batch_body(
+            celexes,
+            bypass_corpus=bypass_corpus,
+            language=language,
+            include=include,
+            fields=fields,
+            article_id=article_id,
+        )
+        return await self._request(
+            "POST", "/documentContent/batch", json=body, cast=DocumentBatchResponse
+        )
+
+    async def get_recent_documents(
+        self,
+        *,
+        days: int | None = None,
+        document_type: str | None = None,
+        author: str | None = None,
+        domain: str | None = None,
+        subdomain: str | None = None,
+        language: str | None = None,
+        limit: int | None = None,
+    ) -> RecentDocumentsResponse:
+        """GET /documents/recent — see :meth:`lexapi.LexAPI.get_recent_documents`."""
+        params = _payloads.recent_documents_params(
+            days=days,
+            document_type=document_type,
+            author=author,
+            domain=domain,
+            subdomain=subdomain,
+            language=language,
+            limit=limit,
+        )
+        return await self._request(
+            "GET", "/documents/recent", params=params, cast=RecentDocumentsResponse
+        )
+
+    async def get_document_by_url(
+        self,
+        url: str,
+        *,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentByUrlResponse:
+        """POST /documents/url — see :meth:`lexapi.LexAPI.get_document_by_url`."""
+        body = _payloads.document_by_url_body(
+            url, include=include, fields=fields, article_id=article_id
+        )
+        return await self._request(
+            "POST", "/documents/url", json=body, cast=DocumentByUrlResponse
+        )
+
+    async def get_document_metadata(
+        self, celex: str, *, bypass_corpus: bool | None = None
+    ) -> DocumentMetadataResponse:
+        """POST /documents/metadata — see :meth:`lexapi.LexAPI.get_document_metadata`."""
+        body = _payloads.drop_none({"celexNumber": celex, "bypassCorpus": bypass_corpus})
+        return await self._request(
+            "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse
+        )
+
+    async def resolve(self, identifier: str) -> ResolveResponse:
+        """POST /resolve — see :meth:`lexapi.LexAPI.resolve`."""
+        return await self._request(
+            "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+        )
+
+    # ── Point-in-time versions ────────────────────────────────────────
+    async def list_document_versions(
+        self, celex: str, *, language: str | None = None
+    ) -> DocumentVersionsResponse:
+        """GET /documents/{celex}/versions — see :meth:`lexapi.LexAPI.list_document_versions`."""
+        params = _payloads.drop_none({"language": language})
+        return await self._request(
+            "GET",
+            f"/documents/{celex}/versions",
+            params=params,
+            cast=DocumentVersionsResponse,
+        )
+
+    async def get_document_version(
+        self, celex: str, version: int, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/versions/{version} — see
+        :meth:`lexapi.LexAPI.get_document_version`."""
+        params = _payloads.drop_none({"language": language})
+        return await self._request(
+            "GET",
+            f"/documents/{celex}/versions/{version}",
+            params=params,
+            cast=DocumentVersionResponse,
+        )
+
+    async def get_document_at_date(
+        self, celex: str, date: str, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/at/{date} — see :meth:`lexapi.LexAPI.get_document_at_date`."""
+        params = _payloads.drop_none({"language": language})
+        return await self._request(
+            "GET",
+            f"/documents/{celex}/at/{date}",
+            params=params,
+            cast=DocumentVersionResponse,
+        )
+
+    # ── Semantic search ───────────────────────────────────────────────
+    async def semantic_search(
+        self,
+        query: str,
+        *,
+        hyde: bool = False,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticSearchResponse:
+        """POST /search/semantic — see :meth:`lexapi.LexAPI.semantic_search`.
+
+        ``hyde=True`` bills **15 credits instead of 5** (~1-3 s extra latency);
+        best-effort — on LLM failure the response reports ``hyde=False`` and
+        the 10-credit premium is refunded automatically.
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            hyde=hyde,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return await self._request(
+            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse
+        )
+
+    async def semantic_legislation_search(
+        self,
+        query: str,
+        *,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticLegislationResponse:
+        """POST /legislation/semantic — see
+        :meth:`lexapi.LexAPI.semantic_legislation_search`.
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return await self._request(
+            "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
+        )
+
+    # ── Export ────────────────────────────────────────────────────────
+    async def export(
+        self,
+        *,
+        document_type: str | list[str] | None = None,
+        author: str | list[str] | None = None,
+        subdomain: str | list[str] | None = None,
+        language: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        fetched_since: str | None = None,
+        include_html: bool | None = None,
+        include_content: bool | None = None,
+        limit: int | None = None,
+    ) -> AsyncExportStream:
+        """GET /export — see :meth:`lexapi.LexAPI.export`. Returns an
+        :class:`~lexapi.export.AsyncExportStream`::
+
+            async with await client.export(limit=1000) as stream:
+                async for row in stream:
+                    handle(row)
+        """
+        params = export_params(
+            document_type=document_type,
+            author=author,
+            subdomain=subdomain,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            fetched_since=fetched_since,
+            include_html=include_html,
+            include_content=include_content,
+            limit=limit,
+        )
+        return AsyncExportStream(
+            await self._stream_request("GET", "/export", params=params)
+        )
+
+    async def _stream_request(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None
+    ) -> httpx.Response:
+        """Streaming twin of :meth:`_request`; body left unread on success."""
+        attempt = 0
+        while True:
+            request = self._http.build_request(method, path, params=params)
+            try:
+                response = await self._http.send(request, stream=True)
+            except httpx.HTTPError as exc:
+                wait = exception_retry_wait(exc, attempt, self._retry)
+                if wait is None:
+                    raise transport_error(exc) from exc
+                await asyncio.sleep(wait)
+                attempt += 1
+                continue
+            if response.is_success:
+                return response
+            await response.aread()
+            wait = status_retry_wait(method, response, attempt, self._retry)
+            if wait is None:
+                process_response(response)  # raises the typed error
+            await response.aclose()
+            await asyncio.sleep(wait)
+            attempt += 1
 
     # ── Request core ──────────────────────────────────────────────────
     async def _request(

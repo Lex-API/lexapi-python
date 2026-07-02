@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 import httpx
 
+from lexapi import _payloads
 from lexapi._base import (
     DEFAULT_BASE_URL,
     build_httpx_kwargs,
@@ -18,6 +19,22 @@ from lexapi._base import (
 )
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
+from lexapi.citations import CitationsResource
+from lexapi.export import ExportStream, export_params
+from lexapi.models import (
+    DocumentBatchResponse,
+    DocumentByUrlResponse,
+    DocumentMetadataResponse,
+    DocumentResponse,
+    DocumentVersionResponse,
+    DocumentVersionsResponse,
+    RecentDocumentsResponse,
+    ResolveResponse,
+    SearchResponse,
+    SemanticLegislationResponse,
+    SemanticSearchResponse,
+)
+from lexapi.webhooks import WebhooksResource
 
 R = TypeVar("R", bound=APIResponse)
 
@@ -60,6 +77,10 @@ class LexAPI:
                 api_key, base_url, timeout, connect_timeout, user_agent_suffix
             ),
         )
+        #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
+        self.citations = CitationsResource(self)
+        #: Webhook subscriptions (``client.webhooks.create(...)``, ...).
+        self.webhooks = WebhooksResource(self)
 
     # ── Meta ──────────────────────────────────────────────────────────
     def get_info(self) -> APIResponse:
@@ -68,6 +89,366 @@ class LexAPI:
         Free operation (0 credits).
         """
         return self._request("GET", "/info")
+
+    # ── Search ────────────────────────────────────────────────────────
+    def search(
+        self,
+        query: str | None = None,
+        *,
+        text_scope: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        year: int | list[int] | None = None,
+        month: int | list[int] | None = None,
+        document_type: str | list[str] | None = None,
+        author: str | list[str] | None = None,
+        procedure: str | list[str] | None = None,
+        domain: str | None = None,
+        subdomain: str | list[str] | None = None,
+        language: str | None = None,
+        max_pages: int | None = None,
+    ) -> SearchResponse:
+        """POST /search — search EUR-Lex with structured filters.
+
+        At least one filter is required by the server. ``max_pages`` is
+        clamped to the subscription tier; check ``response.truncated`` /
+        ``response.partial`` / ``response.warning`` for capping signals.
+        Prefer 1-3 distinctive query terms — EUR-Lex keyword matching is
+        literal (use semantic search for concept queries).
+        """
+        body = _payloads.search_body(
+            query,
+            text_scope=text_scope,
+            date_from=date_from,
+            date_to=date_to,
+            year=year,
+            month=month,
+            document_type=document_type,
+            author=author,
+            procedure=procedure,
+            domain=domain,
+            subdomain=subdomain,
+            language=language,
+            max_pages=max_pages,
+        )
+        return self._request("POST", "/search", json=body, cast=SearchResponse)
+
+    # ── Documents ─────────────────────────────────────────────────────
+    def get_document(
+        self,
+        celex: str,
+        *,
+        bypass_corpus: bool | None = None,
+        language: str | None = None,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentResponse:
+        """POST /documentContent — fetch one fully-parsed document by CELEX.
+
+        Corpus-first read path: ``response.source`` reports ``corpus`` or
+        ``live``; pass ``bypass_corpus=True`` to force a live scrape.
+        ``include``/``fields`` trim the payload to the listed pieces
+        (``metadata``, ``fullText``, ``articles``, ``recitals``, ``sections``,
+        ``tables``, ``annexes``); ``article_id`` narrows to one article.
+        """
+        body = _payloads.document_content_body(
+            celex,
+            bypass_corpus=bypass_corpus,
+            language=language,
+            include=include,
+            fields=fields,
+            article_id=article_id,
+        )
+        return self._request("POST", "/documentContent", json=body, cast=DocumentResponse)
+
+    def get_documents_batch(
+        self,
+        celexes: list[str],
+        *,
+        bypass_corpus: bool | None = None,
+        language: str | None = None,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentBatchResponse:
+        """POST /documentContent/batch — fetch multiple documents at once.
+
+        Per-CELEX failures land in ``response.errors`` instead of aborting
+        the batch. The batch size is clamped to the tier ceiling —
+        ``response.trimmed`` / ``trimmed_to`` / ``trimmed_reason`` (and the
+        ``X-Warning`` header via ``response.warning``) report clamping.
+        """
+        body = _payloads.document_batch_body(
+            celexes,
+            bypass_corpus=bypass_corpus,
+            language=language,
+            include=include,
+            fields=fields,
+            article_id=article_id,
+        )
+        return self._request(
+            "POST", "/documentContent/batch", json=body, cast=DocumentBatchResponse
+        )
+
+    def get_recent_documents(
+        self,
+        *,
+        days: int | None = None,
+        document_type: str | None = None,
+        author: str | None = None,
+        domain: str | None = None,
+        subdomain: str | None = None,
+        language: str | None = None,
+        limit: int | None = None,
+    ) -> RecentDocumentsResponse:
+        """GET /documents/recent — documents published in the last ``days`` days."""
+        params = _payloads.recent_documents_params(
+            days=days,
+            document_type=document_type,
+            author=author,
+            domain=domain,
+            subdomain=subdomain,
+            language=language,
+            limit=limit,
+        )
+        return self._request(
+            "GET", "/documents/recent", params=params, cast=RecentDocumentsResponse
+        )
+
+    def get_document_by_url(
+        self,
+        url: str,
+        *,
+        include: str | list[str] | None = None,
+        fields: str | list[str] | None = None,
+        article_id: str | None = None,
+    ) -> DocumentByUrlResponse:
+        """POST /documents/url — fetch a document by any EUR-Lex URL.
+
+        The response echoes ``source_url`` and the ``extracted_celex``.
+        """
+        body = _payloads.document_by_url_body(
+            url, include=include, fields=fields, article_id=article_id
+        )
+        return self._request("POST", "/documents/url", json=body, cast=DocumentByUrlResponse)
+
+    def get_document_metadata(
+        self, celex: str, *, bypass_corpus: bool | None = None
+    ) -> DocumentMetadataResponse:
+        """POST /documents/metadata — metadata only (faster/cheaper than content)."""
+        body = _payloads.drop_none({"celexNumber": celex, "bypassCorpus": bypass_corpus})
+        return self._request(
+            "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse
+        )
+
+    def resolve(self, identifier: str) -> ResolveResponse:
+        """POST /resolve — resolve a CELEX / EUR-Lex URL / ELI / ECLI to a CELEX."""
+        return self._request(
+            "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+        )
+
+    # ── Point-in-time versions ────────────────────────────────────────
+    # Requires lex-api PR #72 deployed. Versions are LexAPI observation
+    # snapshots (content-hash changes between fetches), NOT legal in-force
+    # reconstructions; history begins at first ingestion.
+
+    def list_document_versions(
+        self, celex: str, *, language: str | None = None
+    ) -> DocumentVersionsResponse:
+        """GET /documents/{celex}/versions — version history, newest first (1 credit)."""
+        params = _payloads.drop_none({"language": language})
+        return self._request(
+            "GET",
+            f"/documents/{celex}/versions",
+            params=params,
+            cast=DocumentVersionsResponse,
+        )
+
+    def get_document_version(
+        self, celex: str, version: int, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/versions/{version} — one immutable
+        snapshot with content (1 credit)."""
+        params = _payloads.drop_none({"language": language})
+        return self._request(
+            "GET",
+            f"/documents/{celex}/versions/{version}",
+            params=params,
+            cast=DocumentVersionResponse,
+        )
+
+    def get_document_at_date(
+        self, celex: str, date: str, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/at/{date} — the snapshot observed as current on ``date``.
+
+        ``date`` is ``YYYY-MM-DD`` (end-of-day UTC inclusive). Dates before
+        the document entered the corpus raise :class:`NotFoundError` with
+        the tracking start date in the message. 1 credit.
+        """
+        params = _payloads.drop_none({"language": language})
+        return self._request(
+            "GET",
+            f"/documents/{celex}/at/{date}",
+            params=params,
+            cast=DocumentVersionResponse,
+        )
+
+    # ── Semantic search ───────────────────────────────────────────────
+    def semantic_search(
+        self,
+        query: str,
+        *,
+        hyde: bool = False,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticSearchResponse:
+        """POST /search/semantic — embedding-based CJEU case-law search.
+
+        Args:
+            query: natural-language query to embed.
+            hyde: enable HyDE query rewriting — an LLM drafts the passage a
+                relevant judgment would contain and retrieval fuses plain-query
+                and hypothetical-passage rankings. Markedly better recall on
+                short or keyword-style queries. **Bills 15 credits instead of
+                5** and adds ~1-3 s of latency. Best-effort: on generation
+                failure the search falls back to plain retrieval, the response
+                reports ``hyde=False``, and the 10-credit premium is
+                **refunded automatically** (``response.units_charged`` then
+                reflects the base rate).
+            min_score: drop results below this cosine similarity. Without it
+                the upstream applies a ~0.7 relevance floor — if you got fewer
+                results than ``limit``, lower this (e.g. 0.5) to widen recall,
+                or pass 0 to disable the floor.
+            limit: max results (clamped to the tier's maxResults).
+            language: language of returned content (default ``en``).
+            include_text: receive full document text per hit instead of the
+                default ~600-char snippet (10-50x payload increase).
+            filters: free-form filter object forwarded to the backend.
+
+        The response exposes ``hint`` (low-confidence signal), ``hyde``
+        (whether HyDE actually ran), and ``hypothetical_document`` (the
+        LLM-drafted passage, when HyDE ran).
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            hyde=hyde,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return self._request(
+            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse
+        )
+
+    def semantic_legislation_search(
+        self,
+        query: str,
+        *,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticLegislationResponse:
+        """POST /legislation/semantic — embedding-based EU legislation search.
+
+        Article-level matches (``article_ref``, ``law_id``, ``law_title``,
+        ``score``). Same ``min_score`` relevance-floor semantics as
+        :meth:`semantic_search`. HyDE is case-law only — the ``hyde`` param
+        is ignored by this endpoint, so it is not offered here.
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return self._request(
+            "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
+        )
+
+    # ── Export ────────────────────────────────────────────────────────
+    def export(
+        self,
+        *,
+        document_type: str | list[str] | None = None,
+        author: str | list[str] | None = None,
+        subdomain: str | list[str] | None = None,
+        language: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        fetched_since: str | None = None,
+        include_html: bool | None = None,
+        include_content: bool | None = None,
+        limit: int | None = None,
+    ) -> ExportStream:
+        """GET /export — stream matching corpus rows as NDJSON (BUSINESS tier).
+
+        Returns an :class:`~lexapi.export.ExportStream`: iterate it for one
+        dict per corpus row. The leading ``_meta`` envelope and trailing
+        ``_done`` line are captured on ``.meta`` / ``.done`` (with
+        ``.total`` / ``.streaming`` / ``.truncated`` from the export
+        headers). Use it as a context manager to guarantee the connection
+        is closed::
+
+            with client.export(document_type="regulation", limit=1000) as stream:
+                for row in stream:
+                    handle(row["celex"], row.get("parsedContent"))
+                print(stream.done, stream.truncated)
+
+        List filters (``document_type``, ``author``, ``subdomain``) are sent
+        comma-separated per the spec. ``fetched_since`` filters on the row's
+        ``lastSeenAt`` (ISO date-time) for incremental syncs.
+        """
+        params = export_params(
+            document_type=document_type,
+            author=author,
+            subdomain=subdomain,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            fetched_since=fetched_since,
+            include_html=include_html,
+            include_content=include_content,
+            limit=limit,
+        )
+        return ExportStream(self._stream_request("GET", "/export", params=params))
+
+    def _stream_request(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None
+    ) -> httpx.Response:
+        """Send a streaming request with the same retry/error semantics as
+        :meth:`_request`; the response body is left unread on success."""
+        attempt = 0
+        while True:
+            request = self._http.build_request(method, path, params=params)
+            try:
+                response = self._http.send(request, stream=True)
+            except httpx.HTTPError as exc:
+                wait = exception_retry_wait(exc, attempt, self._retry)
+                if wait is None:
+                    raise transport_error(exc) from exc
+                time.sleep(wait)
+                attempt += 1
+                continue
+            if response.is_success:
+                return response
+            response.read()
+            wait = status_retry_wait(method, response, attempt, self._retry)
+            if wait is None:
+                process_response(response)  # raises the typed error
+            response.close()
+            time.sleep(wait)
+            attempt += 1
 
     # ── Request core ──────────────────────────────────────────────────
     def _request(
