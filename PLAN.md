@@ -118,7 +118,7 @@ Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageI
 2. GitHub Actions release workflow on tag `v*`: build sdist+wheel with `hatch build`, publish via **PyPI Trusted Publishing (OIDC)** — no long-lived tokens.
 3. TestPyPI dry-run job on `main` merges.
 4. CHANGELOG.md (keep-a-changelog), tag = version, GitHub Release generated from changelog section.
-5. Post-publish verification job: `pip install lexapi==<v>` in a clean venv + import smoke test.
+5. Post-publish verification job: `pip install lex-api==<v>` in a clean venv + import smoke test.
 
 ## 6. Versioning policy
 
