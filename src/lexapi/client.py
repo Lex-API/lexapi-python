@@ -26,6 +26,8 @@ from lexapi.models import (
     DocumentByUrlResponse,
     DocumentMetadataResponse,
     DocumentResponse,
+    DocumentVersionResponse,
+    DocumentVersionsResponse,
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
@@ -244,6 +246,53 @@ class LexAPI:
         """POST /resolve — resolve a CELEX / EUR-Lex URL / ELI / ECLI to a CELEX."""
         return self._request(
             "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+        )
+
+    # ── Point-in-time versions ────────────────────────────────────────
+    # Requires lex-api PR #72 deployed. Versions are LexAPI observation
+    # snapshots (content-hash changes between fetches), NOT legal in-force
+    # reconstructions; history begins at first ingestion.
+
+    def list_document_versions(
+        self, celex: str, *, language: str | None = None
+    ) -> DocumentVersionsResponse:
+        """GET /documents/{celex}/versions — version history, newest first (1 credit)."""
+        params = _payloads.drop_none({"language": language})
+        return self._request(
+            "GET",
+            f"/documents/{celex}/versions",
+            params=params,
+            cast=DocumentVersionsResponse,
+        )
+
+    def get_document_version(
+        self, celex: str, version: int, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/versions/{version} — one immutable
+        snapshot with content (1 credit)."""
+        params = _payloads.drop_none({"language": language})
+        return self._request(
+            "GET",
+            f"/documents/{celex}/versions/{version}",
+            params=params,
+            cast=DocumentVersionResponse,
+        )
+
+    def get_document_at_date(
+        self, celex: str, date: str, *, language: str | None = None
+    ) -> DocumentVersionResponse:
+        """GET /documents/{celex}/at/{date} — the snapshot observed as current on ``date``.
+
+        ``date`` is ``YYYY-MM-DD`` (end-of-day UTC inclusive). Dates before
+        the document entered the corpus raise :class:`NotFoundError` with
+        the tracking start date in the message. 1 credit.
+        """
+        params = _payloads.drop_none({"language": language})
+        return self._request(
+            "GET",
+            f"/documents/{celex}/at/{date}",
+            params=params,
+            cast=DocumentVersionResponse,
         )
 
     # ── Semantic search ───────────────────────────────────────────────

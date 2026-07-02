@@ -253,6 +253,28 @@ client = LexAPI(
 )
 ```
 
+## Point-in-time versions
+
+> Requires a LexAPI deployment with the point-in-time endpoints (lex-api PR #72).
+> Versions are LexAPI *observation snapshots* — the document as fetched — not
+> legal in-force reconstructions; history begins at first ingestion.
+
+```python
+history = client.list_document_versions("32016R0679")
+print(history.current_version, history.tracked_since)
+for v in history.versions:
+    print(v.version, v.fetched_at, v.content_hash, "(current)" if v.is_current else "")
+
+snapshot = client.get_document_version("32016R0679", 2)
+print(snapshot.document.parsed_content)
+
+as_of = client.get_document_at_date("32016R0679", "2026-03-20")
+print(as_of.as_of, as_of.document.version)
+```
+
+Each call costs 1 credit. Dates before the document entered the corpus raise
+`NotFoundError` with the tracking start date in the message.
+
 ## Development
 
 ```bash

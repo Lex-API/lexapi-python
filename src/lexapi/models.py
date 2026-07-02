@@ -1158,3 +1158,96 @@ class ResolveResponse(APIResponse):
     @property
     def urls(self) -> dict:
         return _dict(self._map, "urls")
+
+
+@dataclass(frozen=True)
+class VersionEntry:
+    """One entry in a document's point-in-time version history.
+
+    Versions are LexAPI *observation snapshots* (content-hash changes
+    between fetches), not legal in-force reconstructions. ``fetched_at``
+    is when THIS version was fetched — version N is "current" from there
+    until version N+1's ``fetched_at``.
+    """
+
+    version: int | None
+    is_current: bool | None
+    content_hash: str | None
+    fetched_at: str | None
+    title: str | None
+    document_type: str | None
+    document_type_code: str | None
+    parsed_content: dict | None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> VersionEntry:
+        parsed = data.get("parsedContent")
+        return cls(
+            version=_i(data, "version"),
+            is_current=_b(data, "isCurrent"),
+            content_hash=_s(data, "contentHash"),
+            fetched_at=_s(data, "fetchedAt"),
+            title=_s(data, "title"),
+            document_type=_s(data, "documentType"),
+            document_type_code=_s(data, "documentTypeCode"),
+            parsed_content=parsed if isinstance(parsed, dict) else None,
+        )
+
+
+class DocumentVersionsResponse(APIResponse):
+    """``GET /documents/{celex}/versions`` — history list, newest first."""
+
+    @property
+    def celex(self) -> str | None:
+        return _s(self._map, "celex")
+
+    @property
+    def language(self) -> str | None:
+        return _s(self._map, "language")
+
+    @property
+    def current_version(self) -> int | None:
+        return _i(self._map, "currentVersion")
+
+    @property
+    def tracked_since(self) -> str | None:
+        """When the document first entered the corpus — history starts here."""
+        return _s(self._map, "trackedSince")
+
+    @property
+    def semantics(self) -> str | None:
+        """The server's restatement of the observation-snapshot semantics."""
+        return _s(self._map, "semantics")
+
+    @property
+    def versions(self) -> list[VersionEntry]:
+        return _parse_items(self._map, "versions", VersionEntry)
+
+
+class DocumentVersionResponse(APIResponse):
+    """``GET /documents/{celex}/versions/{version}`` and ``/at/{date}``."""
+
+    @property
+    def celex(self) -> str | None:
+        return _s(self._map, "celex")
+
+    @property
+    def language(self) -> str | None:
+        return _s(self._map, "language")
+
+    @property
+    def as_of(self) -> str | None:
+        """Present on ``/at/{date}`` responses only — the requested date."""
+        return _s(self._map, "asOf")
+
+    @property
+    def semantics(self) -> str | None:
+        return _s(self._map, "semantics")
+
+    @property
+    def document(self) -> VersionEntry:
+        return VersionEntry.from_dict(_dict(self._map, "document"))
+
+    @property
+    def corpus_version(self) -> int | None:
+        return _header_int(self.headers.get("x-corpus-version"))
