@@ -7,8 +7,10 @@ Official Python SDK for [LexAPI](https://lex-api.com) — European legal data, m
 ## Install
 
 ```bash
-pip install lexapi   # not yet published
+pip install lex-api
 ```
+
+> The PyPI distribution is `lex-api`; the import is `lexapi` — `from lexapi import LexAPI`.
 
 ## Quickstart
 
