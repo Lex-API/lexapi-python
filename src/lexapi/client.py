@@ -20,6 +20,7 @@ from lexapi._base import (
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
 from lexapi.citations import CitationsResource
+from lexapi.export import ExportStream, export_params
 from lexapi.models import (
     DocumentBatchResponse,
     DocumentByUrlResponse,
@@ -31,6 +32,7 @@ from lexapi.models import (
     SemanticLegislationResponse,
     SemanticSearchResponse,
 )
+from lexapi.webhooks import WebhooksResource
 
 R = TypeVar("R", bound=APIResponse)
 
@@ -75,6 +77,8 @@ class LexAPI:
         )
         #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
         self.citations = CitationsResource(self)
+        #: Webhook subscriptions (``client.webhooks.create(...)``, ...).
+        self.webhooks = WebhooksResource(self)
 
     # ── Meta ──────────────────────────────────────────────────────────
     def get_info(self) -> APIResponse:
@@ -322,6 +326,80 @@ class LexAPI:
         return self._request(
             "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
         )
+
+    # ── Export ────────────────────────────────────────────────────────
+    def export(
+        self,
+        *,
+        document_type: str | list[str] | None = None,
+        author: str | list[str] | None = None,
+        subdomain: str | list[str] | None = None,
+        language: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        fetched_since: str | None = None,
+        include_html: bool | None = None,
+        include_content: bool | None = None,
+        limit: int | None = None,
+    ) -> ExportStream:
+        """GET /export — stream matching corpus rows as NDJSON (BUSINESS tier).
+
+        Returns an :class:`~lexapi.export.ExportStream`: iterate it for one
+        dict per corpus row. The leading ``_meta`` envelope and trailing
+        ``_done`` line are captured on ``.meta`` / ``.done`` (with
+        ``.total`` / ``.streaming`` / ``.truncated`` from the export
+        headers). Use it as a context manager to guarantee the connection
+        is closed::
+
+            with client.export(document_type="regulation", limit=1000) as stream:
+                for row in stream:
+                    handle(row["celex"], row.get("parsedContent"))
+                print(stream.done, stream.truncated)
+
+        List filters (``document_type``, ``author``, ``subdomain``) are sent
+        comma-separated per the spec. ``fetched_since`` filters on the row's
+        ``lastSeenAt`` (ISO date-time) for incremental syncs.
+        """
+        params = export_params(
+            document_type=document_type,
+            author=author,
+            subdomain=subdomain,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            fetched_since=fetched_since,
+            include_html=include_html,
+            include_content=include_content,
+            limit=limit,
+        )
+        return ExportStream(self._stream_request("GET", "/export", params=params))
+
+    def _stream_request(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None
+    ) -> httpx.Response:
+        """Send a streaming request with the same retry/error semantics as
+        :meth:`_request`; the response body is left unread on success."""
+        attempt = 0
+        while True:
+            request = self._http.build_request(method, path, params=params)
+            try:
+                response = self._http.send(request, stream=True)
+            except httpx.HTTPError as exc:
+                wait = exception_retry_wait(exc, attempt, self._retry)
+                if wait is None:
+                    raise transport_error(exc) from exc
+                time.sleep(wait)
+                attempt += 1
+                continue
+            if response.is_success:
+                return response
+            response.read()
+            wait = status_retry_wait(method, response, attempt, self._retry)
+            if wait is None:
+                process_response(response)  # raises the typed error
+            response.close()
+            time.sleep(wait)
+            attempt += 1
 
     # ── Request core ──────────────────────────────────────────────────
     def _request(

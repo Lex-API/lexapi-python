@@ -20,6 +20,7 @@ from lexapi._base import (
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
 from lexapi.citations import AsyncCitationsResource
+from lexapi.export import AsyncExportStream, export_params
 from lexapi.models import (
     DocumentBatchResponse,
     DocumentByUrlResponse,
@@ -31,6 +32,7 @@ from lexapi.models import (
     SemanticLegislationResponse,
     SemanticSearchResponse,
 )
+from lexapi.webhooks import AsyncWebhooksResource
 
 R = TypeVar("R", bound=APIResponse)
 
@@ -64,6 +66,8 @@ class AsyncLexAPI:
         )
         #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
         self.citations = AsyncCitationsResource(self)
+        #: Webhook subscriptions (``client.webhooks.create(...)``, ...).
+        self.webhooks = AsyncWebhooksResource(self)
 
     # ── Meta ──────────────────────────────────────────────────────────
     async def get_info(self) -> APIResponse:
@@ -267,6 +271,70 @@ class AsyncLexAPI:
         return await self._request(
             "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
         )
+
+    # ── Export ────────────────────────────────────────────────────────
+    async def export(
+        self,
+        *,
+        document_type: str | list[str] | None = None,
+        author: str | list[str] | None = None,
+        subdomain: str | list[str] | None = None,
+        language: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        fetched_since: str | None = None,
+        include_html: bool | None = None,
+        include_content: bool | None = None,
+        limit: int | None = None,
+    ) -> AsyncExportStream:
+        """GET /export — see :meth:`lexapi.LexAPI.export`. Returns an
+        :class:`~lexapi.export.AsyncExportStream`::
+
+            async with await client.export(limit=1000) as stream:
+                async for row in stream:
+                    handle(row)
+        """
+        params = export_params(
+            document_type=document_type,
+            author=author,
+            subdomain=subdomain,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            fetched_since=fetched_since,
+            include_html=include_html,
+            include_content=include_content,
+            limit=limit,
+        )
+        return AsyncExportStream(
+            await self._stream_request("GET", "/export", params=params)
+        )
+
+    async def _stream_request(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None
+    ) -> httpx.Response:
+        """Streaming twin of :meth:`_request`; body left unread on success."""
+        attempt = 0
+        while True:
+            request = self._http.build_request(method, path, params=params)
+            try:
+                response = await self._http.send(request, stream=True)
+            except httpx.HTTPError as exc:
+                wait = exception_retry_wait(exc, attempt, self._retry)
+                if wait is None:
+                    raise transport_error(exc) from exc
+                await asyncio.sleep(wait)
+                attempt += 1
+                continue
+            if response.is_success:
+                return response
+            await response.aread()
+            wait = status_retry_wait(method, response, attempt, self._retry)
+            if wait is None:
+                process_response(response)  # raises the typed error
+            await response.aclose()
+            await asyncio.sleep(wait)
+            attempt += 1
 
     # ── Request core ──────────────────────────────────────────────────
     async def _request(

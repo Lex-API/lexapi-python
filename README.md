@@ -123,6 +123,50 @@ for hit in laws.results:
     print(hit.law_id, hit.article_ref, hit.law_title)
 ```
 
+### Webhooks
+
+```python
+# The secret is returned ONLY on create — store it to verify X-Webhook-Signature
+created = client.webhooks.create(
+    "New CJEU judgments",
+    "https://example.com/webhooks/lexapi",
+    {"documentType": "judgment", "author": ["court-of-justice"]},  # /search body shape
+)
+secret = created.webhook.secret
+
+hooks = client.webhooks.list()
+hook = client.webhooks.get(created.webhook.id)          # incl. 20 recent deliveries
+client.webhooks.update(hook.webhook.id, status="ACTIVE") # also resets failure counter
+result = client.webhooks.test(hook.webhook.id)           # synchronous test delivery
+if not result.ok:                                        # HTTP 200 either way
+    print(result.delivery.error_message)
+
+page = client.webhooks.deliveries(hook.webhook.id, limit=50)
+for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # walks all pages
+    print(delivery.status, delivery.response_status)
+
+client.webhooks.delete(hook.webhook.id)
+```
+
+### Corpus export (BUSINESS tier)
+
+`export()` streams NDJSON rows with constant memory; the `_meta` /
+`_done` envelopes and export headers are exposed on the stream:
+
+```python
+with client.export(document_type="regulation", date_from="2024-01-01", limit=10_000) as stream:
+    print(stream.total, stream.streaming)   # X-Export-Total / X-Export-Streaming
+    for row in stream:                      # one dict per corpus row
+        ingest(row["celex"], row.get("parsedContent"))
+    print(stream.meta)                      # leading _meta envelope
+    print(stream.done, stream.truncated)    # trailing _done line / row-cap flag
+
+# Async
+async with await client.export(fetched_since="2026-06-01T00:00:00Z") as stream:
+    async for row in stream:
+        ingest(row)
+```
+
 ### Async
 
 Every operation is also available on the async client:

@@ -850,6 +850,154 @@ class RelatedDocumentsResponse(APIResponse):
         return _s(self._map, "message")
 
 
+# ── Webhooks ────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class WebhookDelivery:
+    """A single webhook delivery attempt."""
+
+    id: str | None
+    status: str | None
+    payload: dict
+    response_status: int | None
+    response_body: str | None
+    error_message: str | None
+    attempt_count: int | None
+    next_retry_at: str | None
+    delivered_at: str | None
+    created_at: str | None
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> WebhookDelivery:
+        return cls(
+            id=_s(data, "id"),
+            status=_s(data, "status"),
+            payload=_dict(data, "payload"),
+            response_status=_i(data, "responseStatus"),
+            response_body=_s(data, "responseBody"),
+            error_message=_s(data, "errorMessage"),
+            attempt_count=_i(data, "attemptCount"),
+            next_retry_at=_s(data, "nextRetryAt"),
+            delivered_at=_s(data, "deliveredAt"),
+            created_at=_s(data, "createdAt"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class Webhook:
+    """A webhook subscription.
+
+    ``secret`` is populated **only** on the create response — the API never
+    returns it again; store it then. ``recent_deliveries`` is populated only
+    by ``GET /webhooks/{id}`` (up to 20, newest first).
+    """
+
+    id: str | None
+    name: str | None
+    url: str | None
+    status: str | None
+    search_criteria: dict
+    secret: str | None
+    last_checked: str | None
+    last_triggered: str | None
+    consecutive_failures: int | None
+    delivery_count: int | None
+    max_retries: int | None
+    created_at: str | None
+    updated_at: str | None
+    recent_deliveries: list[WebhookDelivery]
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Webhook:
+        return cls(
+            id=_s(data, "id"),
+            name=_s(data, "name"),
+            url=_s(data, "url"),
+            status=_s(data, "status"),
+            search_criteria=_dict(data, "searchCriteria"),
+            secret=_s(data, "secret"),
+            last_checked=_s(data, "lastChecked"),
+            last_triggered=_s(data, "lastTriggered"),
+            consecutive_failures=_i(data, "consecutiveFailures"),
+            delivery_count=_i(data, "deliveryCount"),
+            max_retries=_i(data, "maxRetries"),
+            created_at=_s(data, "createdAt"),
+            updated_at=_s(data, "updatedAt"),
+            recent_deliveries=_parse_items(data, "recentDeliveries", WebhookDelivery),
+            raw=data,
+        )
+
+
+class WebhookListResponse(APIResponse):
+    """``GET /webhooks`` — the caller's subscriptions (no secrets)."""
+
+    @property
+    def webhooks(self) -> list[Webhook]:
+        return _parse_items(self._map, "webhooks", Webhook)
+
+    @property
+    def count(self) -> int | None:
+        return _i(self._map, "count")
+
+
+class WebhookResponse(APIResponse):
+    """``GET /webhooks/{id}`` / ``POST /webhooks`` / ``PUT /webhooks/{id}``."""
+
+    @property
+    def webhook(self) -> Webhook:
+        return Webhook.from_dict(_dict(self._map, "webhook"))
+
+    @property
+    def message(self) -> str | None:
+        return _s(self._map, "message")
+
+
+class WebhookTestResponse(APIResponse):
+    """``POST /webhooks/{id}/test`` — synchronous test delivery result.
+
+    ``ok`` mirrors the body's ``success`` flag: ``False`` (still HTTP 200)
+    when the upstream returned non-2xx or the delivery failed — inspect
+    ``delivery.error_message``.
+    """
+
+    @property
+    def ok(self) -> bool:
+        return _b(self._map, "success") or False
+
+    @property
+    def delivery(self) -> WebhookDelivery:
+        return WebhookDelivery.from_dict(_dict(self._map, "delivery"))
+
+    @property
+    def message(self) -> str | None:
+        return _s(self._map, "message")
+
+
+class WebhookDeliveriesResponse(APIResponse):
+    """``GET /webhooks/{id}/deliveries`` — delivery history, newest first."""
+
+    @property
+    def deliveries(self) -> list[WebhookDelivery]:
+        return _parse_items(self._map, "deliveries", WebhookDelivery)
+
+    @property
+    def total(self) -> int | None:
+        """Total deliveries for this webhook (across all pages)."""
+        return _i(self._map, "total")
+
+    @property
+    def limit(self) -> int | None:
+        return _i(self._map, "limit")
+
+    @property
+    def offset(self) -> int | None:
+        return _i(self._map, "offset")
+
+
 # ── Semantic search ─────────────────────────────────────────────────────
 
 
