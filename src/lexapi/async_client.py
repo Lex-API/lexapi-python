@@ -19,6 +19,7 @@ from lexapi._base import (
 )
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
+from lexapi.citations import AsyncCitationsResource
 from lexapi.models import (
     DocumentBatchResponse,
     DocumentByUrlResponse,
@@ -27,6 +28,8 @@ from lexapi.models import (
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
+    SemanticLegislationResponse,
+    SemanticSearchResponse,
 )
 
 R = TypeVar("R", bound=APIResponse)
@@ -59,6 +62,8 @@ class AsyncLexAPI:
                 api_key, base_url, timeout, connect_timeout, user_agent_suffix
             ),
         )
+        #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
+        self.citations = AsyncCitationsResource(self)
 
     # ── Meta ──────────────────────────────────────────────────────────
     async def get_info(self) -> APIResponse:
@@ -205,6 +210,62 @@ class AsyncLexAPI:
         """POST /resolve — see :meth:`lexapi.LexAPI.resolve`."""
         return await self._request(
             "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+        )
+
+    # ── Semantic search ───────────────────────────────────────────────
+    async def semantic_search(
+        self,
+        query: str,
+        *,
+        hyde: bool = False,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticSearchResponse:
+        """POST /search/semantic — see :meth:`lexapi.LexAPI.semantic_search`.
+
+        ``hyde=True`` bills **15 credits instead of 5** (~1-3 s extra latency);
+        best-effort — on LLM failure the response reports ``hyde=False`` and
+        the 10-credit premium is refunded automatically.
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            hyde=hyde,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return await self._request(
+            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse
+        )
+
+    async def semantic_legislation_search(
+        self,
+        query: str,
+        *,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticLegislationResponse:
+        """POST /legislation/semantic — see
+        :meth:`lexapi.LexAPI.semantic_legislation_search`.
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return await self._request(
+            "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
         )
 
     # ── Request core ──────────────────────────────────────────────────

@@ -19,6 +19,7 @@ from lexapi._base import (
 )
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
+from lexapi.citations import CitationsResource
 from lexapi.models import (
     DocumentBatchResponse,
     DocumentByUrlResponse,
@@ -27,6 +28,8 @@ from lexapi.models import (
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
+    SemanticLegislationResponse,
+    SemanticSearchResponse,
 )
 
 R = TypeVar("R", bound=APIResponse)
@@ -70,6 +73,8 @@ class LexAPI:
                 api_key, base_url, timeout, connect_timeout, user_agent_suffix
             ),
         )
+        #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
+        self.citations = CitationsResource(self)
 
     # ── Meta ──────────────────────────────────────────────────────────
     def get_info(self) -> APIResponse:
@@ -235,6 +240,87 @@ class LexAPI:
         """POST /resolve — resolve a CELEX / EUR-Lex URL / ELI / ECLI to a CELEX."""
         return self._request(
             "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+        )
+
+    # ── Semantic search ───────────────────────────────────────────────
+    def semantic_search(
+        self,
+        query: str,
+        *,
+        hyde: bool = False,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticSearchResponse:
+        """POST /search/semantic — embedding-based CJEU case-law search.
+
+        Args:
+            query: natural-language query to embed.
+            hyde: enable HyDE query rewriting — an LLM drafts the passage a
+                relevant judgment would contain and retrieval fuses plain-query
+                and hypothetical-passage rankings. Markedly better recall on
+                short or keyword-style queries. **Bills 15 credits instead of
+                5** and adds ~1-3 s of latency. Best-effort: on generation
+                failure the search falls back to plain retrieval, the response
+                reports ``hyde=False``, and the 10-credit premium is
+                **refunded automatically** (``response.units_charged`` then
+                reflects the base rate).
+            min_score: drop results below this cosine similarity. Without it
+                the upstream applies a ~0.7 relevance floor — if you got fewer
+                results than ``limit``, lower this (e.g. 0.5) to widen recall,
+                or pass 0 to disable the floor.
+            limit: max results (clamped to the tier's maxResults).
+            language: language of returned content (default ``en``).
+            include_text: receive full document text per hit instead of the
+                default ~600-char snippet (10-50x payload increase).
+            filters: free-form filter object forwarded to the backend.
+
+        The response exposes ``hint`` (low-confidence signal), ``hyde``
+        (whether HyDE actually ran), and ``hypothetical_document`` (the
+        LLM-drafted passage, when HyDE ran).
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            hyde=hyde,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return self._request(
+            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse
+        )
+
+    def semantic_legislation_search(
+        self,
+        query: str,
+        *,
+        min_score: float | None = None,
+        limit: int | None = None,
+        language: str | None = None,
+        include_text: bool = False,
+        filters: dict | None = None,
+    ) -> SemanticLegislationResponse:
+        """POST /legislation/semantic — embedding-based EU legislation search.
+
+        Article-level matches (``article_ref``, ``law_id``, ``law_title``,
+        ``score``). Same ``min_score`` relevance-floor semantics as
+        :meth:`semantic_search`. HyDE is case-law only — the ``hyde`` param
+        is ignored by this endpoint, so it is not offered here.
+        """
+        body = _payloads.semantic_search_body(
+            query,
+            min_score=min_score,
+            limit=limit,
+            language=language,
+            include_text=include_text,
+            filters=filters,
+        )
+        return self._request(
+            "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
         )
 
     # ── Request core ──────────────────────────────────────────────────

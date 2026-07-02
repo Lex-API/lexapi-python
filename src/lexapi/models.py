@@ -499,6 +499,494 @@ class RecentDocumentsResponse(APIResponse):
         return value if isinstance(value, dict) else None
 
 
+# ── Citations ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CitationEdge:
+    """A single citation edge with classification and context."""
+
+    citation_type: str | None
+    context_snippet: str | None
+    target_celex: str | None
+    extracted_at: str | None
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CitationEdge:
+        return cls(
+            citation_type=_s(data, "citationType"),
+            context_snippet=_s(data, "contextSnippet"),
+            target_celex=_s(data, "targetCelex"),
+            extracted_at=_s(data, "extractedAt"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CitationDocumentGroup:
+    """All edges between one document and the queried document."""
+
+    celex_number: str | None
+    title: str | None
+    citation_count: int | None
+    citations: list[CitationEdge]
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CitationDocumentGroup:
+        return cls(
+            celex_number=_s(data, "celexNumber"),
+            title=_s(data, "title"),
+            citation_count=_i(data, "citationCount"),
+            citations=_parse_items(data, "citations", CitationEdge),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CitationNeighbour:
+    """A neighbour in the citation graph, deduplicated across edge types."""
+
+    celex_number: str | None
+    title: str | None
+    count: int | None
+    types: list[str]
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CitationNeighbour:
+        return cls(
+            celex_number=_s(data, "celexNumber"),
+            title=_s(data, "title"),
+            count=_i(data, "count"),
+            types=_str_list(data, "types"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CitationPathNode:
+    celex_number: str | None
+    title: str | None
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CitationPathNode:
+        return cls(celex_number=_s(data, "celexNumber"), title=_s(data, "title"), raw=data)
+
+
+@dataclass(frozen=True)
+class RelatedDocument:
+    """Bibliographic-coupling neighbour."""
+
+    celex_number: str | None
+    title: str | None
+    shared_count: int | None
+    shared_targets: list[str]
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RelatedDocument:
+        return cls(
+            celex_number=_s(data, "celexNumber"),
+            title=_s(data, "title"),
+            shared_count=_i(data, "sharedCount"),
+            shared_targets=_str_list(data, "sharedTargets"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CitationStatsEntry:
+    """One row of the mostCited / mostCiting top-10 lists."""
+
+    celex_number: str | None
+    title: str | None
+    cited_by_count: int | None
+    cites_count: int | None
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CitationStatsEntry:
+        return cls(
+            celex_number=_s(data, "celexNumber"),
+            title=_s(data, "title"),
+            cited_by_count=_i(data, "citedByCount"),
+            cites_count=_i(data, "citesCount"),
+            raw=data,
+        )
+
+
+class CitationExtractResponse(APIResponse):
+    """``POST /citations/extract`` — crawl a document and persist its edges."""
+
+    @property
+    def citation_count(self) -> int | None:
+        return _i(self._map, "citationCount")
+
+    @property
+    def citations(self) -> list[CitationEdge]:
+        """Edges just extracted. Empty when ``already_extracted`` is True."""
+        return _parse_items(self._map, "citations", CitationEdge)
+
+    @property
+    def already_extracted(self) -> bool:
+        return _b(self._map, "alreadyExtracted") or False
+
+    @property
+    def message(self) -> str | None:
+        return _s(self._map, "message")
+
+
+class CitedByResponse(APIResponse):
+    """``GET /citations/cited-by/{celex}`` — inbound edges, grouped by source."""
+
+    @property
+    def target_document(self) -> str | None:
+        return _s(self._map, "targetDocument")
+
+    @property
+    def cited_by(self) -> list[CitationDocumentGroup]:
+        return _parse_items(self._map, "citedBy", CitationDocumentGroup)
+
+    @property
+    def total_citations(self) -> int | None:
+        """Total inbound edges matching the filter (across all pages)."""
+        return _i(self._map, "totalCitations")
+
+    @property
+    def unique_documents(self) -> int | None:
+        return _i(self._map, "uniqueDocuments")
+
+    @property
+    def limit(self) -> int | None:
+        return _i(self._map, "limit")
+
+    @property
+    def offset(self) -> int | None:
+        return _i(self._map, "offset")
+
+
+class CitesResponse(APIResponse):
+    """``GET /citations/cites/{celex}`` — outbound edges, grouped by target."""
+
+    @property
+    def source_document(self) -> str | None:
+        return _s(self._map, "sourceDocument")
+
+    @property
+    def cites(self) -> list[CitationDocumentGroup]:
+        return _parse_items(self._map, "cites", CitationDocumentGroup)
+
+    @property
+    def total_citations(self) -> int | None:
+        return _i(self._map, "totalCitations")
+
+    @property
+    def unique_documents(self) -> int | None:
+        return _i(self._map, "uniqueDocuments")
+
+    @property
+    def limit(self) -> int | None:
+        return _i(self._map, "limit")
+
+    @property
+    def offset(self) -> int | None:
+        return _i(self._map, "offset")
+
+
+class CitationNetworkResponse(APIResponse):
+    """``GET /citations/network/{celex}`` — both directions in one call.
+
+    Counts are page-scoped; unbounded totals live in ``cites_total`` /
+    ``cited_by_total`` (``None`` on partial responses). When the server-side
+    wall-clock budget expires the endpoint still returns 200 with
+    ``partial=True`` and empty arrays — check ``.partial``.
+    """
+
+    @property
+    def document(self) -> str | None:
+        return _s(self._map, "document")
+
+    @property
+    def cites(self) -> list[CitationNeighbour]:
+        return _parse_items(_dict(self._map, "network"), "cites", CitationNeighbour)
+
+    @property
+    def cited_by(self) -> list[CitationNeighbour]:
+        return _parse_items(_dict(self._map, "network"), "citedBy", CitationNeighbour)
+
+    @property
+    def cites_count(self) -> int | None:
+        """Unique outbound neighbours in this page (deduplicated)."""
+        return _i(_dict(self._map, "network"), "citesCount")
+
+    @property
+    def cited_by_count(self) -> int | None:
+        return _i(_dict(self._map, "network"), "citedByCount")
+
+    @property
+    def cites_total(self) -> int | None:
+        """Total outbound edges (unbounded COUNT); None when partial."""
+        return _i(_dict(self._map, "paging"), "citesTotal")
+
+    @property
+    def cited_by_total(self) -> int | None:
+        return _i(_dict(self._map, "paging"), "citedByTotal")
+
+    @property
+    def limit(self) -> int | None:
+        return _i(_dict(self._map, "paging"), "limit")
+
+    @property
+    def offset(self) -> int | None:
+        return _i(_dict(self._map, "paging"), "offset")
+
+    @property
+    def partial(self) -> bool:
+        """True when the server-side time budget expired (arrays are empty)."""
+        return _b(self._map, "partial") or False
+
+    @property
+    def partial_reason(self) -> str | None:
+        return _s(self._map, "partialReason")
+
+    @property
+    def message(self) -> str | None:
+        return _s(self._map, "message")
+
+    @property
+    def timeout_ms(self) -> int | None:
+        return _i(self._map, "timeoutMs")
+
+
+class CitationStatsResponse(APIResponse):
+    """``GET /citations/stats`` — global citation-graph counters."""
+
+    @property
+    def total_citations(self) -> int | None:
+        return _i(_dict(self._map, "stats"), "totalCitations")
+
+    @property
+    def unique_source_documents(self) -> int | None:
+        return _i(_dict(self._map, "stats"), "uniqueSourceDocuments")
+
+    @property
+    def unique_target_documents(self) -> int | None:
+        return _i(_dict(self._map, "stats"), "uniqueTargetDocuments")
+
+    @property
+    def most_cited(self) -> list[CitationStatsEntry]:
+        return _parse_items(_dict(self._map, "stats"), "mostCited", CitationStatsEntry)
+
+    @property
+    def most_citing(self) -> list[CitationStatsEntry]:
+        return _parse_items(_dict(self._map, "stats"), "mostCiting", CitationStatsEntry)
+
+
+class CitationPathResponse(APIResponse):
+    """``GET /citations/path/{from}/{to}`` — shortest citation path (BFS).
+
+    ``found=False`` is a graceful HTTP-200 response, not an error.
+    """
+
+    @property
+    def found(self) -> bool:
+        return _b(self._map, "found") or False
+
+    @property
+    def path(self) -> list[CitationPathNode]:
+        return _parse_items(self._map, "path", CitationPathNode)
+
+    @property
+    def path_length(self) -> int | None:
+        """Number of edges (0 for self-loops); None when not found."""
+        return _i(self._map, "pathLength")
+
+    @property
+    def max_depth(self) -> int | None:
+        return _i(self._map, "maxDepth")
+
+    @property
+    def from_celex(self) -> str | None:
+        return _s(self._map, "from")
+
+    @property
+    def to_celex(self) -> str | None:
+        return _s(self._map, "to")
+
+    @property
+    def message(self) -> str | None:
+        return _s(self._map, "message")
+
+
+class RelatedDocumentsResponse(APIResponse):
+    """``GET /citations/related/{celex}`` — bibliographic-coupling neighbours."""
+
+    @property
+    def related(self) -> list[RelatedDocument]:
+        return _parse_items(self._map, "related", RelatedDocument)
+
+    @property
+    def celex_number(self) -> str | None:
+        return _s(self._map, "celexNumber")
+
+    @property
+    def method(self) -> str | None:
+        return _s(self._map, "method")
+
+    @property
+    def seed_citation_count(self) -> int | None:
+        return _i(self._map, "seedCitationCount")
+
+    @property
+    def count(self) -> int | None:
+        return _i(self._map, "count")
+
+    @property
+    def message(self) -> str | None:
+        """Present when the seed has no outbound citations to couple on."""
+        return _s(self._map, "message")
+
+
+# ── Semantic search ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SemanticCaseLawResult:
+    """Single case-law match from ``/search/semantic``.
+
+    Persistent document identity is ``(celex, document_type)`` — read off
+    ``metadata.celex_id`` / ``metadata.document_type``. ``case_id`` is
+    snapshot-scoped and regenerated on index rebuilds; don't store it.
+    """
+
+    score: float | None
+    text: str | None
+    case_id: str | None
+    case_name: str | None
+    case_number: str | None
+    ecli: str | None
+    court: str | None
+    celex: str | None
+    document_type: str | None
+    metadata: dict
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> SemanticCaseLawResult:
+        metadata = _dict(data, "metadata")
+        score = data.get("score")
+        return cls(
+            score=float(score) if isinstance(score, (int, float)) else None,
+            text=_s(data, "text"),
+            case_id=_s(data, "case_id"),
+            case_name=_s(data, "case_name"),
+            case_number=_s(data, "case_number"),
+            ecli=_s(data, "ecli"),
+            court=_s(data, "court"),
+            celex=_s(metadata, "celex_id"),
+            document_type=_s(metadata, "document_type"),
+            metadata=metadata,
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class SemanticLegislationResult:
+    """Single article-level match from ``/legislation/semantic``."""
+
+    score: float | None
+    text: str | None
+    article_ref: str | None
+    law_id: str | None
+    law_title: str | None
+    metadata: dict
+    raw: dict = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> SemanticLegislationResult:
+        score = data.get("score")
+        return cls(
+            score=float(score) if isinstance(score, (int, float)) else None,
+            text=_s(data, "text"),
+            article_ref=_s(data, "article_ref"),
+            law_id=_s(data, "law_id"),
+            law_title=_s(data, "law_title"),
+            metadata=_dict(data, "metadata"),
+            raw=data,
+        )
+
+
+class _SemanticResponseBase(APIResponse):
+    @property
+    def search_type(self) -> str | None:
+        return _s(self._map, "searchType")
+
+    @property
+    def query(self) -> str | None:
+        return _s(self._map, "query")
+
+    @property
+    def result_count(self) -> int | None:
+        return _i(self._map, "resultCount")
+
+    @property
+    def hint(self) -> str | None:
+        """Low-confidence signal: present only on best-effort responses.
+
+        When set, the adaptive relevance floor surfaced hits below your
+        ``min_score`` (or fell back to the noise floor) — the string says
+        what to do (rephrase, lower ``min_score``). Absent on confident
+        responses; its presence is itself the signal.
+        """
+        return _s(self._map, "hint")
+
+    @property
+    def took_ms(self) -> int | None:
+        return _i(self._map, "tookMs")
+
+    @property
+    def semantic_usage(self) -> dict | None:
+        """Legacy daily-call plans only; credit plans meter from the pool."""
+        value = self._map.get("semanticUsage")
+        return value if isinstance(value, dict) else None
+
+
+class SemanticSearchResponse(_SemanticResponseBase):
+    """``POST /search/semantic`` — ranked case-law matches.
+
+    HyDE visibility: ``hyde`` reports whether HyDE rewriting actually ran
+    (``False`` after a fallback — the 10-credit premium was auto-refunded
+    and ``credits.operation_weight`` reflects the base rate); the key is
+    absent (``None``) when the request didn't ask for HyDE.
+    ``hypothetical_document`` carries the LLM-drafted passage when HyDE ran.
+    """
+
+    @property
+    def results(self) -> list[SemanticCaseLawResult]:
+        return _parse_items(self._map, "results", SemanticCaseLawResult)
+
+    @property
+    def hyde(self) -> bool | None:
+        """Whether HyDE ran: True/False when requested, None when not."""
+        return _b(self._map, "hyde")
+
+    @property
+    def hypothetical_document(self) -> str | None:
+        """The LLM-drafted hypothetical passage (present only when HyDE ran)."""
+        return _s(self._map, "hypotheticalDocument")
+
+
+class SemanticLegislationResponse(_SemanticResponseBase):
+    """``POST /legislation/semantic`` — ranked article-level matches."""
+
+    @property
+    def results(self) -> list[SemanticLegislationResult]:
+        return _parse_items(self._map, "results", SemanticLegislationResult)
+
+
 class ResolveResponse(APIResponse):
     """``POST /resolve`` — canonical CELEX for any legal identifier."""
 

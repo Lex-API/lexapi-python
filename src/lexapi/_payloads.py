@@ -106,6 +106,37 @@ def document_by_url_body(
     )
 
 
+def semantic_search_body(
+    query: str,
+    *,
+    hyde: bool = False,
+    min_score: float | None = None,
+    limit: int | None = None,
+    language: str | None = None,
+    include_text: bool = False,
+    filters: dict | None = None,
+) -> dict[str, Any]:
+    """Body for the semantic endpoints.
+
+    ``hyde`` is only sent when True (additive param — older deployments
+    never see it); ``include_text=True`` maps to ``include: ["text"]``.
+    """
+    body = drop_none(
+        {
+            "query": query,
+            "min_score": min_score,
+            "limit": limit,
+            "language": language,
+            "filters": filters,
+        }
+    )
+    if hyde:
+        body["hyde"] = True
+    if include_text:
+        body["include"] = ["text"]
+    return body
+
+
 def recent_documents_params(
     *,
     days: int | None = None,

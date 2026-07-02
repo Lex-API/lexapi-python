@@ -73,6 +73,56 @@ celex = client.resolve("ECLI:EU:C:2020:559").celex          # CELEX/URL/ELI/ECLI
 Typed responses stay mapping-compatible (`results["totalResults"]` works) and
 every typed model keeps the raw payload on `.raw`.
 
+### Citations
+
+The typed citation graph lives under `client.citations`:
+
+```python
+client.citations.extract("32016R0679")          # crawl + persist edges (idempotent)
+
+inbound = client.citations.cited_by("31995L0046", citation_type="repeal", limit=50)
+print(inbound.total_citations, "edges from", inbound.unique_documents, "documents")
+
+outbound = client.citations.cites("32016R0679")
+network = client.citations.network("32016R0679", limit=100)
+if network.partial:  # server-side budget expired — 200, not an error
+    print(network.message)
+
+path = client.citations.path("32016R0679", "31995L0046", max_depth=4)
+if path.found:
+    print(" -> ".join(node.celex_number for node in path.path))
+
+related = client.citations.related("32016R0679", limit=10)  # bibliographic coupling
+stats = client.citations.stats()
+print(stats.most_cited[0].celex_number)
+```
+
+### Semantic search
+
+```python
+# Case law (CJEU) — concept queries, similarity-ranked
+resp = client.semantic_search(
+    "transfer of personal data to third countries",
+    min_score=0.5,   # widen recall past the ~0.7 default relevance floor
+    limit=10,
+)
+for hit in resp.results:
+    print(f"{hit.score:.2f}", hit.celex, hit.case_number, hit.case_name)
+if resp.hint:        # present only on low-confidence (best-effort) responses
+    print(resp.hint)
+
+# HyDE query rewriting for terse/keyword queries — 15 credits instead of 5
+resp = client.semantic_search("credit scoring article 22", hyde=True)
+print(resp.hyde)                   # False means the LLM fell back — premium auto-refunded
+print(resp.units_charged)          # 15 when HyDE ran, 5 after a fallback
+print(resp.hypothetical_document)  # the LLM-drafted passage (when HyDE ran)
+
+# Legislation — article-level matches (HyDE is case-law only)
+laws = client.semantic_legislation_search("right to be forgotten", limit=5)
+for hit in laws.results:
+    print(hit.law_id, hit.article_ref, hit.law_title)
+```
+
 ### Async
 
 Every operation is also available on the async client:
