@@ -22,6 +22,8 @@ dependencies = ["httpx>=0.27,<1"]
 [project.urls]
 Homepage = "https://lex-api.com"
 Documentation = "https://lex-api.com/docs"
+Repository = "https://github.com/Lex-API/lexapi-python"
+Issues = "https://github.com/Lex-API/lexapi-python/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.4"]
