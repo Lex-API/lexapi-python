@@ -15,11 +15,13 @@ itself* finishes a 4xx/5xx response (``res.on('finish')`` in the API's
 - Cloudflare **521/522/523** and "never sent" transport failures mean the
   request never reached the app, so they are safe for any method.
 
-App origin is recognised by the ``X-LexAPI-Version`` response header (set on
-every app response once lex-api #299 is deployed) or, failing that, a JSON
-object body carrying an ``error`` member (the typed envelope or the legacy
-``{"error": "..."}`` shape; proxies answer with HTML or plain text). When the
-origin is unknown the response is treated as proxy-generated.
+App origin is recognised by a response header only the app sets:
+``X-LexAPI-Version`` (every app response once lex-api #299 is deployed) or
+``RateLimit-Limit`` (the per-key limiter sets the draft-6 ``RateLimit-*``
+headers on every ``/api/v1`` response it passes, before any charge; Cloudflare,
+the gateway and the load balancer never add them to their own error pages).
+The body is never used — an intermediary can answer JSON with an ``error``
+key. When the origin is unknown the response is treated as proxy-generated.
 
 POST/PUT/DELETE are retried only on 429 and on never-reached failures. The
 read-only POSTs (search, document reads, resolve, semantic search) may also
@@ -200,22 +202,34 @@ def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
     return isinstance(usage, dict) and isinstance(usage.get("resetsAt"), str)
 
 
-def is_app_response(headers: httpx.Headers, body: Any) -> bool:
-    """Whether the LexAPI app itself produced this response (see module doc)."""
-    if headers.get("x-lexapi-version"):
-        return True
-    return isinstance(body, dict) and "error" in body
+def is_app_response(headers: httpx.Headers, body: Any = None) -> bool:
+    """Whether the LexAPI app itself produced this response (see module doc).
+
+    ``body`` is accepted for signature stability and deliberately ignored.
+    """
+    return bool(headers.get("x-lexapi-version") or headers.get("ratelimit-limit"))
+
+
+#: httpcore's message when the connection closes before the response head —
+#: the stale keep-alive case. Matched exactly (as a prefix): h11's mid-body
+#: "peer closed connection without sending complete message body" also says
+#: "without sending" but arrives after the response started, so the app may
+#: already have charged. httpx raises both as ``RemoteProtocolError`` with no
+#: other state to tell them apart.
+PRE_RESPONSE_DISCONNECT = "Server disconnected without sending a response"
 
 
 def never_reached_app(exc: BaseException) -> bool:
     """Transport failures where the request provably never got to the app:
     connect errors and timeouts, pool exhaustion (nothing was sent), and a
-    connection closed before any response byte (the stale keep-alive socket
-    the server had already dropped — httpx's "Server disconnected without
-    sending a response")."""
+    connection closed before any response byte (see
+    :data:`PRE_RESPONSE_DISCONNECT`). A close after part of the response
+    arrived is *not* in this set."""
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
         return True
-    return isinstance(exc, httpx.RemoteProtocolError) and "without sending" in str(exc)
+    return isinstance(exc, httpx.RemoteProtocolError) and str(exc).startswith(
+        PRE_RESPONSE_DISCONNECT
+    )
 
 
 def is_retryable_exception(exc: BaseException, method: str = "GET", *, free: bool = False) -> bool:

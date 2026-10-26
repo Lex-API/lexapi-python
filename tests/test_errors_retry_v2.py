@@ -239,7 +239,9 @@ def test_502_retry_uses_backoff_not_rate_window():
     # Real backoff numbers (T1): attempt 0 backoff is U(0, 0.5); the old
     # behaviour would have waited min(55, 30) = 30 s.
     config = RetryConfig(backoff_base=0.5, backoff_cap=30.0)
-    response = httpx.Response(502, json={"error": "x"}, headers={"RateLimit-Reset": "55"})
+    response = httpx.Response(
+        502, json={"error": "x"}, headers={"RateLimit-Reset": "55", "RateLimit-Limit": "120"}
+    )
     wait = retry_wait("GET", response, {"error": "x"}, 0, config)
     assert wait is not None and wait < 1
 

@@ -152,9 +152,12 @@ def test_proxy_502_not_retried_on_billed_get():
     assert calls["count"] == 1
 
 
-def test_app_502_retried_on_billed_get_via_body_or_header():
+def test_app_502_retried_on_billed_get_via_app_headers():
     client, calls = counting(
-        fail_then_ok(lambda r: httpx.Response(502, json={"error": "x"}), {"versions": []})
+        fail_then_ok(
+            lambda r: httpx.Response(502, json={"error": "x"}, headers={"RateLimit-Limit": "120"}),
+            {"versions": []},
+        )
     )
     with client:
         client.list_document_versions("32016R0679")
@@ -191,16 +194,19 @@ def test_cloudflare_522_never_reached_retried_for_any_method():
 
 def test_is_app_response():
     assert is_app_response(httpx.Headers({"X-LexAPI-Version": "2.1.0"}), None)
-    assert is_app_response(httpx.Headers(), {"error": "x"})
-    assert is_app_response(httpx.Headers(), {"success": False, "error": {"code": "INTERNAL"}})
+    assert is_app_response(httpx.Headers({"RateLimit-Limit": "120"}), None)
+    # N5: a JSON error body alone is NOT proof of app origin (an intermediary can send one)
+    assert not is_app_response(httpx.Headers(), {"error": "x"})
+    assert not is_app_response(httpx.Headers(), {"success": False, "error": {"code": "INTERNAL"}})
     assert not is_app_response(httpx.Headers(), None)
-    assert not is_app_response(httpx.Headers(), {"status": "shutting_down"})
 
 
 # ── R7: retry_read_only_posts ──────────────────────────────────────────
 
 
-APP_502 = lambda r: httpx.Response(502, json={"error": "Upstream service error"})  # noqa: E731
+APP_502 = lambda r: httpx.Response(  # noqa: E731
+    502, json={"error": "Upstream service error"}, headers={"RateLimit-Limit": "120"}
+)
 
 
 def test_r7_read_only_posts_not_retried_by_default():

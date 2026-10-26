@@ -24,7 +24,8 @@ listed under **Changed** — read those before upgrading.
   `id`, `snippet`, `language`, `chapter`, `section`.
 - **Case-law hits:** `snippet` (the default payload — `text` is only present
   with `include_text=True`), `summary`, `parties` (a list — the upstream
-  sends one; `parties_text` joins it), `decision_date`,
+  sends one, without roles; `parties_text` joins it with `"; "` — use
+  `case_name` for the citation-style title), `decision_date`,
   `jurisdiction`, `language`, `paragraph_number`. Both semantic responses:
   `max_results`, `upstream_metadata`.
 - **Documents:** `accept_languages` on `get_document` / `get_documents_batch`;
@@ -101,6 +102,10 @@ refunded.
   method**: connect errors/timeouts, pool timeouts, a stale keep-alive socket
   closed before any response byte, Cloudflare 521/522/523. Previously a stale
   keep-alive disconnect was never retried.
+  A connection closed after part of the response arrived is not in that set
+  (a billed call may already have been charged).
+- **App origin is decided by headers only** — `X-LexAPI-Version` or the
+  limiter's `RateLimit-Limit`; a JSON error body alone no longer counts.
 - **Default timeouts: response 60 s → 95 s, pool 95 s → 10 s.** `timeout` is
   a per-attempt inactivity limit (response head, then each body chunk), not
   a whole-call deadline. 95 s sits above the API's 90 s budget for one
@@ -116,7 +121,10 @@ refunded.
 - **Numeric retry hints:** values above 1e12 are epoch milliseconds and above
   1e9 epoch seconds (was: above 1e7 → epoch seconds). `X-RateLimit-Reset` is
   no longer read (the API doesn't send it).
-- **Export streams:** a mid-stream transport failure raises
+- **Export streams:** iterating a stream whose `_done` trailer was never
+  read raises `IncompleteExportError`, however it was ended (closed early,
+  `break`, leaving the `with` block); a fully read stream yields nothing again.
+  A mid-stream transport failure raises
   `LexAPIConnectionError` / `RequestTimeoutError` (was: a raw `httpx`
   exception); a missing `_done` trailer raises `IncompleteExportError`;
   `truncated` no longer reports skipped stub rows as truncation.
@@ -142,7 +150,9 @@ refunded.
 ### Deprecated
 
 - `Webhook.max_retries` — the API no longer sends `maxRetries`, so it is
-  always `None`; reading it emits a `DeprecationWarning`. Read
+  always `None`; reading it emits a `DeprecationWarning` (only on your own
+  attribute access — not from `dataclasses.asdict`/`replace`, repr, equality,
+  copy or pickle). Read
   `Webhook.retry_policy.max_attempts` (on `webhooks.get()`).
 
 ### Fixed

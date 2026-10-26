@@ -264,7 +264,7 @@ def test_case_law_hit_snippet_and_record_fields():
     assert hit.snippet.startswith("The Court examined")
     assert hit.summary == "The Court examined whether..."
     assert hit.parties == ["Land Hessen", "TR"]
-    assert hit.parties_text == "Land Hessen v TR"
+    assert hit.parties_text == "Land Hessen; TR"
     assert hit.decision_date == "2024-09-26"
     assert hit.jurisdiction == "EU"
     assert hit.language == "en"

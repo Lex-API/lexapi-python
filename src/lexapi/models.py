@@ -18,6 +18,7 @@ are surfaced as attributes — never silently dropped.
 
 from __future__ import annotations
 
+import sys
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -1317,7 +1318,9 @@ class Webhook:
     """
 
     def __getattribute__(self, name: str) -> Any:
-        if name == "max_retries":
+        # Warn on user access only: dataclasses.asdict()/replace()/astuple()
+        # read every field from inside the dataclasses module.
+        if name == "max_retries" and sys._getframe(1).f_globals.get("__name__") != "dataclasses":
             warnings.warn(
                 "Webhook.max_retries is deprecated and always None (the API no longer "
                 "sends maxRetries); use Webhook.retry_policy.max_attempts",
@@ -1489,8 +1492,13 @@ class SemanticCaseLawResult:
 
     @property
     def parties_text(self) -> str | None:
-        """``parties`` joined with ``" v "`` (``None`` when absent)."""
-        return " v ".join(self.parties) if self.parties else None
+        """``parties`` joined with ``"; "`` (``None`` when absent).
+
+        The upstream list carries one entry per party without their roles, so
+        no "applicant v defendant" order can be inferred — CJEU cases often
+        have several parties on a side (``X and Others v Commission``). For
+        the citation-style title use ``case_name``."""
+        return "; ".join(self.parties) if self.parties else None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SemanticCaseLawResult:

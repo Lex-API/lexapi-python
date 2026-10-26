@@ -17,6 +17,12 @@ per line, then a trailing ``_done`` line. :class:`ExportStream` /
   ``X-Export-Total`` / ``X-Export-Streaming`` / ``X-Export-Truncated``
   response headers, available immediately.
 
+Iterating a stream whose ``_done`` trailer was never read raises
+:class:`~lexapi.IncompleteExportError` — whether the body ended early, or the
+caller ended it with ``close()`` / ``break`` / leaving the ``with`` block
+before the trailer arrived. One stream yields its rows once; to read again,
+call ``export()`` again.
+
 Failure handling: a transport failure while reading rows raises the SDK's
 :class:`~lexapi.LexAPIConnectionError` / :class:`~lexapi.RequestTimeoutError`
 (never a raw ``httpx`` exception), and a body that ends without its ``_done``
@@ -274,7 +280,7 @@ class ExportStream(_ExportStreamBase):
                 self.rows_read += 1
                 yield self._pending.pop(0)
             if self._finished:
-                if self.done is None and self._lines is not None:
+                if self.done is None:
                     raise _incomplete(self.rows_read)
                 return
             for line in self._lines_checked():
@@ -349,7 +355,7 @@ class AsyncExportStream(_ExportStreamBase):
                 self.rows_read += 1
                 yield self._pending.pop(0)
             if self._finished:
-                if self.done is None and self._lines is not None:
+                if self.done is None:
                     raise _incomplete(self.rows_read)
                 return
             async for line in self._lines_checked():
