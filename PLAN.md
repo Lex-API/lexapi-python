@@ -1,6 +1,6 @@
 # lexapi-python — Implementation Plan
 
-Official Python SDK for [LexAPI](https://lex-api.com) (`https://lex-api.com/api/v1`, docs at <https://lex-api.com/docs>). Package name: **`lexapi`** (PyPI). Source of truth: `openapi.yaml` in the LexAPI server repo.
+Official Python SDK for [LexAPI](https://lex-api.com) (`https://lex-api.com/api/v1`, docs at <https://lex-api.com/docs>). PyPI distribution: **`lexapi-client`**; import package: **`lexapi`**. Source of truth: `openapi.yaml` in the LexAPI server repo (0.2.0 was synced against lex-api `main` @ `633eb67`, PR #298).
 
 ## 1. SDK Contract (shared across all LexAPI SDKs)
 
@@ -18,11 +18,11 @@ Source of truth: `openapi.yaml` (LexAPI 2.0.0, OpenAPI 3.1.0). Production base U
 ### 1.2 Retries and rate limiting
 
 - Default retry policy: up to 3 retries with exponential backoff + full jitter (base 500 ms, cap 30 s).
-- Retryable: HTTP 429 (`RATE_LIMITED`), 502 (`UPSTREAM_ERROR`), 504 (`TIMEOUT` — spec marks this retry-safe), and transport-level network errors. Non-retryable: all other 4xx (including 402 `CREDITS_EXHAUSTED` — retrying cannot help until top-up/reset) and 500 `INTERNAL` by default.
+- Retryable: HTTP 429 (`RATE_LIMITED`), 502 (`UPSTREAM_ERROR`), 503, 504 (`TIMEOUT` — spec marks this retry-safe), Cloudflare 520–524, and transport-level network errors. Non-retryable: all other 4xx (including 402 `CREDITS_EXHAUSTED` — retrying cannot help until top-up/reset), a legacy-plan 429 that reports an exhausted *quota* (`usage.resetsAt` in the body, no `retryAfter`), and 500 `INTERNAL` by default.
 - Server-directed wait wins over computed backoff. Resolution order for the wait duration on 429:
-  1. `Retry-After` response header (seconds; documented in the spec's `RateLimited` response),
-  2. `RateLimit-*` headers (`RateLimit-Remaining`, `RateLimit-Reset` / draft IETF forms) when present,
-  3. the JSON `retryAfter` field on the 429 error body, when present,
+  1. `Retry-After` response header (seconds; documented in the spec's `RateLimited` response) — on any status,
+  2. on a 429 only: `RateLimit-Reset` (draft-6, delta-seconds). LexAPI sends `RateLimit-*` on **every** `/api/v1` response, so outside a 429 it describes the rate window and must not drive retry waits,
+  3. on a 429 only: the JSON `retryAfter` field on the error body,
   4. computed exponential backoff as fallback.
 - Retry behaviour is configurable (max attempts, disable entirely). Idempotent GETs retry by default; non-GET calls retry only on 429/network-error-before-send unless the caller opts in.
 
@@ -51,7 +51,7 @@ Source of truth: `openapi.yaml` (LexAPI 2.0.0, OpenAPI 3.1.0). Production base U
 
 ### 1.6 Timeouts
 
-- Defaults: 10 s connect, 60 s read/overall (the API's upstream hard timeout is 90 s; staying under it means the SDK sees the typed 504 rather than cutting the connection). Both configurable per-client and per-call.
+- Defaults: 10 s connect, 95 s read/overall. The API's upstream hard timeout is 90 s and Cloudflare's proxy timeout 100 s: staying *above* 90 s means the SDK receives the server's typed (refunded) 504 rather than cutting the connection first. Both configurable per-client and per-call (`with_options`).
 
 ### 1.7 User agent
 
@@ -79,7 +79,7 @@ Priority order: **P0** first (`info` + `search` + `documentContent`), then P1 �
 | [x] | citations | `getCitationPath` | `GET /citations/path/{from}/{to}` | P2 |
 | [x] | citations | `getRelatedDocuments` | `GET /citations/related/{celexNumber}` | P2 |
 | [x] | semantic | `semanticCaseLawSearch` | `POST /search/semantic` | P2 |
-| [x] | semantic | `semanticLegislationSearch` | `POST /legislation/semantic` | P2 |
+| [x] | semantic | `semanticLegislationSearch` (incl. `asOf`, consolidated labels) | `POST /legislation/semantic` | P2 |
 | [x] | export | `exportCorpus` | `GET /export` | P3 |
 | [x] | webhooks | `listWebhooks` / `createWebhook` | `GET/POST /webhooks` | P3 |
 | [x] | webhooks | `getWebhook` / `updateWebhook` / `deleteWebhook` | `GET/PUT/DELETE /webhooks/{id}` | P3 |
@@ -88,6 +88,10 @@ Priority order: **P0** first (`info` + `search` + `documentContent`), then P1 �
 | [x] | versions | `listDocumentVersions` | `GET /documents/{celex}/versions` | P3 |
 | [x] | versions | `getDocumentVersion` | `GET /documents/{celex}/versions/{version}` | P3 |
 | [x] | versions | `getDocumentAtDate` | `GET /documents/{celex}/at/{date}` | P3 |
+| [x] | helpers | `iterCitedBy` / `iterCites` / `iterDeliveries` | offset pagination over the list endpoints | P3 |
+| [x] | helpers | `verifyWebhook` | HMAC-SHA256 `X-Webhook-Signature` + replay window | P3 |
+
+Deliberately **not** covered: the national-law routes (`/{jurisdiction}/documents…`, `/{jurisdiction}/search/semantic`, `/{jurisdiction}/legislation/semantic`) — dark until launch and absent from `openapi.yaml`; the deprecated `POST /parse` alias of `/search`; `/corpus/*` (feed-key, internal).
 
 Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageInfo`, `CreditsInfo` (P0); search filter enums driven from `/info` capability map where possible instead of hardcoding.
 ## 3. Language-specific architecture
@@ -98,7 +102,7 @@ Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageI
   - `lexapi/client.py` — `LexAPI` client, `_request()` core (auth header, UA, retries, timeout), one method per operation grouped by resource namespaces (`client.search(...)`, `client.documents.content(...)`, `client.citations.cited_by(...)`, `client.webhooks.list(...)`).
   - `lexapi/errors.py` — `LexAPIError` base carrying `code/message/details/status`; subclasses per stable code (`NotFoundError`, `RateLimitedError` with `retry_after`, `CreditsExhaustedError`, ...). Tolerates typed envelope and legacy bare `{error}`.
   - `lexapi/models.py` — typed dataclasses/`TypedDict`s for `SubscriptionInfo`, `UsageInfo`, `CreditsInfo`, search hits, `DocumentContent`; generated-then-curated from the OpenAPI schema (no runtime codegen dependency).
-  - `lexapi/pagination.py` — `iter_pages()` / `iter_results()` generators honoring tier caps and surfacing `truncated`/`partial`.
+  - Pagination lives on the resources (`citations.iter_cited_by` / `iter_cites`, `webhooks.iter_deliveries`). `/search` has no page cursor — `maxPages` is the whole request — so there is no search iterator; capping is surfaced via `truncated`/`partial`.
   - `lexapi/_meta.py` — version + user-agent string (`lexapi-python/<version>`).
 - **Responses:** thin `APIResponse` wrapper exposing `.data`, `.usage`, `.credits`, `.units_charged`, `.credits_remaining`, `.resets_at`.
 - **Typing:** fully typed, `py.typed` marker, mypy strict in CI. Python ≥ 3.9.
@@ -114,7 +118,7 @@ Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageI
 
 ## 5. Publishing pipeline (PyPI) — plan only, nothing published yet
 
-1. Reserve the `lexapi` name on PyPI (manual first upload of 0.1.0 once ready — **not now**).
+1. ~~Reserve the name on PyPI~~ — `lexapi-client` 0.1.0 was uploaded manually on 2026-07-02.
 2. GitHub Actions release workflow on tag `v*`: build sdist+wheel with `hatch build`, publish via **PyPI Trusted Publishing (OIDC)** — no long-lived tokens.
 3. TestPyPI dry-run job on `main` merges.
 4. CHANGELOG.md (keep-a-changelog), tag = version, GitHub Release generated from changelog section.
