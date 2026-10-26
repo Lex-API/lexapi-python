@@ -193,6 +193,13 @@ refunded.
   and `resets_at` from the body's `resetsAt`; it is never retried. Servers
   without the `code` are still recognised by the old shape check.
   (PLAN.md §1.2/§1.3.)
+- **Export parameters for API 2.3.0** (lex-api #303): `document_type_code`
+  (a type family) and `changed_since` (rows whose text changed), on `export()`
+  of both clients. A naive `datetime` for `fetched_since` / `changed_since`
+  and a `limit` that is not a positive integer raise `ValueError` before the
+  request (the API answers 400 to both). Docstrings and README describe the
+  per-row billing and the filter semantics of API 2.3.0. **Publish only after
+  lex-api #303 is deployed.**
 
 ## [0.1.0] — 2026-07-02
 

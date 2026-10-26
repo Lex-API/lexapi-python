@@ -510,10 +510,11 @@ def test_w2_max_retries_warns():
 # ── D1 / M4 / M5 / K: copy and packaging ───────────────────────────────
 
 
-def test_d1_no_per_row_export_price_in_docs():
-    assert "per row" not in (LexAPI.export.__doc__ or "")
-    assert "per row" not in (AsyncLexAPI.export.__doc__ or "")
-    assert "per row" not in (ROOT / "README.md").read_text()
+def test_d1_export_price_in_docs_is_the_api_23_model():
+    # PLAN.md §1.8: stated exactly as lex-api #303 (API 2.3.0) bills it.
+    for doc in (LexAPI.export.__doc__ or "", AsyncLexAPI.export.__doc__ or ""):
+        assert "1 credit per row written, at least 1 per" in doc
+        assert "CreditsExhaustedError" in doc
 
 
 def test_m4_m5_docstrings_name_real_limits():

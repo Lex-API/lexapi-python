@@ -84,28 +84,51 @@ def _bool(value: bool | None) -> str | None:
     return "true" if value else "false"
 
 
-def _iso_datetime(value: str | _dt.datetime | None) -> str | None:
+def _iso_datetime(name: str, value: str | _dt.datetime | None) -> str | None:
+    """A ``datetime`` must be timezone-aware: the API rejects a date-time
+    without a timezone (400), so a naive one is refused here, before any
+    request. Strings pass through; the server validates them."""
     if isinstance(value, _dt.datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(
+                f"{name} must be timezone-aware (the API rejects a date-time without a "
+                "timezone); e.g. datetime(..., tzinfo=datetime.timezone.utc)"
+            )
         return value.isoformat()
+    return value
+
+
+def _limit(value: int | None) -> int | None:
+    """The API accepts a positive integer only (anything else is a 400)."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"limit must be a positive integer, got {value!r}")
     return value
 
 
 def export_params(
     *,
     document_type: str | list[str] | None = None,
+    document_type_code: str | list[str] | None = None,
     author: str | list[str] | None = None,
     subdomain: str | list[str] | None = None,
     language: str | None = None,
     date_from: DateLike | None = None,
     date_to: DateLike | None = None,
     fetched_since: str | _dt.datetime | None = None,
+    changed_since: str | _dt.datetime | None = None,
     include_html: bool | None = None,
     include_content: bool | None = None,
     include_stubs: bool | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
     """Query params for /export. List values are joined comma-separated;
-    booleans are sent as ``true`` / ``false``; dates may be ``datetime.date``."""
+    booleans are sent as ``true`` / ``false``; dates may be ``datetime.date``;
+    ``fetched_since`` / ``changed_since`` may be timezone-aware
+    ``datetime.datetime`` objects (a naive one raises ``ValueError``), and
+    ``limit`` must be a positive integer (else ``ValueError``) — both mirror
+    the API's 400s."""
 
     def _join(value: str | list[str] | None) -> str | None:
         if isinstance(value, list):
@@ -115,16 +138,18 @@ def export_params(
     return drop_none(
         {
             "documentType": _join(document_type),
+            "documentTypeCode": _join(document_type_code),
             "author": _join(author),
             "subdomain": _join(subdomain),
             "language": language,
             "dateFrom": iso_date(date_from),
             "dateTo": iso_date(date_to),
-            "fetchedSince": _iso_datetime(fetched_since),
+            "fetchedSince": _iso_datetime("fetched_since", fetched_since),
+            "changedSince": _iso_datetime("changed_since", changed_since),
             "includeHtml": _bool(include_html),
             "includeContent": _bool(include_content),
             "includeStubs": _bool(include_stubs),
-            "limit": limit,
+            "limit": _limit(limit),
         }
     )
 

@@ -236,12 +236,24 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)
 
 `export()` streams NDJSON rows with constant memory; the `_meta` / `_done`
-envelopes and export headers are exposed on the stream. For the credit cost
-see the [pricing page](https://lex-api.com/pricing?ref=pypi-sdk) and the
-response's credit fields.
+envelopes and export headers are exposed on the stream.
+
+**Billing (credit plans, API 2.3.0):** 1 credit per row written, at least 1 per
+export. The call is admitted for 1 credit, the matching rows are counted, and
+the rest of 1 credit per row it can return is reserved; a pool that cannot
+cover it raises `CreditsExhaustedError` before anything streams. Unwritten
+rows are refunded when the stream ends: `stream.done["credits"]["charged"]`.
+
+**Filters:** `document_type` matches the stored label exactly, ignoring case;
+`document_type_code="regulation"` selects the family (incl. implementing and
+delegated regulations); `author` matches whole values; `date_from` / `date_to`
+are `YYYY-MM-DD`; `changed_since` returns rows whose text changed (the
+cheapest incremental sync) and `fetched_since` rows written to at all — both an
+ISO date or a timezone-aware date-time (a naive `datetime` raises
+`ValueError`); `limit` is a positive integer.
 
 ```python
-with client.export(document_type="regulation", date_from="2024-01-01", limit=10_000) as stream:
+with client.export(document_type_code="regulation", date_from="2024-01-01", limit=10_000) as stream:
     print(stream.total, stream.streaming)  # X-Export-Total / X-Export-Streaming
     for row in stream:  # one dict per corpus row
         ingest(row["celex"], row.get("parsedContent"))
