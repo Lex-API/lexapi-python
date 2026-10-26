@@ -9,7 +9,7 @@ description = "Official Python SDK for LexAPI - European legal data, made querya
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
-authors = [{ name = "LexAPI", email = "support@lex-api.com" }]
+authors = [{ name = "Arieta Labs Ltd", email = "support@lex-api.com" }]
 keywords = ["eur-lex", "eu", "legal", "law", "api", "sdk"]
 classifiers = [
   "Development Status :: 3 - Alpha",
