@@ -190,11 +190,17 @@ def server_wait_hint(headers: httpx.Headers, body: Any, status: int | None = Non
 def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
     """True for a 429 that reports an exhausted quota rather than a rate limit.
 
-    Legacy daily-call plans (``"Daily quota exceeded"``) and the legacy
-    monthly semantic quota answer 429 with a ``usage`` block carrying
-    ``resetsAt`` and no ``retryAfter`` / ``Retry-After``.
+    lex-api #304 on: the body's top-level ``code`` is ``QUOTA_EXHAUSTED``
+    (whatever else the response carries). Fallback for older servers: legacy
+    daily-call plans (``"Daily quota exceeded"``) and the legacy monthly
+    semantic quota answer 429 with a ``usage`` block carrying ``resetsAt``
+    and no ``retryAfter`` / ``Retry-After``.
     """
-    if status != 429 or headers.get("retry-after") is not None:
+    if status != 429:
+        return False
+    if isinstance(body, dict) and body.get("code") == "QUOTA_EXHAUSTED":
+        return True
+    if headers.get("retry-after") is not None:
         return False
     if not isinstance(body, dict) or "retryAfter" in body:
         return False

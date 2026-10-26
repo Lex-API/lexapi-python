@@ -27,8 +27,13 @@ Failure handling: a transport failure while reading rows raises the SDK's
 :class:`~lexapi.LexAPIConnectionError` / :class:`~lexapi.RequestTimeoutError`
 (never a raw ``httpx`` exception), and a body that ends without its ``_done``
 trailer raises :class:`~lexapi.IncompleteExportError` after the rows that did
-arrive — a cut-short export never looks complete. Lines that are not JSON
-objects are counted on ``stream.invalid_lines`` rather than dropped silently.
+arrive — a cut-short export never looks complete. So does a ``_done`` line
+that says ``"complete": false``, and a line whose only key is ``_error``: such
+a line is a server failure signal, never yielded as a row (its ``code`` /
+``message`` are on the error's ``details``). Unknown ``_done`` fields
+(``truncatedBy``, ``credits``, ...) are kept on ``stream.done`` and otherwise
+ignored. Lines that are not JSON objects are counted on
+``stream.invalid_lines`` rather than dropped silently.
 
 Both classes are context managers; the underlying HTTP response is closed
 when iteration finishes, on ``close()``/``aclose()``, or on context exit.
@@ -54,10 +59,22 @@ def _transport_error(exc: httpx.HTTPError) -> LexAPIConnectionError:
     return LexAPIConnectionError(f"Export stream failed: {exc}")
 
 
-def _incomplete(rows: int) -> IncompleteExportError:
+def _incomplete(
+    rows: int, error: dict[str, Any] | None = None, done_incomplete: bool = False
+) -> IncompleteExportError:
+    if error is not None:
+        reason = (
+            "the server reported an error mid-stream "
+            f"({error.get('code', 'UNKNOWN')}: {error.get('message', '')})"
+        )
+    elif done_incomplete:
+        reason = "its _done trailer says complete: false"
+    else:
+        reason = "it ended without its _done trailer"
     return IncompleteExportError(
-        f"Export stream ended without its _done trailer after {rows} row(s); "
-        "the result is incomplete — retry, or resume with fetched_since / a date window."
+        f"Export stream is incomplete after {rows} row(s): {reason}; "
+        "retry, or resume with fetched_since / a date window.",
+        details=error,
     )
 
 
@@ -135,6 +152,8 @@ class _ExportStreamBase:
         self.invalid_lines = 0
         #: Document rows yielded so far.
         self.rows_read = 0
+        #: A server ``_error`` line, if one arrived (never yielded as a row).
+        self.error: dict[str, Any] | None = None
         self.headers = response.headers
 
     @property
@@ -172,8 +191,19 @@ class _ExportStreamBase:
 
     @property
     def complete(self) -> bool:
-        """True once the ``_done`` trailer has been read."""
-        return self.done is not None
+        """True once a ``_done`` trailer has been read that does not say
+        ``"complete": false``, and no ``_error`` line arrived."""
+        return (
+            self.done is not None and self.done.get("complete") is not False and self.error is None
+        )
+
+    def _raise_if_incomplete(self) -> None:
+        if not self.complete:
+            raise _incomplete(
+                self.rows_read,
+                self.error,
+                done_incomplete=self.done is not None and self.done.get("complete") is False,
+            )
 
     @property
     def written(self) -> int | None:
@@ -222,6 +252,11 @@ class _ExportStreamBase:
         if "_done" in row:
             self.done = _envelope(row, "_done")
             return ("done", self.done)
+        if set(row) == {"_error"}:
+            # A failure signal, never a document row.
+            value = row["_error"]
+            self.error = value if isinstance(value, dict) else {"message": str(value)}
+            return ("error", self.error)
         return ("row", row)
 
 
@@ -267,6 +302,8 @@ class ExportStream(_ExportStreamBase):
                 continue
             if kind[0] == "meta":
                 return self.meta
+            if kind[0] == "error":
+                continue
             if kind[0] == "done":
                 self.close()
                 return self.meta
@@ -280,19 +317,17 @@ class ExportStream(_ExportStreamBase):
                 self.rows_read += 1
                 yield self._pending.pop(0)
             if self._finished:
-                if self.done is None:
-                    raise _incomplete(self.rows_read)
+                self._raise_if_incomplete()
                 return
             for line in self._lines_checked():
                 kind = self._classify(line)
-                if kind is None or kind[0] == "meta":
+                if kind is None or kind[0] in ("meta", "error"):
                     continue
                 if kind[0] == "done":
                     break
                 self.rows_read += 1
                 yield kind[1]
-            if self.done is None:
-                raise _incomplete(self.rows_read)
+            self._raise_if_incomplete()
         finally:
             self.close()
 
@@ -342,6 +377,8 @@ class AsyncExportStream(_ExportStreamBase):
                 continue
             if kind[0] == "meta":
                 return self.meta
+            if kind[0] == "error":
+                continue
             if kind[0] == "done":
                 await self.aclose()
                 return self.meta
@@ -355,19 +392,17 @@ class AsyncExportStream(_ExportStreamBase):
                 self.rows_read += 1
                 yield self._pending.pop(0)
             if self._finished:
-                if self.done is None:
-                    raise _incomplete(self.rows_read)
+                self._raise_if_incomplete()
                 return
             async for line in self._lines_checked():
                 kind = self._classify(line)
-                if kind is None or kind[0] == "meta":
+                if kind is None or kind[0] in ("meta", "error"):
                     continue
                 if kind[0] == "done":
                     break
                 self.rows_read += 1
                 yield kind[1]
-            if self.done is None:
-                raise _incomplete(self.rows_read)
+            self._raise_if_incomplete()
         finally:
             await self.aclose()
 

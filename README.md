@@ -336,7 +336,7 @@ from lexapi import (
     NotFoundError,  # 404 NOT_FOUND
     InvalidCelexError,  # 400 INVALID_CELEX
     InvalidParamsError,  # 400 INVALID_PARAMS (e.g. an invalid as_of)
-    RateLimitedError,  # 429 — .retry_after; .quota_exhausted / .resets_at on legacy quotas
+    RateLimitedError,  # 429 — .retry_after; code QUOTA_EXHAUSTED / .quota_exhausted / .resets_at on legacy quotas
     CreditsExhaustedError,  # 402 CREDITS_EXHAUSTED — .resets_at, .operation, .weight, .available
     TierForbiddenError,  # 403 TIER_FORBIDDEN — .upgrade_url on legacy tier gates
     UpstreamError,  # 502 UPSTREAM_ERROR
@@ -345,7 +345,7 @@ from lexapi import (
     RequestTimeoutError,  # the SDK's own timeout elapsed
     ServiceUnavailableError,  # 503 (SDK code SERVICE_UNAVAILABLE; subclass of UpstreamError)
     InvalidResponseError,  # a 2xx whose body is not JSON (e.g. a proxy's HTML page)
-    IncompleteExportError,  # export stream ended without its _done trailer
+    IncompleteExportError,  # export stream ended without a complete _done trailer
 )
 
 try:
@@ -377,7 +377,7 @@ POSTs, including webhook create/update/test, are never retried on a 5xx by
 default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
 read-only POSTs (search, document reads, resolve, semantic search) on an
 app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
-is not retried (it can't succeed before `resets_at`), and neither is a 402.
+(`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
 
 ```python
 from lexapi import LexAPI, RetryConfig

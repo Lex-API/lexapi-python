@@ -8,10 +8,11 @@ Some endpoint classes still answer in the legacy bare shape
 ``{"error": "<text>", "message": "...", ...}`` (API-key auth 401s, every 429,
 search/batch/webhook validation 400s, the ``/export`` and legacy semantic
 tier gates, semantic upstream 502/504s). The parser tolerates both shapes; on
-the legacy shape the code is derived from the HTTP status, and a top-level
-``details`` (validation errors) is preserved. Unknown ``error.code`` values
-never crash the parser — the raw code string is preserved on the generic
-:class:`LexAPIError` (forward compatibility).
+the legacy shape the code is the body's top-level string ``code`` when present
+(lex-api #304: ``RATE_LIMITED``, ``QUOTA_EXHAUSTED``, ...), else derived from
+the HTTP status, and a top-level ``details`` (validation errors) is preserved.
+Unknown ``error.code`` values never crash the parser — the raw code string
+is preserved on the generic :class:`LexAPIError` (forward compatibility).
 
 Two distinct "timeout" errors exist by design:
 
@@ -136,6 +137,8 @@ class NotFoundError(LexAPIError):
 
 def _usage_resets_at(body: Any) -> str | None:
     if isinstance(body, dict):
+        if isinstance(body.get("resetsAt"), str):
+            return str(body["resetsAt"])
         usage = body.get("usage")
         if isinstance(usage, dict) and isinstance(usage.get("resetsAt"), str):
             return str(usage["resetsAt"])
@@ -143,15 +146,18 @@ def _usage_resets_at(body: Any) -> str | None:
 
 
 class RateLimitedError(LexAPIError):
-    """429 ``RATE_LIMITED`` — per-minute rate limit, or a legacy quota.
+    """429 ``RATE_LIMITED`` — per-minute rate limit — or ``QUOTA_EXHAUSTED``,
+    a legacy quota.
 
     ``retry_after`` carries the server-directed wait in seconds when the
     server provided one (``Retry-After`` header preferred; see
     :mod:`lexapi._retry` for the resolution order).
 
     Legacy daily-call plans (and the legacy monthly semantic quota) also
-    answer 429 when the *quota* is used up; then :attr:`quota_exhausted` is
-    True and :attr:`resets_at` says when it refills. Those are not retried
+    answer 429 when the *quota* is used up: ``code`` is ``QUOTA_EXHAUSTED``
+    (servers before lex-api #304 sent no code; the quota is then recognised
+    by its shape), :attr:`quota_exhausted` is True, :attr:`resets_at` says
+    when it refills, and ``retry_after`` is ``None``. Those are not retried
     automatically.
     """
 
@@ -159,12 +165,16 @@ class RateLimitedError(LexAPIError):
 
     @property
     def resets_at(self) -> str | None:
-        """``usage.resetsAt`` from a legacy quota 429 (ISO-8601), if present."""
+        """When a legacy quota refills (ISO-8601): the body's ``resetsAt``,
+        else ``usage.resetsAt``, if present."""
         return _usage_resets_at(self.body)
 
     @property
     def quota_exhausted(self) -> bool:
         """True when the 429 reports an exhausted quota, not a rate limit."""
+        if self.code == "QUOTA_EXHAUSTED":
+            return True
+        # Fallback for servers before lex-api #304 (no top-level code).
         return (
             isinstance(self.body, dict)
             and "retryAfter" not in self.body
@@ -276,8 +286,9 @@ class InvalidResponseError(LexAPIError):
 
 
 class IncompleteExportError(LexAPIError):
-    """An export stream ended without its ``_done`` trailer — the server
-    stopped mid-export, so the rows received are not the whole result."""
+    """An export stream is not the whole result: it ended without its
+    ``_done`` trailer, its ``_done`` said ``"complete": false``, or the
+    server sent an ``_error`` line (then on ``details``)."""
 
     default_code = "INCOMPLETE_EXPORT"
 
@@ -308,6 +319,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "INVALID_URL": InvalidURLError,
     "NOT_FOUND": NotFoundError,
     "RATE_LIMITED": RateLimitedError,
+    "QUOTA_EXHAUSTED": RateLimitedError,
     "TIER_FORBIDDEN": TierForbiddenError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "UPSTREAM_ERROR": UpstreamError,
@@ -345,9 +357,10 @@ def error_from_response(status: int, body: Any, retry_after: float | None = None
     - typed: ``{"success": false, "error": {"code", "message", "details"}}``
       — ``code`` is authoritative;
     - legacy: ``{"error": "<text>", "message": "...", "details": [...]}`` —
-      ``error`` is human text, never parsed as a code; the code comes from
-      the HTTP status. ``message`` / ``details`` at the top level are kept
-      (also on bodies that carry no ``error`` at all).
+      ``error`` is human text, never parsed as a code; the code is the
+      top-level string ``code`` when present (lex-api #304), else derived
+      from the HTTP status. ``message`` / ``details`` at the top level are
+      kept (also on bodies that carry no ``error`` at all).
 
     Unknown ``error.code`` values fall back to the base :class:`LexAPIError`
     with the raw code preserved.
@@ -362,12 +375,16 @@ def error_from_response(status: int, body: Any, retry_after: float | None = None
             message = err.get("message") or message
             details = err.get("details")
         elif isinstance(err, str):  # legacy bare {"error": "...", "message": "..."}
+            if isinstance(body.get("code"), str) and body["code"]:
+                code = body["code"]
             legacy_message = body.get("message")
             message = err
             if isinstance(legacy_message, str) and legacy_message != err:
                 message = f"{err}: {legacy_message}"
             details = body.get("details")
         else:
+            if isinstance(body.get("code"), str) and body["code"]:
+                code = body["code"]
             if isinstance(body.get("message"), str):
                 message = body["message"]
             details = body.get("details")
