@@ -6,23 +6,65 @@ older deployments never see parameters they don't know.
 
 from __future__ import annotations
 
+import datetime as _dt
+from collections.abc import Sequence
 from typing import Any, Union
+from urllib.parse import quote
 
 # Filters that accept a single value or a list (the API accepts both).
 OneOrMany = Union[str, "list[str]"]
 IntOrMany = Union[int, "list[int]"]
+#: A calendar date: ``YYYY-MM-DD`` string or a :class:`datetime.date`.
+DateLike = Union[str, _dt.date]
 
 
 def drop_none(mapping: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in mapping.items() if value is not None}
 
 
+def seg(value: object) -> str:
+    """Percent-encode one URL path segment (a CELEX, webhook id, date, ...).
+
+    CELEX characters (letters, digits, ``( ) . _ -``) pass through unchanged
+    — ``32008R1272R(01)`` and ``02016R0679-20180524`` stay readable — while a
+    stray ``/``, ``?`` or ``#`` can no longer change which endpoint is hit.
+    Empty, ``.`` and ``..`` segments raise :class:`ValueError`.
+    """
+    text = str(value)
+    if text in ("", ".", ".."):
+        # httpx (like every URL library) resolves dot-segments, so `..`
+        # would silently hit the parent endpoint; an empty id would too.
+        raise ValueError(f"invalid path segment {text!r}")
+    return quote(text, safe="()._-~")
+
+
+def iso_date(value: DateLike | None) -> str | None:
+    """Normalise a date argument to ``YYYY-MM-DD`` (strings pass through as-is).
+
+    A :class:`datetime.datetime` is reduced to its date part; the server
+    validates the string form and answers 400 on a malformed one.
+    """
+    if value is None:
+        return None
+    if isinstance(value, _dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, _dt.date):
+        return value.isoformat()
+    return value
+
+
+def _accept_languages(value: str | list[str] | None) -> str | list[str] | None:
+    if value is None or isinstance(value, str):
+        return value
+    return list(value)
+
+
 def search_body(
     query: str | None = None,
     *,
     text_scope: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    date_from: DateLike | None = None,
+    date_to: DateLike | None = None,
     year: IntOrMany | None = None,
     month: IntOrMany | None = None,
     document_type: OneOrMany | None = None,
@@ -32,13 +74,14 @@ def search_body(
     subdomain: OneOrMany | None = None,
     language: str | None = None,
     max_pages: int | None = None,
+    fresh: bool | None = None,
 ) -> dict[str, Any]:
     return drop_none(
         {
             "query": query,
             "textScope": text_scope,
-            "dateFrom": date_from,
-            "dateTo": date_to,
+            "dateFrom": iso_date(date_from),
+            "dateTo": iso_date(date_to),
             "year": year,
             "month": month,
             "documentType": document_type,
@@ -48,6 +91,7 @@ def search_body(
             "subdomain": subdomain,
             "language": language,
             "maxPages": max_pages,
+            "fresh": fresh,
         }
     )
 
@@ -57,6 +101,7 @@ def document_content_body(
     *,
     bypass_corpus: bool | None = None,
     language: str | None = None,
+    accept_languages: str | list[str] | None = None,
     include: OneOrMany | None = None,
     fields: OneOrMany | None = None,
     article_id: str | None = None,
@@ -66,6 +111,7 @@ def document_content_body(
             "celexNumber": celex,
             "bypassCorpus": bypass_corpus,
             "language": language,
+            "acceptLanguages": _accept_languages(accept_languages),
             "include": include,
             "fields": fields,
             "articleId": article_id,
@@ -78,6 +124,7 @@ def document_batch_body(
     *,
     bypass_corpus: bool | None = None,
     language: str | None = None,
+    accept_languages: str | list[str] | None = None,
     include: OneOrMany | None = None,
     fields: OneOrMany | None = None,
     article_id: str | None = None,
@@ -87,6 +134,7 @@ def document_batch_body(
             "celexNumbers": list(celexes),
             "bypassCorpus": bypass_corpus,
             "language": language,
+            "acceptLanguages": _accept_languages(accept_languages),
             "include": include,
             "fields": fields,
             "articleId": article_id,
@@ -97,12 +145,19 @@ def document_batch_body(
 def document_by_url_body(
     url: str,
     *,
+    bypass_corpus: bool | None = None,
     include: OneOrMany | None = None,
     fields: OneOrMany | None = None,
     article_id: str | None = None,
 ) -> dict[str, Any]:
     return drop_none(
-        {"url": url, "include": include, "fields": fields, "articleId": article_id}
+        {
+            "url": url,
+            "bypassCorpus": bypass_corpus,
+            "include": include,
+            "fields": fields,
+            "articleId": article_id,
+        }
     )
 
 
@@ -114,12 +169,14 @@ def semantic_search_body(
     limit: int | None = None,
     language: str | None = None,
     include_text: bool = False,
-    filters: dict | None = None,
+    filters: dict[str, Any] | None = None,
+    as_of: DateLike | None = None,
 ) -> dict[str, Any]:
     """Body for the semantic endpoints.
 
     ``hyde`` is only sent when True (additive param — older deployments
-    never see it); ``include_text=True`` maps to ``include: ["text"]``.
+    never see it); ``include_text=True`` maps to ``include: ["text"]``;
+    ``as_of`` (legislation only) is sent as ``asOf`` in ``YYYY-MM-DD`` form.
     """
     body = drop_none(
         {
@@ -128,6 +185,7 @@ def semantic_search_body(
             "limit": limit,
             "language": language,
             "filters": filters,
+            "asOf": iso_date(as_of),
         }
     )
     if hyde:
@@ -137,24 +195,99 @@ def semantic_search_body(
     return body
 
 
+def _single(name: str, value: Any) -> str | None:
+    """A filter the endpoint honours with one value only.
+
+    A one-item list/tuple is unwrapped (0.2.0 pre-releases accepted lists);
+    more than one raises, because the API would silently use only the first.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1 and isinstance(value[0], str):
+            return value[0]
+        raise ValueError(
+            f"{name} takes a single value on /documents/recent (the API uses only the first "
+            f"of several); got {list(value)!r}. Use search() for multi-value filters."
+        )
+    raise TypeError(f"{name} must be a string, got {type(value).__name__}")
+
+
 def recent_documents_params(
     *,
     days: int | None = None,
     document_type: str | None = None,
-    author: str | None = None,
+    author: OneOrMany | None = None,
     domain: str | None = None,
     subdomain: str | None = None,
     language: str | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
+    """Query params for /documents/recent.
+
+    ``document_type`` and ``subdomain`` are single-valued: the endpoint builds
+    one EUR-Lex query without the fan-out ``/search`` does, and EUR-Lex honours
+    only the first ``FM_CODED`` / ``DTS_SUBDOM`` (lex-api
+    ``server/utils/urlBuilder.js``). ``author`` lists are sent as repeated params.
+    """
     return drop_none(
         {
             "days": days,
-            "documentType": document_type,
+            "documentType": _single("document_type", document_type),
             "author": author,
             "domain": domain,
-            "subdomain": subdomain,
+            "subdomain": _single("subdomain", subdomain),
             "language": language,
             "limit": limit,
         }
     )
+
+
+def webhook_create_body(
+    name: str,
+    url: str,
+    search_criteria: dict[str, Any] | None = None,
+    *,
+    watch_celex: Sequence[str] | None = None,
+    secret: str | None = None,
+) -> dict[str, Any]:
+    return drop_none(
+        {
+            "name": name,
+            "url": url,
+            "searchCriteria": search_criteria,
+            "watchCelex": list(watch_celex) if watch_celex is not None else None,
+            "secret": secret,
+        }
+    )
+
+
+def webhook_update_body(
+    *,
+    name: str | None = None,
+    url: str | None = None,
+    search_criteria: dict[str, Any] | None = None,
+    watch_celex: Sequence[str] | None = None,
+    status: str | None = None,
+    remove_search_criteria: bool = False,
+) -> dict[str, Any]:
+    """PUT body — only the passed fields are sent.
+
+    ``remove_search_criteria=True`` sends ``searchCriteria: null`` (the API's
+    way to drop the criteria; the webhook must keep a watch list).
+    ``watch_celex`` replaces the whole list (``[]`` empties it).
+    """
+    if remove_search_criteria and search_criteria is not None:
+        raise ValueError("pass either search_criteria or remove_search_criteria=True, not both")
+    body = drop_none(
+        {
+            "name": name,
+            "url": url,
+            "searchCriteria": search_criteria,
+            "watchCelex": list(watch_celex) if watch_celex is not None else None,
+            "status": status,
+        }
+    )
+    if remove_search_criteria:
+        body["searchCriteria"] = None
+    return body

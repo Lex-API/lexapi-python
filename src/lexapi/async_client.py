@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import datetime as _dt
 from typing import Any, TypeVar
 
 import httpx
@@ -10,13 +12,17 @@ import httpx
 from lexapi import _payloads
 from lexapi._base import (
     DEFAULT_BASE_URL,
+    DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_TIMEOUT,
     build_httpx_kwargs,
     exception_retry_wait,
     make_retry_config,
+    make_timeout,
     process_response,
     status_retry_wait,
     transport_error,
 )
+from lexapi._payloads import DateLike, OneOrMany, seg
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
 from lexapi.citations import AsyncCitationsResource
@@ -28,6 +34,7 @@ from lexapi.models import (
     DocumentResponse,
     DocumentVersionResponse,
     DocumentVersionsResponse,
+    InfoResponse,
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
@@ -43,8 +50,8 @@ class AsyncLexAPI:
     """Asynchronous LexAPI client.
 
     Same configuration surface as :class:`lexapi.LexAPI`; every operation
-    method is a coroutine. Shares all request-building, retry, and
-    response-parsing logic with the sync client.
+    method is a coroutine (see the sync client for per-method docs). Shares
+    all request-building, retry, and response-parsing logic with it.
     """
 
     def __init__(
@@ -52,32 +59,70 @@ class AsyncLexAPI:
         api_key: str | None = None,
         *,
         base_url: str = DEFAULT_BASE_URL,
-        timeout: float | httpx.Timeout = 60.0,
-        connect_timeout: float = 10.0,
+        timeout: float | httpx.Timeout = DEFAULT_TIMEOUT,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         max_retries: int | None = None,
         retry_config: RetryConfig | None = None,
         user_agent_suffix: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._retry = make_retry_config(max_retries, retry_config)
+        self._timeout: httpx.Timeout | None = None
         self._http = httpx.AsyncClient(
             transport=transport,
-            **build_httpx_kwargs(
-                api_key, base_url, timeout, connect_timeout, user_agent_suffix
-            ),
+            **build_httpx_kwargs(api_key, base_url, timeout, connect_timeout, user_agent_suffix),
         )
+        self._bind_resources()
+
+    def _bind_resources(self) -> None:
         #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
         self.citations = AsyncCitationsResource(self)
         #: Webhook subscriptions (``client.webhooks.create(...)``, ...).
         self.webhooks = AsyncWebhooksResource(self)
 
+    def with_options(
+        self,
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        connect_timeout: float | None = None,
+        max_retries: int | None = None,
+        retry_config: RetryConfig | None = None,
+    ) -> AsyncLexAPI:
+        """A view of this client with a different timeout and/or retry policy.
+
+        Shares the underlying connection pool (closing either closes both),
+        so it is cheap to create per call. Values above ~100 s buy nothing
+        on the public endpoint — Cloudflare answers 524 at 100 s::
+
+            await client.with_options(timeout=30).semantic_legislation_search(
+                "own funds requirements", as_of="2019-06-01"
+            )
+        """
+        clone = copy.copy(self)
+        if timeout is not None or connect_timeout is not None:
+            current = self._timeout or self._http.timeout
+            if isinstance(timeout, httpx.Timeout):
+                clone._timeout = timeout
+            else:
+                read = timeout if timeout is not None else current.read
+                connect = connect_timeout if connect_timeout is not None else current.connect
+                clone._timeout = make_timeout(
+                    read if read is not None else DEFAULT_TIMEOUT,
+                    connect if connect is not None else DEFAULT_CONNECT_TIMEOUT,
+                )
+        if retry_config is not None or max_retries is not None:
+            clone._retry = make_retry_config(max_retries, retry_config)
+        clone._bind_resources()
+        return clone
+
     # ── Meta ──────────────────────────────────────────────────────────
-    async def get_info(self) -> APIResponse:
+    async def get_info(self) -> InfoResponse:
         """GET /info — API capabilities, subscription tier, and current usage.
 
-        Free operation (0 credits).
+        Free operation (0 credits). ``response.search_filters`` and
+        ``response.supported_languages`` carry the live filter enumerations.
         """
-        return await self._request("GET", "/info")
+        return await self._request("GET", "/info", cast=InfoResponse, free=True)
 
     # ── Search ────────────────────────────────────────────────────────
     async def search(
@@ -85,19 +130,38 @@ class AsyncLexAPI:
         query: str | None = None,
         *,
         text_scope: str | None = None,
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: DateLike | None = None,
+        date_to: DateLike | None = None,
         year: int | list[int] | None = None,
         month: int | list[int] | None = None,
-        document_type: str | list[str] | None = None,
-        author: str | list[str] | None = None,
-        procedure: str | list[str] | None = None,
+        document_type: OneOrMany | None = None,
+        author: OneOrMany | None = None,
+        procedure: OneOrMany | None = None,
         domain: str | None = None,
-        subdomain: str | list[str] | None = None,
+        subdomain: OneOrMany | None = None,
         language: str | None = None,
         max_pages: int | None = None,
+        fresh: bool | None = None,
     ) -> SearchResponse:
-        """POST /search — see :meth:`lexapi.LexAPI.search`."""
+        """POST /search — search EUR-Lex with structured filters.
+
+        At least one of ``query``, a date, ``year``/``month``,
+        ``document_type``, ``author``, ``procedure``, ``domain`` or
+        ``subdomain`` is required. ``query="*"`` means "no text constraint"
+        (a filter-only search). Prefer 1-3 distinctive terms — EUR-Lex keyword
+        matching is literal (use semantic search for concept queries).
+
+        **Cost: 3 credits per result page**, charged upfront for ``max_pages``
+        (clamped to the tier: FREE 1, STARTER 5, PROFESSIONAL 20, BUSINESS+
+        100) and refunded for pages never fetched. Identical searches within
+        60 minutes are served from a result cache (``response.cache``; same
+        price); ``fresh=True`` forces a re-fetch.
+
+        Capping and fallbacks are surfaced, never hidden: ``response.truncated``
+        / ``partial`` / ``post_filtered_by`` / ``warning`` (``X-Warning``), and
+        ``response.source`` names the upstream (``soap``, ``cellar``,
+        ``corpus`` — a corpus answer is always ``partial``).
+        """
         body = _payloads.search_body(
             query,
             text_scope=text_scope,
@@ -112,8 +176,11 @@ class AsyncLexAPI:
             subdomain=subdomain,
             language=language,
             max_pages=max_pages,
+            fresh=fresh,
         )
-        return await self._request("POST", "/search", json=body, cast=SearchResponse)
+        return await self._request(
+            "POST", "/search", json=body, cast=SearchResponse, read_only=True
+        )
 
     # ── Documents ─────────────────────────────────────────────────────
     async def get_document(
@@ -122,21 +189,41 @@ class AsyncLexAPI:
         *,
         bypass_corpus: bool | None = None,
         language: str | None = None,
-        include: str | list[str] | None = None,
-        fields: str | list[str] | None = None,
+        accept_languages: str | list[str] | None = None,
+        include: OneOrMany | None = None,
+        fields: OneOrMany | None = None,
         article_id: str | None = None,
     ) -> DocumentResponse:
-        """POST /documentContent — see :meth:`lexapi.LexAPI.get_document`."""
+        """POST /documentContent — fetch one fully-parsed document by CELEX.
+
+        Corpus-first: ``response.source`` reports ``corpus`` (settles at 1
+        credit), ``cellar`` / ``cellar-oj`` (4) or ``live`` (5).
+        ``bypass_corpus=True`` forces a fresh upstream read (billed at the
+        live rate). ``include``/``fields`` trim the payload to the listed
+        pieces (``metadata``, ``fullText``, ``articles``, ``recitals``,
+        ``sections``, ``tables``, ``annexes``); ``article_id`` (``art_17``,
+        ``17`` or ``Article 17``) narrows to one article.
+
+        ``language`` (default ``en``) localises the whole document; when the
+        document has no text in it, English is served (``document.language_
+        fallback``). ``accept_languages`` (an ordered list of ISO codes, or
+        ``"any"``) opts into serving the first of those that has text instead.
+
+        A document whose notice exists but whose text EUR-Lex does not publish
+        is a 200 with ``document.content is None`` and a
+        ``document.text_availability`` block saying why (billed 1 credit).
+        """
         body = _payloads.document_content_body(
             celex,
             bypass_corpus=bypass_corpus,
             language=language,
+            accept_languages=accept_languages,
             include=include,
             fields=fields,
             article_id=article_id,
         )
         return await self._request(
-            "POST", "/documentContent", json=body, cast=DocumentResponse
+            "POST", "/documentContent", json=body, cast=DocumentResponse, read_only=True
         )
 
     async def get_documents_batch(
@@ -145,21 +232,34 @@ class AsyncLexAPI:
         *,
         bypass_corpus: bool | None = None,
         language: str | None = None,
-        include: str | list[str] | None = None,
-        fields: str | list[str] | None = None,
+        accept_languages: str | list[str] | None = None,
+        include: OneOrMany | None = None,
+        fields: OneOrMany | None = None,
         article_id: str | None = None,
     ) -> DocumentBatchResponse:
-        """POST /documentContent/batch — see :meth:`lexapi.LexAPI.get_documents_batch`."""
+        """POST /documentContent/batch — fetch multiple documents at once.
+
+        Per-CELEX failures land in ``response.errors`` instead of aborting
+        the batch; documents without text stay in ``documents``
+        (``response.text_unavailable`` counts them). The batch size is clamped
+        to the tier ceiling (FREE 1, STARTER 5, PROFESSIONAL 20, BUSINESS+ 50)
+        — ``response.trimmed`` / ``trimmed_to`` / ``trimmed_reason`` (and
+        ``response.warning``) report clamping; trimmed items are not charged.
+        5 credits per processed item, settled per source (``corpus_hits`` at
+        1, ``cellar_served`` / ``oj_recovered`` at 4, ``live_fetches`` at 5 —
+        or 1 for a live item that turned out to have no text).
+        """
         body = _payloads.document_batch_body(
             celexes,
             bypass_corpus=bypass_corpus,
             language=language,
+            accept_languages=accept_languages,
             include=include,
             fields=fields,
             article_id=article_id,
         )
         return await self._request(
-            "POST", "/documentContent/batch", json=body, cast=DocumentBatchResponse
+            "POST", "/documentContent/batch", json=body, cast=DocumentBatchResponse, read_only=True
         )
 
     async def get_recent_documents(
@@ -167,13 +267,23 @@ class AsyncLexAPI:
         *,
         days: int | None = None,
         document_type: str | None = None,
-        author: str | None = None,
+        author: OneOrMany | None = None,
         domain: str | None = None,
         subdomain: str | None = None,
         language: str | None = None,
         limit: int | None = None,
     ) -> RecentDocumentsResponse:
-        """GET /documents/recent — see :meth:`lexapi.LexAPI.get_recent_documents`."""
+        """GET /documents/recent — documents published in the last ``days``
+        days (default 7, up to ``limit`` results, default 50).
+
+        Admission reserves 3 credits per result page needed for ``limit``
+        (``ceil(limit / 10)`` pages, tier-clamped), so a nearly empty pool can
+        402 even when the answer would settle lower. Unfiltered requests are
+        answered from Cellar (``response.source == "cellar"``) and settle at 3
+        credits whatever the ``limit``; filtering on ``document_type`` /
+        ``author`` / ``domain`` / ``subdomain`` fetches from EUR-Lex and keeps
+        3 credits per page fetched (unfetched pages refunded).
+        """
         params = _payloads.recent_documents_params(
             days=days,
             document_type=document_type,
@@ -191,42 +301,70 @@ class AsyncLexAPI:
         self,
         url: str,
         *,
-        include: str | list[str] | None = None,
-        fields: str | list[str] | None = None,
+        bypass_corpus: bool | None = None,
+        include: OneOrMany | None = None,
+        fields: OneOrMany | None = None,
         article_id: str | None = None,
     ) -> DocumentByUrlResponse:
-        """POST /documents/url — see :meth:`lexapi.LexAPI.get_document_by_url`."""
+        """POST /documents/url — fetch a document by any EUR-Lex URL.
+
+        The URL must be on ``eur-lex.europa.eu`` and carry a ``CELEX:``
+        segment or ``uri=`` parameter (else 400 ``INVALID_URL``). The response
+        echoes ``source_url`` and the ``extracted_celex``; billed like
+        :meth:`get_document`. Served in English.
+        """
         body = _payloads.document_by_url_body(
-            url, include=include, fields=fields, article_id=article_id
+            url,
+            bypass_corpus=bypass_corpus,
+            include=include,
+            fields=fields,
+            article_id=article_id,
         )
         return await self._request(
-            "POST", "/documents/url", json=body, cast=DocumentByUrlResponse
+            "POST", "/documents/url", json=body, cast=DocumentByUrlResponse, read_only=True
         )
 
     async def get_document_metadata(
         self, celex: str, *, bypass_corpus: bool | None = None
     ) -> DocumentMetadataResponse:
-        """POST /documents/metadata — see :meth:`lexapi.LexAPI.get_document_metadata`."""
+        """POST /documents/metadata — metadata only (no body parse).
+
+        5 credits, settled at 1 from the corpus and 4 from Cellar
+        (``response.source``).
+        """
         body = _payloads.drop_none({"celexNumber": celex, "bypassCorpus": bypass_corpus})
         return await self._request(
-            "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse
+            "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse, read_only=True
         )
 
     async def resolve(self, identifier: str) -> ResolveResponse:
-        """POST /resolve — see :meth:`lexapi.LexAPI.resolve`."""
+        """POST /resolve — resolve a CELEX / EUR-Lex URL / ELI / ECLI to a CELEX.
+
+        1 credit. An identifier that doesn't resolve (e.g. an ECLI not yet in
+        the corpus) raises :class:`~lexapi.NotFoundError`.
+        """
         return await self._request(
-            "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+            "POST",
+            "/resolve",
+            json={"identifier": identifier},
+            cast=ResolveResponse,
+            read_only=True,
         )
 
     # ── Point-in-time versions ────────────────────────────────────────
+    # Versions are LexAPI observation snapshots (content-hash changes
+    # between fetches), NOT legal in-force reconstructions; history begins
+    # at first ingestion. For the text in force on a date, use
+    # semantic_legislation_search(as_of=...) or a consolidated CELEX.
+
     async def list_document_versions(
         self, celex: str, *, language: str | None = None
     ) -> DocumentVersionsResponse:
-        """GET /documents/{celex}/versions — see :meth:`lexapi.LexAPI.list_document_versions`."""
+        """GET /documents/{celex}/versions — version history, newest first (1 credit)."""
         params = _payloads.drop_none({"language": language})
         return await self._request(
             "GET",
-            f"/documents/{celex}/versions",
+            f"/documents/{seg(celex)}/versions",
             params=params,
             cast=DocumentVersionsResponse,
         )
@@ -234,24 +372,30 @@ class AsyncLexAPI:
     async def get_document_version(
         self, celex: str, version: int, *, language: str | None = None
     ) -> DocumentVersionResponse:
-        """GET /documents/{celex}/versions/{version} — see
-        :meth:`lexapi.LexAPI.get_document_version`."""
+        """GET /documents/{celex}/versions/{version} — one immutable
+        snapshot with content (1 credit)."""
         params = _payloads.drop_none({"language": language})
         return await self._request(
             "GET",
-            f"/documents/{celex}/versions/{version}",
+            f"/documents/{seg(celex)}/versions/{seg(version)}",
             params=params,
             cast=DocumentVersionResponse,
         )
 
     async def get_document_at_date(
-        self, celex: str, date: str, *, language: str | None = None
+        self, celex: str, date: DateLike, *, language: str | None = None
     ) -> DocumentVersionResponse:
-        """GET /documents/{celex}/at/{date} — see :meth:`lexapi.LexAPI.get_document_at_date`."""
+        """GET /documents/{celex}/at/{date} — the snapshot observed as current on ``date``.
+
+        ``date`` is ``YYYY-MM-DD`` or a :class:`datetime.date` (end-of-day UTC
+        inclusive). Dates before the document entered the corpus raise
+        :class:`NotFoundError` with the tracking start date in the message.
+        1 credit.
+        """
         params = _payloads.drop_none({"language": language})
         return await self._request(
             "GET",
-            f"/documents/{celex}/at/{date}",
+            f"/documents/{seg(celex)}/at/{seg(_payloads.iso_date(date))}",
             params=params,
             cast=DocumentVersionResponse,
         )
@@ -266,13 +410,37 @@ class AsyncLexAPI:
         limit: int | None = None,
         language: str | None = None,
         include_text: bool = False,
-        filters: dict | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> SemanticSearchResponse:
-        """POST /search/semantic — see :meth:`lexapi.LexAPI.semantic_search`.
+        """POST /search/semantic — embedding-based CJEU case-law search (5 credits).
 
-        ``hyde=True`` bills **15 credits instead of 5** (~1-3 s extra latency);
-        best-effort — on LLM failure the response reports ``hyde=False`` and
-        the 10-credit premium is refunded automatically.
+        Args:
+            query: natural-language query to embed.
+            hyde: enable HyDE query rewriting — an LLM drafts the passage a
+                relevant judgment would contain and retrieval fuses plain-query
+                and hypothetical-passage rankings. Markedly better recall on
+                short or keyword-style queries. **Bills 15 credits instead of
+                5** and adds ~1-3 s of latency. Best-effort: on generation
+                failure the search falls back to plain retrieval, the response
+                reports ``hyde=False``, and the 10-credit premium is
+                **refunded automatically** (``response.units_charged`` then
+                reflects the base rate).
+            min_score: drop results below this cosine similarity. Without it
+                the upstream applies a ~0.7 relevance floor — if you got fewer
+                results than ``limit``, lower this (e.g. 0.5) to widen recall,
+                or pass 0 to disable the floor.
+            limit: max results, clamped to the tier's ``maxResults`` (FREE 10,
+                STARTER 20, PROFESSIONAL 50, BUSINESS and above 100).
+            language: language of returned content (default ``en``; the index
+                covers ``en fr de es it sl el nl pt pl``).
+            include_text: receive full document text per hit (``hit.text``)
+                instead of the default ~600-char ``hit.snippet`` (10-50x
+                payload increase).
+            filters: free-form filter object forwarded to the backend.
+
+        The response exposes ``hint`` (low-confidence signal), ``hyde``
+        (whether HyDE actually ran), and ``hypothetical_document`` (the
+        LLM-drafted passage, when HyDE ran).
         """
         body = _payloads.semantic_search_body(
             query,
@@ -284,7 +452,7 @@ class AsyncLexAPI:
             filters=filters,
         )
         return await self._request(
-            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse
+            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse, read_only=True
         )
 
     async def semantic_legislation_search(
@@ -295,10 +463,38 @@ class AsyncLexAPI:
         limit: int | None = None,
         language: str | None = None,
         include_text: bool = False,
-        filters: dict | None = None,
+        filters: dict[str, Any] | None = None,
+        as_of: DateLike | None = None,
     ) -> SemanticLegislationResponse:
-        """POST /legislation/semantic — see
-        :meth:`lexapi.LexAPI.semantic_legislation_search`.
+        """POST /legislation/semantic — embedding-based EU legislation search.
+
+        Article-level matches (``article_ref``, ``law_id``, ``law_title``,
+        ``score``). Same ``min_score`` / ``language`` / ``include_text``
+        semantics as :meth:`semantic_search`; ``limit`` is capped at 50 here.
+        HyDE is case-law only, so it is not offered. When an act and its
+        consolidated version match the same article you get one hit, the
+        consolidated one, labelled ``consolidated`` / ``base_celex`` /
+        ``consolidated_note`` with the authentic act's match in ``base_act``.
+
+        Args:
+            as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01 to
+                today UTC. Each hit answers with the version in force on that
+                date — the act as published before its first consolidation,
+                otherwise the consolidated version in force — after checking
+                the act was in force then. Hits that cannot be answered keep
+                their latest text with ``as_of_resolved=False`` and an
+                ``as_of_reason``. A malformed or out-of-range date is a 400
+                (refunded).
+
+        **Cost:** 5 credits for the search. With ``as_of``, each version the
+        corpus doesn't hold is fetched live (at most 3 per request by
+        default): each fetch reserves 5 credits just before it starts and
+        settles at 4 (Cellar), 5 (browser), 1 (no text) or 0 (failed / timed
+        out). A fetch the pool can't cover is skipped (``as_of_reason ==
+        "insufficient_credits"``); only the search itself can 402. Corpus
+        reads are free. ``as_of`` requests can take longer — the server
+        answers within its 45 s default budget, inside the client's 95 s
+        response timeout.
         """
         body = _payloads.semantic_search_body(
             query,
@@ -307,32 +503,55 @@ class AsyncLexAPI:
             language=language,
             include_text=include_text,
             filters=filters,
+            as_of=as_of,
         )
         return await self._request(
-            "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
+            "POST",
+            "/legislation/semantic",
+            json=body,
+            cast=SemanticLegislationResponse,
+            read_only=True,
         )
 
     # ── Export ────────────────────────────────────────────────────────
     async def export(
         self,
         *,
-        document_type: str | list[str] | None = None,
-        author: str | list[str] | None = None,
-        subdomain: str | list[str] | None = None,
+        document_type: OneOrMany | None = None,
+        author: OneOrMany | None = None,
+        subdomain: OneOrMany | None = None,
         language: str | None = None,
-        date_from: str | None = None,
-        date_to: str | None = None,
-        fetched_since: str | None = None,
+        date_from: DateLike | None = None,
+        date_to: DateLike | None = None,
+        fetched_since: str | _dt.datetime | None = None,
         include_html: bool | None = None,
         include_content: bool | None = None,
+        include_stubs: bool | None = None,
         limit: int | None = None,
     ) -> AsyncExportStream:
-        """GET /export — see :meth:`lexapi.LexAPI.export`. Returns an
-        :class:`~lexapi.export.AsyncExportStream`::
+        """GET /export — stream matching corpus rows as NDJSON (BUSINESS,
+        SCALE and ENTERPRISE; lower tiers raise
+        :class:`~lexapi.TierForbiddenError`). For the credit cost see the
+        pricing page and the response's credit fields / ``X-Export-*`` headers.
 
-            async with await client.export(limit=1000) as stream:
+        Returns an :class:`~lexapi.export.AsyncExportStream`: iterate it for one
+        dict per corpus row. The leading ``_meta`` envelope and trailing
+        ``_done`` line are captured on ``.meta`` / ``.done`` (with
+        ``.total`` / ``.streaming`` / ``.truncated`` from the export
+        headers, and ``.written`` / ``.skipped_stubs`` from the trailer).
+        Use it as a context manager to guarantee the connection is closed::
+
+            async with await client.export(document_type="regulation", limit=1000) as stream:
                 async for row in stream:
-                    handle(row)
+                    handle(row["celex"], row.get("parsedContent"))
+                print(stream.done, stream.truncated)
+
+        List filters (``document_type``, ``author``, ``subdomain``) are sent
+        comma-separated. ``fetched_since`` (ISO date-time string or a
+        :class:`datetime.datetime`) filters on the row's ``lastSeenAt`` for
+        incremental syncs. Metadata-only rows (no text) are skipped unless
+        ``include_stubs=True``. Licensing: see Terms §6 — training ML models on
+        exported content needs a separate licence.
         """
         params = export_params(
             document_type=document_type,
@@ -344,23 +563,25 @@ class AsyncLexAPI:
             fetched_since=fetched_since,
             include_html=include_html,
             include_content=include_content,
+            include_stubs=include_stubs,
             limit=limit,
         )
-        return AsyncExportStream(
-            await self._stream_request("GET", "/export", params=params)
-        )
+        return AsyncExportStream(await self._stream_request("GET", "/export", params=params))
 
     async def _stream_request(
         self, method: str, path: str, *, params: dict[str, Any] | None = None
     ) -> httpx.Response:
-        """Streaming twin of :meth:`_request`; body left unread on success."""
+        """Send a streaming request with the same retry/error semantics as
+        :meth:`_request`; the response body is left unread on success."""
         attempt = 0
         while True:
-            request = self._http.build_request(method, path, params=params)
+            request = self._http.build_request(
+                method, path, params=params, **self._timeout_kwargs()
+            )
             try:
                 response = await self._http.send(request, stream=True)
             except httpx.HTTPError as exc:
-                wait = exception_retry_wait(exc, attempt, self._retry)
+                wait = exception_retry_wait(exc, attempt, self._retry, method)
                 if wait is None:
                     raise transport_error(exc) from exc
                 await asyncio.sleep(wait)
@@ -371,12 +592,20 @@ class AsyncLexAPI:
             await response.aread()
             wait = status_retry_wait(method, response, attempt, self._retry)
             if wait is None:
-                process_response(response)  # raises the typed error
+                process_response(response, APIResponse)  # raises the typed error
+                raise AssertionError("unreachable")  # pragma: no cover
             await response.aclose()
             await asyncio.sleep(wait)
             attempt += 1
 
     # ── Request core ──────────────────────────────────────────────────
+    def _timeout_kwargs(self, timeout: float | httpx.Timeout | None = None) -> dict[str, Any]:
+        if timeout is not None:
+            return {"timeout": timeout}
+        if self._timeout is not None:
+            return {"timeout": self._timeout}
+        return {}
+
     async def _request(
         self,
         method: str,
@@ -386,22 +615,32 @@ class AsyncLexAPI:
         json: Any | None = None,
         cast: type[R] = APIResponse,  # type: ignore[assignment]
         timeout: float | httpx.Timeout | None = None,
+        read_only: bool = False,
+        free: bool = False,
     ) -> R:
+        """One API call with retries.
+
+        ``read_only`` marks a POST that changes nothing (eligible for
+        ``RetryConfig.retry_read_only_posts``); ``free`` marks a 0-credit
+        operation, for which any transport failure or 5xx is billing-safe to
+        retry (PLAN.md §1.2).
+        """
         request_kwargs: dict[str, Any] = {"params": params, "json": json}
-        if timeout is not None:
-            request_kwargs["timeout"] = timeout
+        request_kwargs.update(self._timeout_kwargs(timeout))
         attempt = 0
         while True:
             try:
                 response = await self._http.request(method, path, **request_kwargs)
             except httpx.HTTPError as exc:
-                wait = exception_retry_wait(exc, attempt, self._retry)
+                wait = exception_retry_wait(exc, attempt, self._retry, method, free=free)
                 if wait is None:
                     raise transport_error(exc) from exc
                 await asyncio.sleep(wait)
                 attempt += 1
                 continue
-            wait = status_retry_wait(method, response, attempt, self._retry)
+            wait = status_retry_wait(
+                method, response, attempt, self._retry, read_only=read_only, free=free
+            )
             if wait is None:
                 return process_response(response, cast)
             await asyncio.sleep(wait)

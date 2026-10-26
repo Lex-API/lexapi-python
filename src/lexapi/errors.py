@@ -4,10 +4,14 @@ The API's canonical envelope is::
 
     {"success": false, "error": {"code": "NOT_FOUND", "message": "...", "details": {...}}}
 
-Some legacy endpoints return a bare ``{"error": "...", "message": "..."}`` body
-with string values; the parser tolerates both shapes. Unknown ``error.code``
-values never crash the parser — the raw code string is preserved on the
-generic :class:`LexAPIError` (forward compatibility).
+Some endpoint classes still answer in the legacy bare shape
+``{"error": "<text>", "message": "...", ...}`` (API-key auth 401s, every 429,
+search/batch/webhook validation 400s, the ``/export`` and legacy semantic
+tier gates, semantic upstream 502/504s). The parser tolerates both shapes; on
+the legacy shape the code is derived from the HTTP status, and a top-level
+``details`` (validation errors) is preserved. Unknown ``error.code`` values
+never crash the parser — the raw code string is preserved on the generic
+:class:`LexAPIError` (forward compatibility).
 
 Two distinct "timeout" errors exist by design:
 
@@ -22,7 +26,11 @@ from __future__ import annotations
 from typing import Any
 
 #: Fallback mapping used when the body carries no typed ``error.code``
-#: (legacy bare ``{"error": "..."}`` shape, or non-JSON bodies).
+#: (legacy bare ``{"error": "..."}`` shape, or non-JSON bodies). 520-524 are
+#: Cloudflare's origin-error statuses (lex-api.com sits behind Cloudflare).
+#: ``UNAUTHORIZED`` and ``SERVICE_UNAVAILABLE`` are SDK-side codes: the API
+#: never sends them in ``error.code`` (its 401s and its deploy-drain 503 are
+#: not typed envelopes).
 STATUS_TO_CODE = {
     400: "INVALID_PARAMS",
     401: "UNAUTHORIZED",
@@ -32,8 +40,13 @@ STATUS_TO_CODE = {
     429: "RATE_LIMITED",
     500: "INTERNAL",
     502: "UPSTREAM_ERROR",
-    503: "UPSTREAM_ERROR",
+    503: "SERVICE_UNAVAILABLE",
     504: "TIMEOUT",
+    520: "UPSTREAM_ERROR",
+    521: "UPSTREAM_ERROR",
+    522: "UPSTREAM_ERROR",
+    523: "UPSTREAM_ERROR",
+    524: "TIMEOUT",
 }
 
 
@@ -45,7 +58,9 @@ class LexAPIError(Exception):
             Unknown codes from newer API versions are preserved as-is.
         message: human-readable description from the API.
         status: HTTP status code (``None`` for transport-level failures).
-        details: the ``error.details`` object when present.
+        details: ``error.details`` on the typed envelope, or the top-level
+            ``details`` of a legacy validation body (e.g. the list of
+            rejected webhook criteria), when present.
         body: the raw decoded response body (``None`` if not JSON).
         retry_after: seconds to wait before retrying, when the server said so.
     """
@@ -73,21 +88,30 @@ class LexAPIError(Exception):
         self.retry_after = retry_after
 
     @classmethod
-    def from_response(
-        cls, status: int, body: Any, retry_after: float | None = None
-    ) -> LexAPIError:
+    def from_response(cls, status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
         """Build the most specific typed error for a non-2xx response."""
         return error_from_response(status, body, retry_after=retry_after)
 
+    @property
+    def upgrade_url(self) -> str | None:
+        """``upgradeUrl`` from a legacy tier-gate body (e.g. ``/pricing``)."""
+        if isinstance(self.body, dict) and isinstance(self.body.get("upgradeUrl"), str):
+            return str(self.body["upgradeUrl"])
+        return None
+
 
 class AuthenticationError(LexAPIError):
-    """401 — missing, invalid, or revoked API key."""
+    """401 — missing, invalid, deactivated, or revoked API key."""
 
     default_code = "UNAUTHORIZED"
 
 
 class InvalidParamsError(LexAPIError):
-    """400 ``INVALID_PARAMS`` — missing or malformed parameters."""
+    """400 ``INVALID_PARAMS`` — missing or malformed parameters.
+
+    Legacy validation bodies put their reasons in ``details`` (a list of
+    strings, e.g. every rejected webhook criterion).
+    """
 
     default_code = "INVALID_PARAMS"
 
@@ -110,29 +134,64 @@ class NotFoundError(LexAPIError):
     default_code = "NOT_FOUND"
 
 
+def _usage_resets_at(body: Any) -> str | None:
+    if isinstance(body, dict):
+        usage = body.get("usage")
+        if isinstance(usage, dict) and isinstance(usage.get("resetsAt"), str):
+            return str(usage["resetsAt"])
+    return None
+
+
 class RateLimitedError(LexAPIError):
-    """429 ``RATE_LIMITED`` — quota or rate ceiling hit.
+    """429 ``RATE_LIMITED`` — per-minute rate limit, or a legacy quota.
 
     ``retry_after`` carries the server-directed wait in seconds when the
     server provided one (``Retry-After`` header preferred; see
     :mod:`lexapi._retry` for the resolution order).
+
+    Legacy daily-call plans (and the legacy monthly semantic quota) also
+    answer 429 when the *quota* is used up; then :attr:`quota_exhausted` is
+    True and :attr:`resets_at` says when it refills. Those are not retried
+    automatically.
     """
 
     default_code = "RATE_LIMITED"
 
+    @property
+    def resets_at(self) -> str | None:
+        """``usage.resetsAt`` from a legacy quota 429 (ISO-8601), if present."""
+        return _usage_resets_at(self.body)
+
+    @property
+    def quota_exhausted(self) -> bool:
+        """True when the 429 reports an exhausted quota, not a rate limit."""
+        return (
+            isinstance(self.body, dict)
+            and "retryAfter" not in self.body
+            and self.resets_at is not None
+        )
+
 
 class TierForbiddenError(LexAPIError):
-    """403 ``TIER_FORBIDDEN`` — endpoint not included in the caller's tier."""
+    """403 ``TIER_FORBIDDEN`` — no active subscription, or the plan lacks
+    the endpoint (``/export`` below BUSINESS, legacy FREE semantic access).
+
+    Legacy tier gates carry an ``upgrade_url`` (``upgradeUrl``).
+    """
 
     default_code = "TIER_FORBIDDEN"
 
 
 class CreditsExhaustedError(LexAPIError):
-    """402 ``CREDITS_EXHAUSTED`` — monthly credit pool exhausted (pricing v2).
+    """402 ``CREDITS_EXHAUSTED`` — the monthly credit pool (incl. top-ups)
+    cannot cover the operation's weight (pricing v2).
 
-    ``resets_at`` is the ISO-8601 timestamp when the monthly allowance
-    resets, when the server reported one. Retrying cannot help until
-    top-up or the next cycle anchor.
+    ``details`` carries ``operation``, ``weight``, ``available``,
+    ``included``, ``topup``, ``used`` and ``resetsAt``; each is exposed as a
+    typed attribute. Variable-priced operations are admitted against their
+    *upfront* weight (a document read needs 5 available even when it would
+    settle at 1), so ``weight - available`` is the exact shortfall. Retrying
+    cannot help until a top-up or the next monthly reset.
     """
 
     default_code = "CREDITS_EXHAUSTED"
@@ -141,15 +200,64 @@ class CreditsExhaustedError(LexAPIError):
         super().__init__(message, **kwargs)
         self.resets_at = resets_at
 
+    def _detail_int(self, key: str) -> int | None:
+        if not isinstance(self.details, dict):
+            return None
+        value = self.details.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
+
+    @property
+    def operation(self) -> str | None:
+        """The operation that was refused (e.g. ``semantic_case_law``)."""
+        if isinstance(self.details, dict) and isinstance(self.details.get("operation"), str):
+            return str(self.details["operation"])
+        return None
+
+    @property
+    def weight(self) -> int | None:
+        """Credits the operation needed upfront."""
+        return self._detail_int("weight")
+
+    @property
+    def available(self) -> int | None:
+        """Credits left in the pool when the request was refused."""
+        return self._detail_int("available")
+
+    @property
+    def included(self) -> int | None:
+        """The tier's monthly allowance."""
+        return self._detail_int("included")
+
+    @property
+    def topup(self) -> int | None:
+        """Purchased top-up credits."""
+        return self._detail_int("topup")
+
+    @property
+    def used(self) -> int | None:
+        """Credits used in the current window."""
+        return self._detail_int("used")
+
 
 class UpstreamError(LexAPIError):
-    """502 ``UPSTREAM_ERROR`` — EUR-Lex returned an error."""
+    """502 ``UPSTREAM_ERROR`` — EUR-Lex (or the semantic service) returned an error."""
 
     default_code = "UPSTREAM_ERROR"
 
 
+class ServiceUnavailableError(UpstreamError):
+    """503 — the API is briefly unavailable (e.g. a deploy draining
+    connections). Retryable. SDK-side code ``SERVICE_UNAVAILABLE``; a
+    subclass of :class:`UpstreamError` so code written against 0.1.0
+    (where 503 mapped to ``UPSTREAM_ERROR``) keeps catching it."""
+
+    default_code = "SERVICE_UNAVAILABLE"
+
+
 class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
-    """504 ``TIMEOUT`` — the upstream EUR-Lex fetch timed out (retry-safe)."""
+    """504 ``TIMEOUT`` — the upstream fetch timed out (retry-safe)."""
 
     default_code = "TIMEOUT"
 
@@ -158,6 +266,20 @@ class InternalServerError(LexAPIError):
     """500 ``INTERNAL`` — unexpected server failure."""
 
     default_code = "INTERNAL"
+
+
+class InvalidResponseError(LexAPIError):
+    """A 2xx response whose body is not JSON (e.g. an HTML interstitial from
+    a proxy). Raised instead of returning an empty, "successful" result."""
+
+    default_code = "INVALID_RESPONSE"
+
+
+class IncompleteExportError(LexAPIError):
+    """An export stream ended without its ``_done`` trailer — the server
+    stopped mid-export, so the rows received are not the whole result."""
+
+    default_code = "INCOMPLETE_EXPORT"
 
 
 class LexAPIConnectionError(LexAPIError):
@@ -189,6 +311,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "TIER_FORBIDDEN": TierForbiddenError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "UPSTREAM_ERROR": UpstreamError,
+    "SERVICE_UNAVAILABLE": ServiceUnavailableError,
     "TIMEOUT": TimeoutError,
     "INTERNAL": InternalServerError,
 }
@@ -210,19 +333,21 @@ def _extract_resets_at(details: Any, body: Any) -> str | None:
         for key in ("credits", "usage"):
             block = container.get(key)
             if isinstance(block, dict) and isinstance(block.get("resetsAt"), str):
-                return block["resetsAt"]
+                return str(block["resetsAt"])
     return None
 
 
-def error_from_response(
-    status: int, body: Any, retry_after: float | None = None
-) -> LexAPIError:
+def error_from_response(status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
     """Map a non-2xx response to the most specific typed error.
 
-    Tolerates both envelope shapes:
+    Tolerates both envelope shapes (PLAN.md §1.3):
 
     - typed: ``{"success": false, "error": {"code", "message", "details"}}``
-    - legacy: ``{"error": "<slug or text>", "message": "..."}`` (both strings)
+      — ``code`` is authoritative;
+    - legacy: ``{"error": "<text>", "message": "...", "details": [...]}`` —
+      ``error`` is human text, never parsed as a code; the code comes from
+      the HTTP status. ``message`` / ``details`` at the top level are kept
+      (also on bodies that carry no ``error`` at all).
 
     Unknown ``error.code`` values fall back to the base :class:`LexAPIError`
     with the raw code preserved.
@@ -238,15 +363,14 @@ def error_from_response(
             details = err.get("details")
         elif isinstance(err, str):  # legacy bare {"error": "...", "message": "..."}
             legacy_message = body.get("message")
-            if err in CODE_TO_ERROR:  # some legacy bodies carry the slug in `error`
-                code = err
-                message = legacy_message if isinstance(legacy_message, str) else message
-            else:
-                message = err
-                if isinstance(legacy_message, str):
-                    message = f"{err}: {legacy_message}" if legacy_message != err else err
-        elif isinstance(body.get("message"), str):
-            message = body["message"]
+            message = err
+            if isinstance(legacy_message, str) and legacy_message != err:
+                message = f"{err}: {legacy_message}"
+            details = body.get("details")
+        else:
+            if isinstance(body.get("message"), str):
+                message = body["message"]
+            details = body.get("details")
 
     error_cls = CODE_TO_ERROR.get(code, LexAPIError)
     kwargs: dict[str, Any] = {

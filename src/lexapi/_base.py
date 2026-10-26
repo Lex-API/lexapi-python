@@ -18,17 +18,31 @@ from lexapi._retry import (
     DEFAULT_RETRY_CONFIG,
     RetryConfig,
     compute_backoff,
+    is_quota_exhausted,
     is_retryable_exception,
     retry_wait,
     server_wait_hint,
 )
 from lexapi.errors import (
+    InvalidResponseError,
     LexAPIConnectionError,
     RequestTimeoutError,
     error_from_response,
 )
 
 DEFAULT_BASE_URL = "https://lex-api.com/api/v1"
+
+#: Default response timeout in seconds (PLAN.md §1.6): the longest the SDK
+#: waits for the next bytes of a response — the response head, then each
+#: body chunk — on one attempt. It is an inactivity limit, not a deadline
+#: for the whole call. 95 s sits above the API's 90 s budget for one
+#: upstream EUR-Lex fetch (so that common timeout reaches the caller as the
+#: server's typed, refunded 504) and below Cloudflare's 100 s limit; a
+#: request needing several upstream fetches can still exceed it.
+DEFAULT_TIMEOUT = 95.0
+#: Default connect timeout in seconds (TCP + TLS). Also bounds the wait for
+#: a free connection from the pool.
+DEFAULT_CONNECT_TIMEOUT = 10.0
 
 R = TypeVar("R", bound=APIResponse)
 
@@ -40,6 +54,17 @@ def resolve_api_key(api_key: str | None) -> str:
     return key
 
 
+def make_timeout(
+    timeout: float | httpx.Timeout, connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
+) -> httpx.Timeout:
+    """An ``httpx.Timeout``: ``timeout`` is the per-attempt response
+    (read/write) inactivity budget, ``connect_timeout`` bounds connecting and
+    waiting for a pooled connection."""
+    if isinstance(timeout, httpx.Timeout):
+        return timeout
+    return httpx.Timeout(timeout, connect=connect_timeout, pool=connect_timeout)
+
+
 def build_httpx_kwargs(
     api_key: str | None,
     base_url: str,
@@ -48,13 +73,9 @@ def build_httpx_kwargs(
     user_agent_suffix: str | None,
 ) -> dict[str, Any]:
     """Keyword arguments shared by ``httpx.Client`` and ``httpx.AsyncClient``."""
-    if isinstance(timeout, httpx.Timeout):
-        resolved_timeout = timeout
-    else:
-        resolved_timeout = httpx.Timeout(timeout, connect=connect_timeout)
     return {
         "base_url": base_url.rstrip("/"),
-        "timeout": resolved_timeout,
+        "timeout": make_timeout(timeout, connect_timeout),
         "headers": {
             "x-api-key": resolve_api_key(api_key),
             "user-agent": user_agent(user_agent_suffix),
@@ -64,7 +85,8 @@ def build_httpx_kwargs(
 
 
 def decode_body(response: httpx.Response) -> Any:
-    """Decode the JSON body, tolerating empty (204) and non-JSON bodies."""
+    """Decode the JSON body: ``{}`` for 204 / empty bodies, ``None`` when the
+    body is present but is not JSON."""
     if response.status_code == 204 or not response.content:
         return {}
     try:
@@ -73,34 +95,56 @@ def decode_body(response: httpx.Response) -> Any:
         return None
 
 
-def process_response(
-    response: httpx.Response, cast: type[R] = APIResponse  # type: ignore[assignment]
-) -> R:
-    """Wrap a successful response, or raise the typed error for a failed one."""
+def process_response(response: httpx.Response, cast: type[R]) -> R:
+    """Wrap a successful response, or raise the typed error for a failed one.
+
+    A 2xx whose body is not JSON (a proxy's HTML interstitial, say) raises
+    :class:`~lexapi.errors.InvalidResponseError` — it is never turned into
+    an empty "successful" result.
+    """
     body = decode_body(response)
     if response.is_success:
-        return cast(body if body is not None else {}, response.headers)
-    raise error_from_response(
-        response.status_code,
-        body,
-        retry_after=server_wait_hint(response.headers, body),
-    )
+        if body is None:
+            snippet = response.text[:200].strip()
+            raise InvalidResponseError(
+                f"Expected JSON, got {response.headers.get('content-type', 'no content type')}"
+                f": {snippet!r}",
+                status=response.status_code,
+            )
+        return cast(body, response.headers)
+    retry_after = None
+    if not is_quota_exhausted(response.status_code, response.headers, body):
+        retry_after = server_wait_hint(response.headers, body, response.status_code)
+    raise error_from_response(response.status_code, body, retry_after=retry_after)
 
 
 def status_retry_wait(
-    method: str, response: httpx.Response, attempt: int, config: RetryConfig
+    method: str,
+    response: httpx.Response,
+    attempt: int,
+    config: RetryConfig,
+    *,
+    read_only: bool = False,
+    free: bool = False,
 ) -> float | None:
     """Wait before retrying a non-2xx response, or ``None`` for "don't"."""
     if response.is_success:
         return None
-    return retry_wait(method, response, decode_body(response), attempt, config)
+    return retry_wait(
+        method, response, decode_body(response), attempt, config, read_only=read_only, free=free
+    )
 
 
 def exception_retry_wait(
-    exc: httpx.HTTPError, attempt: int, config: RetryConfig
+    exc: httpx.HTTPError,
+    attempt: int,
+    config: RetryConfig,
+    method: str = "GET",
+    *,
+    free: bool = False,
 ) -> float | None:
     """Wait before retrying a transport failure, or ``None`` for "don't"."""
-    if attempt >= config.max_retries or not is_retryable_exception(exc):
+    if attempt >= config.max_retries or not is_retryable_exception(exc, method, free=free):
         return None
     return compute_backoff(attempt, config)
 
@@ -112,9 +156,7 @@ def transport_error(exc: httpx.HTTPError) -> LexAPIConnectionError:
     return LexAPIConnectionError(f"Connection error: {exc}")
 
 
-def make_retry_config(
-    max_retries: int | None, retry_config: RetryConfig | None
-) -> RetryConfig:
+def make_retry_config(max_retries: int | None, retry_config: RetryConfig | None) -> RetryConfig:
     if retry_config is not None:
         return retry_config
     if max_retries is None:

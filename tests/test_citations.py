@@ -86,9 +86,7 @@ def test_cited_by_params_and_groups():
     }
     client, seen = capture_client(body)
     with client:
-        resp = client.citations.cited_by(
-            "31995L0046", citation_type="repeal", limit=2, offset=10
-        )
+        resp = client.citations.cited_by("31995L0046", citation_type="repeal", limit=2, offset=10)
 
     assert seen["path"] == "/api/v1/citations/cited-by/31995L0046"
     assert seen["params"] == {"citationType": "repeal", "limit": "2", "offset": "10"}
