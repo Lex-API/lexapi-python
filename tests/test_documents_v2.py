@@ -7,6 +7,7 @@ import datetime as dt
 import json
 
 import httpx
+import pytest
 
 from lexapi import (
     AsyncLexAPI,
@@ -315,10 +316,13 @@ def test_recent_lists_repeat_and_source():
     client, seen = capture_client(body, headers={"X-Source": "live"})
     with client:
         resp = client.get_recent_documents(
-            days=14, document_type=["judgment", "order"], author="court-of-justice", limit=25
+            days=14,
+            document_type="judgment",
+            author=["court-of-justice", "general-court"],
+            limit=25,
         )
-    assert seen["params"].get_list("documentType") == ["judgment", "order"]
-    assert seen["params"]["author"] == "court-of-justice"
+    assert seen["params"].get_list("documentType") == ["judgment"]
+    assert seen["params"].get_list("author") == ["court-of-justice", "general-court"]
     assert seen["params"]["days"] == "14"
     assert resp.source == "live"
     assert resp.fetched_at == "2026-10-26T08:00:00.000Z"
@@ -410,3 +414,30 @@ def test_async_document_parity():
     assert resp.text_available is False
     assert isinstance(info, InfoResponse)
     assert info.subscription_info.tier == "PROFESSIONAL"
+
+
+def test_recent_document_type_and_subdomain_are_single_valued():
+    # /documents/recent has no fan-out; EUR-Lex honours only the first
+    # FM_CODED / DTS_SUBDOM, so several values would be silently narrowed.
+    client, seen = capture_client({"success": True, "results": []})
+    with client:
+        for kwargs in (
+            {"document_type": ["judgment", "order"]},
+            {"subdomain": ["EU_CASE_LAW", "LEGISLATION"]},
+        ):
+            with pytest.raises(ValueError, match="single value"):
+                client.get_recent_documents(**kwargs)
+        assert "params" not in seen  # nothing was sent
+        client.get_recent_documents(document_type=["judgment"], subdomain=("EU_CASE_LAW",))
+    assert seen["params"].get_list("documentType") == ["judgment"]
+    assert seen["params"].get_list("subdomain") == ["EU_CASE_LAW"]
+
+
+def test_async_recent_single_valued():
+    async def run():
+        client, _ = capture_client({"success": True, "results": []}, client_cls=AsyncLexAPI)
+        async with client:
+            with pytest.raises(ValueError):
+                await client.get_recent_documents(subdomain=["A", "B"])
+
+    asyncio.run(run())

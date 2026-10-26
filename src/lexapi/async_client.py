@@ -266,10 +266,10 @@ class AsyncLexAPI:
         self,
         *,
         days: int | None = None,
-        document_type: OneOrMany | None = None,
+        document_type: str | None = None,
         author: OneOrMany | None = None,
         domain: str | None = None,
-        subdomain: OneOrMany | None = None,
+        subdomain: str | None = None,
         language: str | None = None,
         limit: int | None = None,
     ) -> RecentDocumentsResponse:

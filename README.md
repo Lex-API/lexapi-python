@@ -87,7 +87,9 @@ print(batch.corpus_hits, batch.cellar_served, batch.oj_recovered, batch.live_fet
 if batch.trimmed:  # tier ceiling hit — mirrored from X-Warning too
     print(batch.trimmed_reason)
 
-recent = client.get_recent_documents(days=3, document_type=["regulation", "directive"])
+recent = client.get_recent_documents(
+    days=3, document_type="regulation"
+)  # one type; author may be a list
 print(recent.source)  # "cellar" (unfiltered: 3 credits flat) or "live" (per page)
 by_url = client.get_document_by_url(
     "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679"

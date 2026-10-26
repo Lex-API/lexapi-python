@@ -43,9 +43,13 @@ listed under **Changed** — read those before upgrading.
   `post_filtered_kept` (parsed `X-PostFiltered-Kept`: `{"author":
   PostFilterCount(kept=3, before=10), ...}`) and `post_filtered_kept_raw`;
   `SearchHit.celex_number`, `form`, `date_of_document`.
-- **Recent documents:** list values for `document_type` / `author` /
-  `subdomain`; `RecentDocumentsResponse.source` (`cellar` / `live`) and
-  `fetched_at`.
+- **Recent documents:** `author` accepts a list (sent as repeated params);
+  `RecentDocumentsResponse.source` (`cellar` / `live`) and `fetched_at`.
+  `document_type` and `subdomain` stay **single-valued**: the endpoint has no
+  multi-type fan-out and EUR-Lex honours only the first `FM_CODED` /
+  `DTS_SUBDOM`, so passing more than one raises `ValueError` instead of being
+  silently narrowed (a one-item list is accepted). Use `search()` for
+  multi-value filters.
 - **Export:** `include_stubs=`; `ExportStream.written` / `skipped_stubs`
   from the `_done` trailer; `date_from` / `date_to` / `fetched_since` accept
   `datetime` objects.

@@ -195,24 +195,48 @@ def semantic_search_body(
     return body
 
 
+def _single(name: str, value: Any) -> str | None:
+    """A filter the endpoint honours with one value only.
+
+    A one-item list/tuple is unwrapped (0.2.0 pre-releases accepted lists);
+    more than one raises, because the API would silently use only the first.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1 and isinstance(value[0], str):
+            return value[0]
+        raise ValueError(
+            f"{name} takes a single value on /documents/recent (the API uses only the first "
+            f"of several); got {list(value)!r}. Use search() for multi-value filters."
+        )
+    raise TypeError(f"{name} must be a string, got {type(value).__name__}")
+
+
 def recent_documents_params(
     *,
     days: int | None = None,
-    document_type: OneOrMany | None = None,
+    document_type: str | None = None,
     author: OneOrMany | None = None,
     domain: str | None = None,
-    subdomain: OneOrMany | None = None,
+    subdomain: str | None = None,
     language: str | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Query params for /documents/recent. Lists are sent as repeated params."""
+    """Query params for /documents/recent.
+
+    ``document_type`` and ``subdomain`` are single-valued: the endpoint builds
+    one EUR-Lex query without the fan-out ``/search`` does, and EUR-Lex honours
+    only the first ``FM_CODED`` / ``DTS_SUBDOM`` (lex-api
+    ``server/utils/urlBuilder.js``). ``author`` lists are sent as repeated params.
+    """
     return drop_none(
         {
             "days": days,
-            "documentType": document_type,
+            "documentType": _single("document_type", document_type),
             "author": author,
             "domain": domain,
-            "subdomain": subdomain,
+            "subdomain": _single("subdomain", subdomain),
             "language": language,
             "limit": limit,
         }

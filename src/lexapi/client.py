@@ -180,6 +180,11 @@ class LexAPI:
         / ``partial`` / ``post_filtered_by`` / ``warning`` (``X-Warning``), and
         ``response.source`` names the upstream (``soap``, ``cellar``,
         ``corpus`` — a corpus answer is always ``partial``).
+
+        List-valued ``document_type`` fans out server-side (one EUR-Lex query
+        per type, merged; ``response.document_type_fan_out``). A ``subdomain``
+        list is OR-ed on the EUR-Lex web service; if the search falls back to
+        EUR-Lex result pages, only the first subdomain applies.
         """
         body = _payloads.search_body(
             query,
@@ -283,10 +288,10 @@ class LexAPI:
         self,
         *,
         days: int | None = None,
-        document_type: OneOrMany | None = None,
+        document_type: str | None = None,
         author: OneOrMany | None = None,
         domain: str | None = None,
-        subdomain: OneOrMany | None = None,
+        subdomain: str | None = None,
         language: str | None = None,
         limit: int | None = None,
     ) -> RecentDocumentsResponse:
@@ -300,6 +305,11 @@ class LexAPI:
         credits whatever the ``limit``; filtering on ``document_type`` /
         ``author`` / ``domain`` / ``subdomain`` fetches from EUR-Lex and keeps
         3 credits per page fetched (unfetched pages refunded).
+
+        ``document_type`` and ``subdomain`` take **one** value: this endpoint
+        has no multi-type fan-out and EUR-Lex honours only the first of
+        several, so a list of more than one raises :class:`ValueError` (use
+        :meth:`search` for multi-value filters). ``author`` accepts a list.
         """
         params = _payloads.recent_documents_params(
             days=days,
