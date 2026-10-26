@@ -14,19 +14,20 @@ jobs:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
+      # uv fetches any CPython (incl. 3.9, which the ubuntu-latest toolcache
+      # no longer ships), so the whole supported range stays tested.
+      - uses: astral-sh/setup-uv@v6
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          uv venv --python ${{ matrix.python-version }} .venv
+          uv pip install --python .venv -e ".[dev]"
       - name: Lint
-        run: ruff check .
+        run: .venv/bin/ruff check .
       - name: Type-check
         if: matrix.python-version == '3.12'
-        run: mypy
+        run: .venv/bin/mypy
       - name: Test
-        run: pytest
+        run: .venv/bin/pytest
 
   build:
     runs-on: ubuntu-latest
