@@ -11,9 +11,7 @@ from lexapi import AsyncLexAPI, NotFoundError
 
 def make_client(handler, **kwargs) -> AsyncLexAPI:
     kwargs.setdefault("retry_config", FAST_RETRY)
-    return AsyncLexAPI(
-        api_key="lex_test_key", transport=httpx.MockTransport(handler), **kwargs
-    )
+    return AsyncLexAPI(api_key="lex_test_key", transport=httpx.MockTransport(handler), **kwargs)
 
 
 def test_async_get_info():
@@ -56,9 +54,7 @@ def test_async_retries_429():
     def handler(request: httpx.Request) -> httpx.Response:
         calls["count"] += 1
         if calls["count"] <= 2:
-            return httpx.Response(
-                429, json={"error": "slow"}, headers={"Retry-After": "0"}
-            )
+            return httpx.Response(429, json={"error": "slow"}, headers={"Retry-After": "0"})
         return httpx.Response(200, json=INFO_BODY)
 
     async def run():

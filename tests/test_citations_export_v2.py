@@ -242,7 +242,7 @@ def test_case_law_hit_snippet_and_record_fields():
                 "decision_date": "2024-09-26",
                 "case_number": "C-768/21",
                 "ecli": "ECLI:EU:C:2024:785",
-                "parties": "Land Hessen v TR",
+                "parties": ["Land Hessen", "TR"],  # clausly sends a list
                 "summary": "The Court examined whether...",
                 "snippet": "The Court examined whether, under the GDPR...",
                 "outcome": "dismissed",
@@ -263,7 +263,8 @@ def test_case_law_hit_snippet_and_record_fields():
     assert hit.text is None
     assert hit.snippet.startswith("The Court examined")
     assert hit.summary == "The Court examined whether..."
-    assert hit.parties == "Land Hessen v TR"
+    assert hit.parties == ["Land Hessen", "TR"]
+    assert hit.parties_text == "Land Hessen v TR"
     assert hit.decision_date == "2024-09-26"
     assert hit.jurisdiction == "EU"
     assert hit.language == "en"

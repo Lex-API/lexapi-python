@@ -76,12 +76,16 @@ def test_legacy_bare_error_derives_code_from_status():
     assert err.message == "No such document"
 
 
-def test_legacy_error_slug_with_message():
-    # Some legacy endpoints put the slug in `error` and prose in `message`.
+def test_legacy_error_string_is_text_not_a_code():
+    # PLAN §1.3: a string `error` is human text; the code comes from the status.
     err = error_from_response(429, {"error": "RATE_LIMITED", "message": "Slow down"})
     assert isinstance(err, RateLimitedError)
     assert err.code == "RATE_LIMITED"
-    assert err.message == "Slow down"
+    assert err.message == "RATE_LIMITED: Slow down"
+    # a 400 whose text happens to equal a slug is NOT misread as that code
+    err = error_from_response(400, {"error": "NOT_FOUND"})
+    assert isinstance(err, InvalidParamsError)
+    assert err.code == "INVALID_PARAMS"
 
 
 def test_legacy_prose_error_with_extra_message():
@@ -93,9 +97,11 @@ def test_legacy_prose_error_with_extra_message():
 
 def test_non_json_body_falls_back_to_status():
     err = error_from_response(503, None)
-    assert isinstance(err, UpstreamError)
-    assert err.code == "UPSTREAM_ERROR"
+    assert isinstance(err, UpstreamError)  # ServiceUnavailableError subclasses it
+    assert err.code == "SERVICE_UNAVAILABLE"
     assert err.message == "HTTP 503"
+    err = error_from_response(502, None)
+    assert err.code == "UPSTREAM_ERROR"
 
 
 def test_credits_exhausted_resets_at_from_details():

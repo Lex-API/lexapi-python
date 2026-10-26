@@ -22,7 +22,9 @@ jobs:
           uv venv --python ${{ matrix.python-version }} .venv
           uv pip install --python .venv -e ".[dev]"
       - name: Lint
-        run: .venv/bin/ruff check .
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
       - name: Type-check
         if: matrix.python-version == '3.12'
         run: .venv/bin/mypy

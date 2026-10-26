@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "lexapi-client"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Official Python SDK for LexAPI - European legal data, made queryable."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -38,8 +38,14 @@ Changelog = "https://github.com/Lex-API/lexapi-python/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.4", "mypy>=1.10"]
 
+[tool.hatch.version]
+path = "src/lexapi/_meta.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/lexapi"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/lexapi", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
 
 [tool.ruff]
 line-length = 100
@@ -51,6 +57,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 files = ["src/lexapi"]
+strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 

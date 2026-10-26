@@ -125,9 +125,7 @@ def test_legacy_bare_error_envelope():
 
 def test_rate_limit_error_carries_retry_after_header():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            429, json={"error": "Rate limit hit"}, headers={"Retry-After": "7"}
-        )
+        return httpx.Response(429, json={"error": "Rate limit hit"}, headers={"Retry-After": "7"})
 
     with make_client(handler, max_retries=0) as client:
         with pytest.raises(RateLimitedError) as excinfo:

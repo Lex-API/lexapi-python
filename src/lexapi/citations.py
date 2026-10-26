@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lexapi._payloads import drop_none, seg
 from lexapi.models import (
@@ -27,7 +27,7 @@ _EDGE_PAGE_SIZE = 100
 
 def _edge_params(
     citation_type: str | None, limit: int | None, offset: int | None
-) -> dict:
+) -> dict[str, Any]:
     return drop_none({"citationType": citation_type, "limit": limit, "offset": offset})
 
 
@@ -114,14 +114,16 @@ class CitationsResource:
 
         Paging is in edges, so a document whose edges straddle a page
         boundary is yielded once per page it appears in (merge on
-        ``celex_number`` if you need one entry per document). Each page is a
-        separate billed call (1 credit).
+        ``celex_number`` if you need one entry per document). The API orders
+        edges by extraction time only and offers no stable cursor, so edges
+        extracted at the same instant — or extracted while you iterate — can
+        shift between pages: an edge may repeat or be missed. Each page is a
+        separate billed call (1 credit); the walk stops at the first short
+        page.
         """
         offset = 0
         while True:
-            page = self.cited_by(
-                celex, citation_type=citation_type, limit=page_size, offset=offset
-            )
+            page = self.cited_by(celex, citation_type=citation_type, limit=page_size, offset=offset)
             yield from page.cited_by
             rows = page.edge_count
             offset += rows
@@ -316,9 +318,7 @@ class AsyncCitationsResource:
             cast=CitationPathResponse,
         )
 
-    async def related(
-        self, celex: str, *, limit: int | None = None
-    ) -> RelatedDocumentsResponse:
+    async def related(self, celex: str, *, limit: int | None = None) -> RelatedDocumentsResponse:
         """GET /citations/related/{celex} — see :meth:`CitationsResource.related`."""
         return await self._client._request(
             "GET",
@@ -329,6 +329,4 @@ class AsyncCitationsResource:
 
     async def stats(self) -> CitationStatsResponse:
         """GET /citations/stats — see :meth:`CitationsResource.stats`."""
-        return await self._client._request(
-            "GET", "/citations/stats", cast=CitationStatsResponse
-        )
+        return await self._client._request("GET", "/citations/stats", cast=CitationStatsResponse)

@@ -43,6 +43,12 @@ def _opt_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def header(headers: httpx.Headers, name: str) -> str | None:
+    """A response header as ``str | None`` (httpx types ``get`` as ``Any``)."""
+    value = headers.get(name)
+    return value if isinstance(value, str) else None
+
+
 def _header_int(value: str | None) -> int | None:
     if value is None:
         return None
@@ -70,7 +76,7 @@ class SubscriptionInfo:
     daily_limit: int | None = None
     monthly_credits: int | None = None
     rate_limit: str | None = None
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Any) -> SubscriptionInfo | None:
@@ -101,7 +107,7 @@ class CreditsInfo:
     included: int | None = None
     topup: int | None = None
     resets_at: str | None = None
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Any) -> CreditsInfo | None:
@@ -128,7 +134,7 @@ class UsageInfo:
     remaining: int | None = None
     unit: str | None = None
     resets_at: str | None = None
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Any) -> UsageInfo | None:
@@ -144,7 +150,7 @@ class UsageInfo:
         )
 
 
-class APIResponse(Mapping):
+class APIResponse(Mapping[str, Any]):
     """Read-only mapping over the raw JSON body, plus typed helpers.
 
     The raw body stays fully accessible (``response["usage"]``,
@@ -153,7 +159,7 @@ class APIResponse(Mapping):
 
     def __init__(self, data: Any, headers: httpx.Headers | None = None) -> None:
         self.data: Any = data
-        self._map: dict = data if isinstance(data, dict) else {}
+        self._map: dict[str, Any] = data if isinstance(data, dict) else {}
         self.headers: httpx.Headers = headers if headers is not None else httpx.Headers()
 
     # -- Mapping protocol -------------------------------------------------
@@ -207,7 +213,7 @@ class APIResponse(Mapping):
         return usage.resets_at if usage is not None else None
 
     @property
-    def subscription(self) -> dict | None:
+    def subscription(self) -> dict[str, Any] | None:
         """The raw ``subscription`` block, when present."""
         value = self._map.get("subscription")
         return value if isinstance(value, dict) else None
@@ -221,19 +227,19 @@ class APIResponse(Mapping):
     @property
     def warning(self) -> str | None:
         """The ``X-Warning`` header (tier clamping and similar), if any."""
-        return self.headers.get("x-warning")
+        return header(self.headers, "x-warning")
 
     @property
     def rate_limit_limit(self) -> int | None:
         """Requests allowed per window for this key (``RateLimit-Limit``)."""
-        return _header_int(self.headers.get("ratelimit-limit"))
+        return _header_int(header(self.headers, "ratelimit-limit"))
 
     @property
     def rate_limit_remaining(self) -> int | None:
         """Requests left in the current window (``RateLimit-Remaining``)."""
-        return _header_int(self.headers.get("ratelimit-remaining"))
+        return _header_int(header(self.headers, "ratelimit-remaining"))
 
     @property
     def rate_limit_reset(self) -> int | None:
         """Seconds until the rate-limit window resets (``RateLimit-Reset``)."""
-        return _header_int(self.headers.get("ratelimit-reset"))
+        return _header_int(header(self.headers, "ratelimit-reset"))

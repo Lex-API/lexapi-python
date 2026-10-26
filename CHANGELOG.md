@@ -23,7 +23,8 @@ listed under **Changed** — read those before upgrading.
   (`SemanticBaseAct`), plus `authentic_celex`; and the previously untyped
   `id`, `snippet`, `language`, `chapter`, `section`.
 - **Case-law hits:** `snippet` (the default payload — `text` is only present
-  with `include_text=True`), `summary`, `parties`, `decision_date`,
+  with `include_text=True`), `summary`, `parties` (a list — the upstream
+  sends one; `parties_text` joins it), `decision_date`,
   `jurisdiction`, `language`, `paragraph_number`. Both semantic responses:
   `max_results`, `upstream_metadata`.
 - **Documents:** `accept_languages` on `get_document` / `get_documents_batch`;
@@ -38,7 +39,9 @@ listed under **Changed** — read those before upgrading.
 - **Search:** `fresh=` (bypass the 60-minute result cache);
   `SearchResponse.source` (`X-Search-Source` / body `source`: `soap`,
   `cellar`, `corpus`), `cache` (`X-Search-Cache`), `search_parameters`,
-  `post_filtered_kept`; `SearchHit.celex_number`, `form`, `date_of_document`.
+  `post_filtered_kept` (parsed `X-PostFiltered-Kept`: `{"author":
+  PostFilterCount(kept=3, before=10), ...}`) and `post_filtered_kept_raw`;
+  `SearchHit.celex_number`, `form`, `date_of_document`.
 - **Recent documents:** list values for `document_type` / `author` /
   `subdomain`; `RecentDocumentsResponse.source` (`cellar` / `live`) and
   `fetched_at`.
@@ -71,14 +74,56 @@ listed under **Changed** — read those before upgrading.
 - Path segments (CELEX, webhook ids, dates) are percent-encoded; CELEX
   characters such as `32008R1272R(01)` pass through unchanged.
 - `LICENSE` (MIT) file, Python 3.9–3.14 classifiers, `Typing :: Typed`;
-  CI runs 3.9–3.14, mypy, and a build + `twine check`.
+  CI runs 3.9–3.14, `ruff check`, `ruff format --check`, `mypy --strict`,
+  and a build + `twine check`. The version is single-sourced in
+  `lexapi/_meta.py`; `hatchling>=1.27` is pinned (PEP 639 license field).
+- `RetryConfig(retry_read_only_posts=True)` — opt-in retry of the read-only
+  POSTs (search, document reads, resolve, semantic search) on an app-origin
+  502/503/504, which the API refunds in full. Never applies to webhook writes.
+- New error types: `ServiceUnavailableError` (503, code `SERVICE_UNAVAILABLE`,
+  subclass of `UpstreamError`), `InvalidResponseError` (2xx whose body is not
+  JSON), `IncompleteExportError` (export without its `_done` trailer).
+- `ExportStream.complete`, `rows_read`, `invalid_lines`.
 
 ### Changed
 
-- **Default read timeout 60 s → 95 s.** The API's upstream budget is 90 s;
-  at 60 s the SDK cut slow live fetches off before the server could answer
-  with its typed (and refunded) 504 `TIMEOUT`. Pass `timeout=60` to keep the
+Retries follow one rule now (PLAN.md §1.2): **retry only when the retry
+cannot charge you twice.** LexAPI refunds a failure only when its own app
+finishes the error response, so proxy errors and dropped connections are not
+refunded.
+
+- **Billed GETs no longer retry proxy 502/504 or Cloudflare 520/524**, nor a
+  connection dropped after the request was sent (both may already have been
+  charged). They still retry app-origin 502/503/504 (refunded), 429, and
+  failures that never reached the app. Free calls (`get_info`, webhook reads)
+  retry all of these.
+- **Connection failures that never reached the app are retried for every
+  method**: connect errors/timeouts, pool timeouts, a stale keep-alive socket
+  closed before any response byte, Cloudflare 521/522/523. Previously a stale
+  keep-alive disconnect was never retried.
+- **Default timeouts: response 60 s → 95 s, pool 95 s → 10 s.** `timeout` is
+  a per-attempt inactivity limit (response head, then each body chunk), not
+  a whole-call deadline. 95 s sits above the API's 90 s budget for one
+  upstream fetch and below Cloudflare's 100 s. Pass `timeout=60` to keep the
   old value.
+- **A 2xx with a non-JSON body raises `InvalidResponseError`** instead of
+  returning an empty, successful response.
+- **503 maps to `SERVICE_UNAVAILABLE`** (`ServiceUnavailableError`, still an
+  `UpstreamError`), not `UPSTREAM_ERROR`.
+- **Legacy error bodies:** a string `error` is never read as an error code
+  (the code comes from the HTTP status), and `details` is kept on bodies with
+  only `message` / `details`.
+- **Numeric retry hints:** values above 1e12 are epoch milliseconds and above
+  1e9 epoch seconds (was: above 1e7 → epoch seconds). `X-RateLimit-Reset` is
+  no longer read (the API doesn't send it).
+- **Export streams:** a mid-stream transport failure raises
+  `LexAPIConnectionError` / `RequestTimeoutError` (was: a raw `httpx`
+  exception); a missing `_done` trailer raises `IncompleteExportError`;
+  `truncated` no longer reports skipped stub rows as truncation.
+- **`webhooks.iter_deliveries` yields each delivery once** (deduplicated on
+  `id`) when new deliveries shift the pages.
+- **Empty, `.` and `..` path segments raise `ValueError`** (httpx would
+  resolve `..` to the parent endpoint).
 - **Retry waits no longer use `RateLimit-Reset` outside a 429.** LexAPI sends
   `RateLimit-*` on every response, so a retried 502/503/504 used to sleep for
   the rate-limit window (up to the 30 s cap) instead of the computed backoff;
@@ -86,16 +131,18 @@ listed under **Changed** — read those before upgrading.
   `Retry-After` is still honoured on any status.
 - **A legacy-plan 429 for an exhausted quota is no longer retried** (body
   carries `usage.resetsAt` and no `retryAfter`) — it cannot succeed before
-  the reset. Rate-limit 429s are retried as before.
-- **Cloudflare 520–524 are retried for GETs** and mapped to
-  `UpstreamError` (520–523) / `TimeoutError` (524) instead of a generic
-  `LexAPIError` with code `INTERNAL`.
+  the reset — and its `retry_after` is `None` (it used to show the 60 s rate
+  window). Rate-limit 429s are retried as before.
+- **Cloudflare 520–524** are mapped to `UpstreamError` (520–523) /
+  `TimeoutError` (524) instead of a generic `LexAPIError` with code
+  `INTERNAL`; which of them are retried follows the rule above.
 - `get_info()` returns `InfoResponse` (an `APIResponse` subclass — mapping
   access is unchanged).
 
 ### Deprecated
 
-- `Webhook.max_retries` — the API no longer sends `maxRetries`; read
+- `Webhook.max_retries` — the API no longer sends `maxRetries`, so it is
+  always `None`; reading it emits a `DeprecationWarning`. Read
   `Webhook.retry_policy.max_attempts` (on `webhooks.get()`).
 
 ### Fixed
@@ -106,7 +153,15 @@ listed under **Changed** — read those before upgrading.
   `TierForbiddenError` (with `upgrade_url`), not a 402; `DELETE /webhooks/{id}`
   answers 200 with a JSON body (still returns `None`); README no longer
   describes the package as an unpublished scaffold.
-- `mypy` now passes on the package (two `sleep(float | None)` errors).
+- `mypy` now passes on the package, in strict mode.
+- `verify_signature` returns `False` for a non-ASCII signature header instead
+  of raising `TypeError` (anyone can send such a header to a public receiver).
+- `with_options(connect_timeout=...)` alone now takes effect (it was ignored
+  unless `timeout` was also passed).
+- Docstrings: batch live items without text bill 1 credit; semantic case-law
+  `limit` caps are FREE 10 / STARTER 20 / PROFESSIONAL 50 / BUSINESS+ 100;
+  recent documents are admitted against `ceil(limit / 10)` pages; the export
+  docs no longer state a per-row price (see the pricing page).
 
 ## [0.1.0] — 2026-07-02
 

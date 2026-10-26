@@ -4,58 +4,147 @@ Official Python SDK for [LexAPI](https://lex-api.com) (`https://lex-api.com/api/
 
 ## 1. SDK Contract (shared across all LexAPI SDKs)
 
-This section is identical in `lexapi-python`, `lexapi-typescript`, `lexapi-kotlin`, and `lexapi-swift`. Any change here must be propagated to all four repos in the same release cycle.
+This section is the single shared contract for `lexapi-python`, `lexapi-typescript`, `lexapi-kotlin` and `lexapi-swift`, and is copied **verbatim** into each repo's `PLAN.md`. A change here is made in all repos in the same release cycle. Language-specific spellings live only in §1.10.
 
-Source of truth: `openapi.yaml` (LexAPI 2.0.0, OpenAPI 3.1.0). Production base URL: `https://lex-api.com/api/v1`. Docs: <https://lex-api.com/docs>.
+Source of truth: `openapi.yaml` (LexAPI 2.x, OpenAPI 3.1.0) plus the server code where the spec is silent. Production base URL: `https://lex-api.com/api/v1`. Docs: <https://lex-api.com/docs>. Every rule below that depends on server behaviour cites it, so it can be re-checked when the server changes.
 
 ### 1.1 Authentication
 
 - Per the OpenAPI `securitySchemes.ApiKeyAuth`: `type: apiKey`, `in: header`, `name: x-api-key`.
 - The SDK sends the key on **every** request as the `x-api-key` header. Keys are prefixed `lex_`.
-- Keys are server-side secrets: SDKs must never log the key, never embed it in URLs, and README/quickstart must warn against shipping keys in client-side code (the API explicitly does not support public keys).
-- Key is provided at client construction time (constructor arg) with an environment-variable fallback (`LEXAPI_API_KEY`).
+- Keys are server-side secrets: SDKs never log the key, never put it in URLs or error messages, and the README/quickstart warns against shipping keys in client-side code (the API does not support public keys).
+- The key is passed at client construction, with an environment-variable fallback (`LEXAPI_API_KEY`).
 
-### 1.2 Retries and rate limiting
+### 1.2 Retries — the billing-safety rule
 
-- Default retry policy: up to 3 retries with exponential backoff + full jitter (base 500 ms, cap 30 s).
-- Retryable: HTTP 429 (`RATE_LIMITED`), 502 (`UPSTREAM_ERROR`), 503, 504 (`TIMEOUT` — spec marks this retry-safe), Cloudflare 520–524, and transport-level network errors. Non-retryable: all other 4xx (including 402 `CREDITS_EXHAUSTED` — retrying cannot help until top-up/reset), a legacy-plan 429 that reports an exhausted *quota* (`usage.resetsAt` in the body, no `retryAfter`), and 500 `INTERNAL` by default.
-- Server-directed wait wins over computed backoff. Resolution order for the wait duration on 429:
-  1. `Retry-After` response header (seconds; documented in the spec's `RateLimited` response) — on any status,
-  2. on a 429 only: `RateLimit-Reset` (draft-6, delta-seconds). LexAPI sends `RateLimit-*` on **every** `/api/v1` response, so outside a 429 it describes the rate window and must not drive retry waits,
-  3. on a 429 only: the JSON `retryAfter` field on the error body,
-  4. computed exponential backoff as fallback.
-- Retry behaviour is configurable (max attempts, disable entirely). Idempotent GETs retry by default; non-GET calls retry only on 429/network-error-before-send unless the caller opts in.
+**Rule: an SDK retries automatically only when the retry cannot charge the caller twice.** Everything else is surfaced as a typed error and the caller decides.
+
+Server facts this rule rests on (lex-api `server/`):
+
+- The per-key rate limiter runs **before** credits are charged (`routes/api.js`: `createRateLimiter()` precedes `consumeCredits`). A 429 from the limiter never charged anything.
+- Credits are charged when `consumeCredits` admits the request. A failure is refunded only when **the app itself finishes** a 4xx/5xx response (`middleware/credits.js` `scheduleFailureRefund`, `res.on('finish')`): a 5xx is refunded in full, a 404 down to 1 credit, other 4xx in full.
+- Therefore **no refund** happens when the connection drops after the request was admitted, or when a **proxy** (Cloudflare, the gateway) answers 502/504/520/524 while the app is still running or has already answered 200. Such a call may have been charged.
+
+Definitions:
+
+- **App-origin response**: the response carries a non-empty `X-LexAPI-Version` header (set on every app response from lex-api #299 on), or its body is a JSON object with an `error` member (the typed envelope or the legacy `{"error": "..."}` shape). Proxies answer with HTML or plain text. Anything else is treated as **proxy-origin** (unknown origin is never assumed to be the app).
+- **Never reached the app**:
+  - transport failures before the request was sent or answered: DNS / connection refused / TLS failure, connect timeout, timeout waiting for a free pooled connection, and a connection closed **before any response byte** (a stale keep-alive socket the server had already dropped);
+  - Cloudflare **521** (web server down), **522** (connection timed out), **523** (origin unreachable).
+- **Free operations** (0 credits): `GET /info`, `GET /webhooks`, `GET /webhooks/{id}`, `GET /webhooks/{id}/deliveries`. (On legacy daily-call plans a successful call counts one call; a retried call that had silently succeeded can count once more.)
+- **Read-only POSTs**: `POST /search`, `/documentContent`, `/documentContent/batch`, `/documents/url`, `/documents/metadata`, `/resolve`, `/search/semantic`, `/legislation/semantic`. They change no server state.
+- **Mutating calls**: `POST /webhooks`, `PUT/DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` (sends a delivery), `POST /citations/extract` (persists edges).
+
+Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
+
+| Failure | GET, billed | GET, free | Read-only POST | Mutating call |
+|---|---|---|---|---|
+| 429, not a quota (see below) | retry | retry | retry | retry |
+| 429 reporting an exhausted quota | no | no | no | no |
+| Never reached the app (transport or 521/522/523) | retry | retry | retry | retry |
+| App-origin 502 / 503 / 504 | retry | retry | retry **only with the read-only-POST opt-in** | no |
+| Proxy-origin 502 / 503 / 504, 520, 524 | no | retry | no | no |
+| Transport error after the request was sent (read error, read timeout, reset mid-response) | no | retry | no | no |
+| 400 / 401 / 402 / 403 / 404 / 500 and anything else | no | no | no | no |
+
+- **Quota 429**: legacy daily-call plans (`"Daily quota exceeded"`) and the legacy monthly semantic quota answer 429 with a `usage` object carrying `resetsAt`, and with neither a `Retry-After` header nor a `retryAfter` body field. It cannot succeed before `resetsAt`, so it is not retried, and the error's retry-after value is **null** (the `RateLimit-Reset` header on it describes the per-minute window, not the quota). The error exposes `resetsAt` and a quota-exhausted flag.
+- **Opt-in: read-only POSTs.** A boolean option, default **off**, that adds the "app-origin 502/503/504 on a read-only POST" row. Those responses are refunded in full, so the retry is billing-safe. It never applies to mutating calls and never to proxy-origin or unknown-origin responses.
+- **Power-user override** (optional per SDK): a set of statuses retried for every non-GET call regardless of origin. If an SDK offers it, its docs must say it can duplicate webhooks/test deliveries and double-charge. Default: `{429}`.
+- **Policy defaults:** up to 3 retries after the first attempt; exponential backoff with full jitter, `U(0, min(cap, base × 2^attempt))`, base 0.5 s, cap 30 s; `max retries = 0` disables retrying.
+- **Wait before a retry** (server-directed wins over backoff; every hint is clamped to the 30 s cap):
+  1. `Retry-After` header, on any status: delta-seconds or an HTTP-date. An empty or unparseable value counts as absent.
+  2. On a 429 only: `RateLimit-Reset` (IETF draft-6, delta-seconds). LexAPI sends `RateLimit-Policy/-Limit/-Remaining/-Reset` on every `/api/v1` response, so on any other status it describes the rate window and must not drive the wait. `X-RateLimit-*` is never sent (the limiter's legacy headers are disabled) and is not read.
+  3. On a 429 only: the JSON `retryAfter` body field.
+  4. Computed backoff.
+- **Numeric hints** are delta-seconds. Defensively, a value above **1e12** is read as epoch milliseconds and a value above **1e9** as epoch seconds, and either is converted to a delta (floored at 0). Values up to 1e9 are taken as delta-seconds.
+- The retry-after value exposed on an error follows the same resolution (steps 1–3), and is null for a quota 429.
 
 ### 1.3 Typed errors
 
-- All non-2xx responses map to a typed exception/error hierarchy mirroring the API error envelope:
+- Every non-2xx response raises/returns a typed error carrying `code`, `message`, `status`, optional `details`, the raw decoded `body`, and `retryAfter` (§1.2).
+- **Typed envelope** `{"success": false, "error": {"code", "message", "details"}}`: `error.code` is authoritative. Codes from the spec: `NOT_FOUND`, `INVALID_CELEX`, `INVALID_URL`, `INVALID_PARAMS`, `RATE_LIMITED`, `TIER_FORBIDDEN`, `CREDITS_EXHAUSTED`, `UPSTREAM_ERROR`, `TIMEOUT`, `INTERNAL`. An unknown code never crashes the parser: keep the raw string on the base error type.
+- **Legacy shape** `{"error": "<text>", "message"?: "...", "details"?: ...}` (API-key 401s, every 429, search/batch/webhook validation 400s, the `/export` and legacy-semantic tier gates, semantic upstream 502/504, webhook 404/500): the string `error` is **human text, never a code** — even when it happens to equal a slug. `message` = the `error` text, followed by `": " + message` when `message` is present and different. The code comes from the HTTP status (table below).
+- **`details`**: `error.details` on the typed envelope; otherwise the top-level `details` member (validation errors put a list of reasons there), including on bodies that have no `error` member at all (`{"message", "details"}`).
+- **No usable body** (non-JSON, empty): `message` = `"HTTP <status>"`, code from the status.
+- **Status → code** when the body has no typed code:
 
-  ```json
-  { "success": false, "error": { "code": "NOT_FOUND", "message": "...", "details": { } } }
-  ```
+  | Status | Code |
+  |---|---|
+  | 400 | `INVALID_PARAMS` |
+  | 401 | `UNAUTHORIZED` (SDK-side; distinct authentication error type) |
+  | 402 | `CREDITS_EXHAUSTED` |
+  | 403 | `TIER_FORBIDDEN` |
+  | 404 | `NOT_FOUND` |
+  | 429 | `RATE_LIMITED` |
+  | 500 | `INTERNAL` |
+  | 502, 520, 521, 522, 523 | `UPSTREAM_ERROR` |
+  | 503 | `SERVICE_UNAVAILABLE` (SDK-side; the API never sends this code — its 503s are drain/health answers and proxy pages) |
+  | 504, 524 | `TIMEOUT` |
+  | anything else | `INTERNAL` |
 
-- `error.code` is a stable slug enum (from the spec): `NOT_FOUND`, `INVALID_CELEX`, `INVALID_URL`, `INVALID_PARAMS`, `RATE_LIMITED`, `TIER_FORBIDDEN`, `CREDITS_EXHAUSTED`, `UPSTREAM_ERROR`, `TIMEOUT`, `INTERNAL`. SDK error types carry `code`, `message`, optional `details`, and the HTTP status. Unknown codes must not crash the parser (forward compatibility: keep raw code string).
-- **Legacy tolerance:** some legacy endpoints return a bare `{ "error": "..." }` body without the `success`/typed envelope. The error parser must accept both shapes: if `error` is an object, read `code`/`message`/`details`; if `error` is a string, use it as `message` and derive `code` from the HTTP status (404→`NOT_FOUND`, 429→`RATE_LIMITED`, 401→unauthorized, etc.).
-- 401 (missing/invalid/revoked key) surfaces as a distinct authentication error type.
+- **SDK-side codes** (never in `error.code`): `UNAUTHORIZED`, `SERVICE_UNAVAILABLE`, `INVALID_RESPONSE` (a 2xx whose non-empty body is not JSON — e.g. a proxy's HTML interstitial; never turned into an empty success), `INCOMPLETE_EXPORT` (§1.8), `CONNECTION_ERROR` (transport failure), `REQUEST_TIMEOUT` (the SDK's own timeout, distinct from the server's `TIMEOUT`).
+- A 204 or an empty 2xx body is a successful empty object.
+- **Typed extras:** `CREDITS_EXHAUSTED` exposes `details.operation`, `weight`, `available`, `included`, `topup`, `used`, `resetsAt`. `RATE_LIMITED` exposes the quota flag and `usage.resetsAt`. Legacy tier gates expose `upgradeUrl`.
 
 ### 1.4 Pagination helpers
 
-- Search endpoints are page-based (`page`/`maxPages`, tier-bounded per the `subscription` block). SDKs provide an iterator/stream helper that walks pages transparently and stops at the tier cap, surfacing `truncated`/`truncatedAt`/`truncatedReason` and `partial`/`partialReason` flags rather than hiding them.
-- `/webhooks/{id}/deliveries` and other list endpoints get the same helper where applicable.
+- `/search` has no page cursor — only `maxPages` (fetch the first N pages, tier-bounded) — so there is no search iterator. SDKs surface `truncated`/`truncatedAt`/`truncatedReason` and `partial`/`partialReason` instead of hiding them.
+- Offset-paginated list endpoints get an iterator. None has a stable cursor, so each iterator documents its limits:
+  - `/citations/cites/{celex}` and `/citations/cited-by/{celex}`: offsets count **edge rows**; advance by the sum of the page's `citationCount`s and stop at the first page shorter than the page size (never compare offsets with `totalCitations`, which counts distinct document pairs). Edges are ordered by extraction time only, so edges extracted at the same instant or during the walk can shift: an edge may repeat or be missed. Every page is a billed call.
+  - `/webhooks/{id}/deliveries` (newest first): yield each delivery at most once (dedupe on `id`), because a delivery created during the walk shifts later pages by one; stop on an empty page or when the offset reaches `total`.
 
 ### 1.5 Credit visibility
 
-- Every successful response can include a `usage` block (`current`/`limit`/`remaining`/`unit`/`resetsAt`; dual-mode credits-vs-daily-calls) and, on credit-pool (v2) accounts, a `credits` block (`operation_weight`, `current`, `limit`, `remaining`, `included`, `topup`, `resetsAt`).
-- SDKs expose a credit-visibility helper on every response wrapper: `unitsCharged` (mapped from `credits.operation_weight`; 0 for free ops like `/info`), `creditsRemaining` (from `credits.remaining`, falling back to `usage.remaining`), and `resetsAt`. The raw `usage`/`credits` blocks stay accessible untyped-loss-free.
-- Helpers must tolerate the blocks being absent (legacy daily-call accounts omit `credits`).
+- Successful responses can carry a `usage` block (`current`/`limit`/`remaining`/`unit`/`resetsAt`; credits on v2 plans, daily calls on legacy plans) and, on credit-pool (v2) accounts, a `credits` block (`operation_weight`, `current`, `limit`, `remaining`, `included`, `topup`, `resetsAt`).
+- Every response wrapper exposes `unitsCharged` (`credits.operation_weight`; 0 for free ops and legacy accounts), `creditsRemaining` (`credits.remaining`, falling back to `usage.remaining`) and `resetsAt`. The raw blocks stay accessible without loss.
+- `operation_weight` already reflects a settlement the handler applied before answering (corpus read 1, Cellar 4, HyDE fallback 5). Failure refunds land after the response is sent, so an error's own figures show the pre-refund pool and the next call reflects it.
+- Helpers tolerate either block being absent.
 
 ### 1.6 Timeouts
 
-- Defaults: 10 s connect, 95 s read/overall. The API's upstream hard timeout is 90 s and Cloudflare's proxy timeout 100 s: staying *above* 90 s means the SDK receives the server's typed (refunded) 504 rather than cutting the connection first. Both configurable per-client and per-call (`with_options`).
+One model, per attempt:
+
+- **Connect timeout** `C` (default **10 s**): DNS + TCP + TLS, plus the wait for a free pooled connection.
+- **Response timeout** `R` (default **95 s**): an **inactivity** limit — the longest the SDK waits for the next bytes of the response: from the end of sending the request until the response head arrives, and then between consecutive body chunks (the timer restarts on every chunk). It applies to buffered and streaming (export) bodies alike. It is not a deadline for the whole call.
+- There is no whole-call deadline across retries; worst case is about `(retries + 1) × (C + R)` plus backoff.
+- A runtime that cannot time the connect phase separately (e.g. `fetch`) counts it inside the first `R` window; it must still restart the timer on each body chunk.
+- Both values are configurable per client and per call.
+- Why 95 s: the server's budget for **one** upstream EUR-Lex fetch is 90 s (`FETCH_HARD_TIMEOUT`), so that common timeout reaches the caller as the server's typed, refunded 504; Cloudflare ends any origin wait at 100 s with a 524. A request that needs several upstream fetches (multi-page search, browser page acquisition) can still exceed 95 s and surface as `REQUEST_TIMEOUT` or a 524. On the public endpoint a value above ~100 s buys nothing.
 
 ### 1.7 User agent
 
-- Every request sends `User-Agent: lexapi-<lang>/<version>` (e.g. `lexapi-python/0.1.0`, `lexapi-typescript/0.1.0`, `lexapi-kotlin/0.1.0`, `lexapi-swift/0.1.0`), with an optional caller-supplied suffix.
+- Every request sends `User-Agent: lexapi-<lang>/<version>` (e.g. `lexapi-python/0.2.0`, `lexapi-typescript/0.2.0`), with an optional caller-supplied suffix after a space.
+
+### 1.8 Export stream (`GET /export`, NDJSON)
+
+- Wire format: a leading `{"_meta": {...}}` line, one document per line, a trailing `{"_done": {"written", "truncated", "skippedStubs"}}` line. Tolerate the flat `{"_meta": true, ...}` form too.
+- A transport failure while reading rows surfaces as the SDK's `CONNECTION_ERROR` / `REQUEST_TIMEOUT` error, never a raw HTTP-library exception.
+- A body that ends without its `_done` line raises `INCOMPLETE_EXPORT` **after** yielding the rows that did arrive: a cut-short export never looks complete. The stream exposes a `complete` flag and a count of rows read.
+- Lines that are not JSON objects (e.g. a half-written last line) are counted (`invalidLines`), not silently dropped.
+- `truncated` (the row cap was hit) is read from the `X-Export-Truncated` header (`1`/`0`, cap-only) first, then `_meta.truncated`. The `_done.truncated` flag is a last resort and is discounted by `skippedStubs`, because the server sets it to `written < total`, where `total` includes metadata-only rows that `includeStubs=false` then skips.
+- Credit cost of an export: SDKs do not state a per-row or per-call price in their docs until the API side settles it; they point to the pricing page and the response's credit fields.
+
+### 1.9 Webhook signature verification
+
+- `X-Webhook-Signature` is the lower-case hex HMAC-SHA256 of the **raw request body bytes**, keyed with the webhook secret (UTF-8). Verify against the bytes as received, never re-serialised JSON.
+- Comparison is constant-time. A missing, empty, non-ASCII or otherwise non-hex header is a plain verification failure (`false` / the SDK's signature error), never an unrelated exception.
+- The combined helper also enforces a replay window on the signed `timestamp` (default 300 s, configurable or disableable) and returns the parsed event. Receivers dedupe on `delivery.id`, which is stable across retries (also sent as `X-Webhook-Delivery`).
+
+### 1.10 Language-specific names
+
+Names marked *(to add)* do not exist yet in that SDK; when it implements the rule it uses that name.
+
+| Concept | Python (`lexapi-client`) | TypeScript (`@lexapi/client`) |
+|---|---|---|
+| Read-only-POST opt-in (§1.2) | `RetryConfig(retry_read_only_posts=True)` | `retry.retryReadOnlyPosts: true` |
+| Power-user non-GET status override (§1.2) | `RetryConfig.retry_statuses_non_idempotent` | not offered |
+| Max retries | `max_retries=` / `RetryConfig.max_retries` | `retry.maxRetries` |
+| Timeouts (§1.6) | `timeout=` (R) and `connect_timeout=` (C); per call `client.with_options(...)` | `timeoutMs` (R, connect included); per call `{ timeoutMs }` |
+| 503 error type (§1.3) | `ServiceUnavailableError` (subclass of `UpstreamError` for 0.1.x compatibility) | `ServiceUnavailableError` |
+| Transport error types | `LexAPIConnectionError`, `RequestTimeoutError` | `NetworkError`, `TimeoutError` with status 0 |
+| 2xx non-JSON (§1.3) | `InvalidResponseError` | `InvalidResponseError` *(to add)* |
+| Export completeness (§1.8) | `IncompleteExportError`; `stream.complete`, `stream.rows_read`, `stream.invalid_lines` | `IncompleteExportError`; `stream.complete`, `stream.rowsRead`, `stream.invalidLines` *(to add)* |
+| Webhook helpers (§1.9) | `verify_webhook`, `verify_signature`, `compute_signature`, `WebhookSignatureError` | `verifyWebhook`, `verifySignature`, `computeSignature`, `WebhookSignatureError` *(to add)* |
 
 ## 2. Endpoint coverage matrix
 
@@ -105,8 +194,8 @@ Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageI
   - Pagination lives on the resources (`citations.iter_cited_by` / `iter_cites`, `webhooks.iter_deliveries`). `/search` has no page cursor — `maxPages` is the whole request — so there is no search iterator; capping is surfaced via `truncated`/`partial`.
   - `lexapi/_meta.py` — version + user-agent string (`lexapi-python/<version>`).
 - **Responses:** thin `APIResponse` wrapper exposing `.data`, `.usage`, `.credits`, `.units_charged`, `.credits_remaining`, `.resets_at`.
-- **Typing:** fully typed, `py.typed` marker, mypy strict in CI. Python ≥ 3.9.
-- **Lint/format:** ruff (lint + format), configured in `pyproject.toml`.
+- **Typing:** fully typed, `py.typed` marker, `mypy --strict` (configured in `pyproject.toml`) in CI. Python ≥ 3.9.
+- **Lint/format:** ruff — `ruff check` and `ruff format --check` both run in CI; configured in `pyproject.toml`.
 
 ## 4. Testing strategy
 
@@ -114,7 +203,7 @@ Cross-cutting model work per group: `ErrorResponse`, `SubscriptionInfo`, `UsageI
 - **Mocked HTTP:** `httpx.MockTransport` for hermetic tests (no live sockets, no test-only HTTP server). Recorded fixtures: real (sanitized) response bodies checked into `tests/fixtures/*.json`, replayed through the mock transport; a `respx`-based layer if matching needs grow.
 - **Contract tests:** validate fixture bodies against `openapi.yaml` schemas in CI (schemathesis or openapi-core) so drift is caught when the spec changes.
 - **Smoke (manual/nightly, not PR-blocking):** `GET /info` against production with a scoped key from CI secrets.
-- Coverage gate: 90% on `client.py`/`errors.py`/`pagination.py`.
+- Coverage gate (target, not yet enforced in CI): 90% on `client.py`/`errors.py`/`_retry.py`.
 
 ## 5. Publishing pipeline (PyPI) — plan only, nothing published yet
 

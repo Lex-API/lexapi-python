@@ -149,9 +149,7 @@ def test_semantic_legislation_search():
     }
     client, seen = capture_client(body)
     with client:
-        resp = client.semantic_legislation_search(
-            "right to be forgotten", min_score=0.5, limit=5
-        )
+        resp = client.semantic_legislation_search("right to be forgotten", min_score=0.5, limit=5)
 
     assert seen["path"] == "/api/v1/legislation/semantic"
     assert seen["body"] == {"query": "right to be forgotten", "min_score": 0.5, "limit": 5}

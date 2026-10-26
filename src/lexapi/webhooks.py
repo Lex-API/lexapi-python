@@ -66,8 +66,11 @@ def verify_signature(
     """
     if not signature:
         return False
+    candidate = signature.strip().lower()
+    if not candidate.isascii():  # never a hex digest; compare_digest(str) would raise
+        return False
     expected = compute_signature(payload, secret)
-    return hmac.compare_digest(expected, signature.strip().lower())
+    return hmac.compare_digest(expected.encode("ascii"), candidate.encode("ascii"))
 
 
 def verify_webhook(
@@ -125,13 +128,13 @@ class WebhooksResource:
 
         Secrets are never returned here — only on :meth:`create`.
         """
-        return self._client._request("GET", "/webhooks", cast=WebhookListResponse)
+        return self._client._request("GET", "/webhooks", cast=WebhookListResponse, free=True)
 
     def create(
         self,
         name: str,
         url: str,
-        search_criteria: dict | None = None,
+        search_criteria: dict[str, Any] | None = None,
         *,
         watch_celex: Sequence[str] | None = None,
         secret: str | None = None,
@@ -168,7 +171,7 @@ class WebhooksResource:
     def get(self, webhook_id: str) -> WebhookResponse:
         """GET /webhooks/{id} — full details incl. up to 20 recent deliveries."""
         return self._client._request(
-            "GET", f"/webhooks/{seg(webhook_id)}", cast=WebhookResponse
+            "GET", f"/webhooks/{seg(webhook_id)}", cast=WebhookResponse, free=True
         )
 
     def update(
@@ -177,7 +180,7 @@ class WebhooksResource:
         *,
         name: str | None = None,
         url: str | None = None,
-        search_criteria: dict | None = None,
+        search_criteria: dict[str, Any] | None = None,
         watch_celex: Sequence[str] | None = None,
         status: str | None = None,
         remove_search_criteria: bool = False,
@@ -236,17 +239,33 @@ class WebhooksResource:
             f"/webhooks/{seg(webhook_id)}/deliveries",
             params=drop_none({"limit": limit, "offset": offset}),
             cast=WebhookDeliveriesResponse,
+            free=True,
         )
 
     def iter_deliveries(
         self, webhook_id: str, *, page_size: int = _DELIVERIES_PAGE_SIZE
     ) -> Iterator[WebhookDelivery]:
-        """Iterate the full delivery history, walking offset pages transparently."""
+        """Iterate the full delivery history, newest first, walking offset pages.
+
+        The API pages by ``limit``/``offset`` over ``createdAt desc`` and has
+        no stable cursor, so a delivery created while you iterate shifts
+        later pages by one. Each delivery is therefore yielded at most once
+        (deduplicated on ``id``); deliveries created after the walk began may
+        be missed, and pruned ones (history is kept 30 days) can shift a row
+        past a page boundary. Webhook reads cost no credits.
+        """
         offset = 0
+        seen: set[str] = set()
         while True:
             page = self.deliveries(webhook_id, limit=page_size, offset=offset)
             deliveries = page.deliveries
-            yield from deliveries
+            for delivery in deliveries:
+                key = delivery.id
+                if key is not None:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                yield delivery
             offset += len(deliveries)
             total = page.total
             if not deliveries or (total is not None and offset >= total):
@@ -261,13 +280,13 @@ class AsyncWebhooksResource:
 
     async def list(self) -> WebhookListResponse:
         """GET /webhooks — see :meth:`WebhooksResource.list`."""
-        return await self._client._request("GET", "/webhooks", cast=WebhookListResponse)
+        return await self._client._request("GET", "/webhooks", cast=WebhookListResponse, free=True)
 
     async def create(
         self,
         name: str,
         url: str,
-        search_criteria: dict | None = None,
+        search_criteria: dict[str, Any] | None = None,
         *,
         watch_celex: Sequence[str] | None = None,
         secret: str | None = None,
@@ -276,14 +295,12 @@ class AsyncWebhooksResource:
         body = webhook_create_body(
             name, url, search_criteria, watch_celex=watch_celex, secret=secret
         )
-        return await self._client._request(
-            "POST", "/webhooks", json=body, cast=WebhookResponse
-        )
+        return await self._client._request("POST", "/webhooks", json=body, cast=WebhookResponse)
 
     async def get(self, webhook_id: str) -> WebhookResponse:
         """GET /webhooks/{id} — see :meth:`WebhooksResource.get`."""
         return await self._client._request(
-            "GET", f"/webhooks/{seg(webhook_id)}", cast=WebhookResponse
+            "GET", f"/webhooks/{seg(webhook_id)}", cast=WebhookResponse, free=True
         )
 
     async def update(
@@ -292,7 +309,7 @@ class AsyncWebhooksResource:
         *,
         name: str | None = None,
         url: str | None = None,
-        search_criteria: dict | None = None,
+        search_criteria: dict[str, Any] | None = None,
         watch_celex: Sequence[str] | None = None,
         status: str | None = None,
         remove_search_criteria: bool = False,
@@ -331,17 +348,25 @@ class AsyncWebhooksResource:
             f"/webhooks/{seg(webhook_id)}/deliveries",
             params=drop_none({"limit": limit, "offset": offset}),
             cast=WebhookDeliveriesResponse,
+            free=True,
         )
 
     async def iter_deliveries(
         self, webhook_id: str, *, page_size: int = _DELIVERIES_PAGE_SIZE
     ) -> AsyncIterator[WebhookDelivery]:
-        """Async-iterate the full delivery history across offset pages."""
+        """Async twin of :meth:`WebhooksResource.iter_deliveries` (same
+        deduplication and paging caveats)."""
         offset = 0
+        seen: set[str] = set()
         while True:
             page = await self.deliveries(webhook_id, limit=page_size, offset=offset)
             deliveries = page.deliveries
             for delivery in deliveries:
+                key = delivery.id
+                if key is not None:
+                    if key in seen:
+                        continue
+                    seen.add(key)
                 yield delivery
             offset += len(deliveries)
             total = page.total

@@ -134,7 +134,7 @@ def test_read_timeout_not_retried():
 
     with make_client(handler) as client:
         with pytest.raises(LexAPIConnectionError):
-            client.get_info()
+            client.list_document_versions("32016R0679")  # billed GET: not retried
     assert calls["count"] == 1
 
 
@@ -177,9 +177,7 @@ def test_retry_after_garbage_returns_none():
 def test_server_wait_clamped_to_cap():
     handler, calls = flaky_handler(
         1,
-        lambda req: httpx.Response(
-            429, json={"error": "slow"}, headers={"Retry-After": "9999"}
-        ),
+        lambda req: httpx.Response(429, json={"error": "slow"}, headers={"Retry-After": "9999"}),
     )
     config = RetryConfig(max_retries=1, backoff_cap=0.001)
     start = time.monotonic()

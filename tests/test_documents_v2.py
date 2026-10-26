@@ -262,7 +262,11 @@ def test_search_fresh_sources_cache_and_dates():
     }
     client, seen = capture_client(
         body,
-        headers={"X-Search-Source": "soap", "X-Search-Cache": "bypass", "X-PostFiltered-Kept": "7"},
+        headers={
+            "X-Search-Source": "soap",
+            "X-Search-Cache": "bypass",
+            "X-PostFiltered-Kept": "author:3/10;date:2/3",
+        },
     )
     with client:
         resp = client.search("*", date_from=dt.date(2026, 10, 1), date_to="2026-10-25", fresh=True)
@@ -274,7 +278,10 @@ def test_search_fresh_sources_cache_and_dates():
     }
     assert resp.source == "soap"
     assert resp.cache == "bypass"
-    assert resp.post_filtered_kept == 7
+    assert resp.post_filtered_kept_raw == "author:3/10;date:2/3"
+    kept = resp.post_filtered_kept
+    assert (kept["author"].kept, kept["author"].before, kept["author"].dropped) == (3, 10, 7)
+    assert (kept["date"].kept, kept["date"].before) == (2, 3)
     assert resp.search_parameters["query"] == "*"
     hit = resp.results[0]
     assert hit.celex_number == "32026R0001"

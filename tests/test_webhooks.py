@@ -105,7 +105,8 @@ def test_get_webhook_with_recent_deliveries():
         resp = client.webhooks.get("cm5abc123")
 
     assert seen["path"] == "/api/v1/webhooks/cm5abc123"
-    assert resp.webhook.max_retries == 3
+    with pytest.warns(DeprecationWarning):  # still parsed for old servers, but deprecated
+        assert resp.webhook.max_retries == 3
     assert resp.webhook.recent_deliveries[0].response_status == 200
 
 
@@ -243,8 +244,6 @@ def test_async_iter_deliveries():
         async with AsyncLexAPI(
             api_key="lex_test_key", transport=httpx.MockTransport(handler)
         ) as client:
-            return [
-                d.id async for d in client.webhooks.iter_deliveries("cm5abc123", page_size=2)
-            ]
+            return [d.id async for d in client.webhooks.iter_deliveries("cm5abc123", page_size=2)]
 
     assert asyncio.run(run()) == ["dlv_0", "dlv_1", "dlv_2"]

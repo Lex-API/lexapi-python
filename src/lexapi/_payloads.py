@@ -28,8 +28,14 @@ def seg(value: object) -> str:
     CELEX characters (letters, digits, ``( ) . _ -``) pass through unchanged
     — ``32008R1272R(01)`` and ``02016R0679-20180524`` stay readable — while a
     stray ``/``, ``?`` or ``#`` can no longer change which endpoint is hit.
+    Empty, ``.`` and ``..`` segments raise :class:`ValueError`.
     """
-    return quote(str(value), safe="()._-~")
+    text = str(value)
+    if text in ("", ".", ".."):
+        # httpx (like every URL library) resolves dot-segments, so `..`
+        # would silently hit the parent endpoint; an empty id would too.
+        raise ValueError(f"invalid path segment {text!r}")
+    return quote(text, safe="()._-~")
 
 
 def iso_date(value: DateLike | None) -> str | None:
@@ -163,7 +169,7 @@ def semantic_search_body(
     limit: int | None = None,
     language: str | None = None,
     include_text: bool = False,
-    filters: dict | None = None,
+    filters: dict[str, Any] | None = None,
     as_of: DateLike | None = None,
 ) -> dict[str, Any]:
     """Body for the semantic endpoints.
@@ -216,7 +222,7 @@ def recent_documents_params(
 def webhook_create_body(
     name: str,
     url: str,
-    search_criteria: dict | None = None,
+    search_criteria: dict[str, Any] | None = None,
     *,
     watch_celex: Sequence[str] | None = None,
     secret: str | None = None,
@@ -236,7 +242,7 @@ def webhook_update_body(
     *,
     name: str | None = None,
     url: str | None = None,
-    search_criteria: dict | None = None,
+    search_criteria: dict[str, Any] | None = None,
     watch_celex: Sequence[str] | None = None,
     status: str | None = None,
     remove_search_criteria: bool = False,

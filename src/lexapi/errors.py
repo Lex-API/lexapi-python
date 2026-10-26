@@ -28,6 +28,9 @@ from typing import Any
 #: Fallback mapping used when the body carries no typed ``error.code``
 #: (legacy bare ``{"error": "..."}`` shape, or non-JSON bodies). 520-524 are
 #: Cloudflare's origin-error statuses (lex-api.com sits behind Cloudflare).
+#: ``UNAUTHORIZED`` and ``SERVICE_UNAVAILABLE`` are SDK-side codes: the API
+#: never sends them in ``error.code`` (its 401s and its deploy-drain 503 are
+#: not typed envelopes).
 STATUS_TO_CODE = {
     400: "INVALID_PARAMS",
     401: "UNAUTHORIZED",
@@ -37,7 +40,7 @@ STATUS_TO_CODE = {
     429: "RATE_LIMITED",
     500: "INTERNAL",
     502: "UPSTREAM_ERROR",
-    503: "UPSTREAM_ERROR",
+    503: "SERVICE_UNAVAILABLE",
     504: "TIMEOUT",
     520: "UPSTREAM_ERROR",
     521: "UPSTREAM_ERROR",
@@ -85,9 +88,7 @@ class LexAPIError(Exception):
         self.retry_after = retry_after
 
     @classmethod
-    def from_response(
-        cls, status: int, body: Any, retry_after: float | None = None
-    ) -> LexAPIError:
+    def from_response(cls, status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
         """Build the most specific typed error for a non-2xx response."""
         return error_from_response(status, body, retry_after=retry_after)
 
@@ -95,7 +96,7 @@ class LexAPIError(Exception):
     def upgrade_url(self) -> str | None:
         """``upgradeUrl`` from a legacy tier-gate body (e.g. ``/pricing``)."""
         if isinstance(self.body, dict) and isinstance(self.body.get("upgradeUrl"), str):
-            return self.body["upgradeUrl"]
+            return str(self.body["upgradeUrl"])
         return None
 
 
@@ -137,7 +138,7 @@ def _usage_resets_at(body: Any) -> str | None:
     if isinstance(body, dict):
         usage = body.get("usage")
         if isinstance(usage, dict) and isinstance(usage.get("resetsAt"), str):
-            return usage["resetsAt"]
+            return str(usage["resetsAt"])
     return None
 
 
@@ -211,7 +212,7 @@ class CreditsExhaustedError(LexAPIError):
     def operation(self) -> str | None:
         """The operation that was refused (e.g. ``semantic_case_law``)."""
         if isinstance(self.details, dict) and isinstance(self.details.get("operation"), str):
-            return self.details["operation"]
+            return str(self.details["operation"])
         return None
 
     @property
@@ -246,6 +247,15 @@ class UpstreamError(LexAPIError):
     default_code = "UPSTREAM_ERROR"
 
 
+class ServiceUnavailableError(UpstreamError):
+    """503 — the API is briefly unavailable (e.g. a deploy draining
+    connections). Retryable. SDK-side code ``SERVICE_UNAVAILABLE``; a
+    subclass of :class:`UpstreamError` so code written against 0.1.0
+    (where 503 mapped to ``UPSTREAM_ERROR``) keeps catching it."""
+
+    default_code = "SERVICE_UNAVAILABLE"
+
+
 class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
     """504 ``TIMEOUT`` — the upstream fetch timed out (retry-safe)."""
 
@@ -256,6 +266,20 @@ class InternalServerError(LexAPIError):
     """500 ``INTERNAL`` — unexpected server failure."""
 
     default_code = "INTERNAL"
+
+
+class InvalidResponseError(LexAPIError):
+    """A 2xx response whose body is not JSON (e.g. an HTML interstitial from
+    a proxy). Raised instead of returning an empty, "successful" result."""
+
+    default_code = "INVALID_RESPONSE"
+
+
+class IncompleteExportError(LexAPIError):
+    """An export stream ended without its ``_done`` trailer — the server
+    stopped mid-export, so the rows received are not the whole result."""
+
+    default_code = "INCOMPLETE_EXPORT"
 
 
 class LexAPIConnectionError(LexAPIError):
@@ -287,6 +311,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "TIER_FORBIDDEN": TierForbiddenError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "UPSTREAM_ERROR": UpstreamError,
+    "SERVICE_UNAVAILABLE": ServiceUnavailableError,
     "TIMEOUT": TimeoutError,
     "INTERNAL": InternalServerError,
 }
@@ -308,19 +333,21 @@ def _extract_resets_at(details: Any, body: Any) -> str | None:
         for key in ("credits", "usage"):
             block = container.get(key)
             if isinstance(block, dict) and isinstance(block.get("resetsAt"), str):
-                return block["resetsAt"]
+                return str(block["resetsAt"])
     return None
 
 
-def error_from_response(
-    status: int, body: Any, retry_after: float | None = None
-) -> LexAPIError:
+def error_from_response(status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
     """Map a non-2xx response to the most specific typed error.
 
-    Tolerates both envelope shapes:
+    Tolerates both envelope shapes (PLAN.md §1.3):
 
     - typed: ``{"success": false, "error": {"code", "message", "details"}}``
-    - legacy: ``{"error": "<slug or text>", "message": "...", "details": [...]}``
+      — ``code`` is authoritative;
+    - legacy: ``{"error": "<text>", "message": "...", "details": [...]}`` —
+      ``error`` is human text, never parsed as a code; the code comes from
+      the HTTP status. ``message`` / ``details`` at the top level are kept
+      (also on bodies that carry no ``error`` at all).
 
     Unknown ``error.code`` values fall back to the base :class:`LexAPIError`
     with the raw code preserved.
@@ -336,16 +363,14 @@ def error_from_response(
             details = err.get("details")
         elif isinstance(err, str):  # legacy bare {"error": "...", "message": "..."}
             legacy_message = body.get("message")
-            if err in CODE_TO_ERROR:  # some legacy bodies carry the slug in `error`
-                code = err
-                message = legacy_message if isinstance(legacy_message, str) else message
-            else:
-                message = err
-                if isinstance(legacy_message, str):
-                    message = f"{err}: {legacy_message}" if legacy_message != err else err
+            message = err
+            if isinstance(legacy_message, str) and legacy_message != err:
+                message = f"{err}: {legacy_message}"
             details = body.get("details")
-        elif isinstance(body.get("message"), str):
-            message = body["message"]
+        else:
+            if isinstance(body.get("message"), str):
+                message = body["message"]
+            details = body.get("details")
 
     error_cls = CODE_TO_ERROR.get(code, LexAPIError)
     kwargs: dict[str, Any] = {

@@ -70,9 +70,7 @@ class AsyncLexAPI:
         self._timeout: httpx.Timeout | None = None
         self._http = httpx.AsyncClient(
             transport=transport,
-            **build_httpx_kwargs(
-                api_key, base_url, timeout, connect_timeout, user_agent_suffix
-            ),
+            **build_httpx_kwargs(api_key, base_url, timeout, connect_timeout, user_agent_suffix),
         )
         self._bind_resources()
 
@@ -86,22 +84,32 @@ class AsyncLexAPI:
         self,
         *,
         timeout: float | httpx.Timeout | None = None,
-        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        connect_timeout: float | None = None,
         max_retries: int | None = None,
         retry_config: RetryConfig | None = None,
     ) -> AsyncLexAPI:
         """A view of this client with a different timeout and/or retry policy.
 
         Shares the underlying connection pool (closing either closes both),
-        so it is cheap to create per call::
+        so it is cheap to create per call. Values above ~100 s buy nothing
+        on the public endpoint — Cloudflare answers 524 at 100 s::
 
-            await client.with_options(timeout=180).semantic_legislation_search(
+            await client.with_options(timeout=30).semantic_legislation_search(
                 "own funds requirements", as_of="2019-06-01"
             )
         """
         clone = copy.copy(self)
-        if timeout is not None:
-            clone._timeout = make_timeout(timeout, connect_timeout)
+        if timeout is not None or connect_timeout is not None:
+            current = self._timeout or self._http.timeout
+            if isinstance(timeout, httpx.Timeout):
+                clone._timeout = timeout
+            else:
+                read = timeout if timeout is not None else current.read
+                connect = connect_timeout if connect_timeout is not None else current.connect
+                clone._timeout = make_timeout(
+                    read if read is not None else DEFAULT_TIMEOUT,
+                    connect if connect is not None else DEFAULT_CONNECT_TIMEOUT,
+                )
         if retry_config is not None or max_retries is not None:
             clone._retry = make_retry_config(max_retries, retry_config)
         clone._bind_resources()
@@ -114,7 +122,7 @@ class AsyncLexAPI:
         Free operation (0 credits). ``response.search_filters`` and
         ``response.supported_languages`` carry the live filter enumerations.
         """
-        return await self._request("GET", "/info", cast=InfoResponse)
+        return await self._request("GET", "/info", cast=InfoResponse, free=True)
 
     # ── Search ────────────────────────────────────────────────────────
     async def search(
@@ -170,7 +178,9 @@ class AsyncLexAPI:
             max_pages=max_pages,
             fresh=fresh,
         )
-        return await self._request("POST", "/search", json=body, cast=SearchResponse)
+        return await self._request(
+            "POST", "/search", json=body, cast=SearchResponse, read_only=True
+        )
 
     # ── Documents ─────────────────────────────────────────────────────
     async def get_document(
@@ -212,7 +222,9 @@ class AsyncLexAPI:
             fields=fields,
             article_id=article_id,
         )
-        return await self._request("POST", "/documentContent", json=body, cast=DocumentResponse)
+        return await self._request(
+            "POST", "/documentContent", json=body, cast=DocumentResponse, read_only=True
+        )
 
     async def get_documents_batch(
         self,
@@ -234,7 +246,8 @@ class AsyncLexAPI:
         — ``response.trimmed`` / ``trimmed_to`` / ``trimmed_reason`` (and
         ``response.warning``) report clamping; trimmed items are not charged.
         5 credits per processed item, settled per source (``corpus_hits`` at
-        1, ``cellar_served`` / ``oj_recovered`` at 4, ``live_fetches`` at 5).
+        1, ``cellar_served`` / ``oj_recovered`` at 4, ``live_fetches`` at 5 —
+        or 1 for a live item that turned out to have no text).
         """
         body = _payloads.document_batch_body(
             celexes,
@@ -246,7 +259,7 @@ class AsyncLexAPI:
             article_id=article_id,
         )
         return await self._request(
-            "POST", "/documentContent/batch", json=body, cast=DocumentBatchResponse
+            "POST", "/documentContent/batch", json=body, cast=DocumentBatchResponse, read_only=True
         )
 
     async def get_recent_documents(
@@ -263,10 +276,13 @@ class AsyncLexAPI:
         """GET /documents/recent — documents published in the last ``days``
         days (default 7, up to ``limit`` results, default 50).
 
-        Unfiltered requests are answered from Cellar (``response.source ==
-        "cellar"``, 3 credits whatever the ``limit``); filtering on
-        ``document_type`` / ``author`` / ``domain`` / ``subdomain`` fetches
-        from EUR-Lex at 3 credits per result page (~10 results).
+        Admission reserves 3 credits per result page needed for ``limit``
+        (``ceil(limit / 10)`` pages, tier-clamped), so a nearly empty pool can
+        402 even when the answer would settle lower. Unfiltered requests are
+        answered from Cellar (``response.source == "cellar"``) and settle at 3
+        credits whatever the ``limit``; filtering on ``document_type`` /
+        ``author`` / ``domain`` / ``subdomain`` fetches from EUR-Lex and keeps
+        3 credits per page fetched (unfetched pages refunded).
         """
         params = _payloads.recent_documents_params(
             days=days,
@@ -304,7 +320,9 @@ class AsyncLexAPI:
             fields=fields,
             article_id=article_id,
         )
-        return await self._request("POST", "/documents/url", json=body, cast=DocumentByUrlResponse)
+        return await self._request(
+            "POST", "/documents/url", json=body, cast=DocumentByUrlResponse, read_only=True
+        )
 
     async def get_document_metadata(
         self, celex: str, *, bypass_corpus: bool | None = None
@@ -316,7 +334,7 @@ class AsyncLexAPI:
         """
         body = _payloads.drop_none({"celexNumber": celex, "bypassCorpus": bypass_corpus})
         return await self._request(
-            "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse
+            "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse, read_only=True
         )
 
     async def resolve(self, identifier: str) -> ResolveResponse:
@@ -326,7 +344,11 @@ class AsyncLexAPI:
         the corpus) raises :class:`~lexapi.NotFoundError`.
         """
         return await self._request(
-            "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
+            "POST",
+            "/resolve",
+            json={"identifier": identifier},
+            cast=ResolveResponse,
+            read_only=True,
         )
 
     # ── Point-in-time versions ────────────────────────────────────────
@@ -388,7 +410,7 @@ class AsyncLexAPI:
         limit: int | None = None,
         language: str | None = None,
         include_text: bool = False,
-        filters: dict | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> SemanticSearchResponse:
         """POST /search/semantic — embedding-based CJEU case-law search (5 credits).
 
@@ -407,7 +429,8 @@ class AsyncLexAPI:
                 the upstream applies a ~0.7 relevance floor — if you got fewer
                 results than ``limit``, lower this (e.g. 0.5) to widen recall,
                 or pass 0 to disable the floor.
-            limit: max results (clamped to the tier's maxResults: 20/50/100).
+            limit: max results, clamped to the tier's ``maxResults`` (FREE 10,
+                STARTER 20, PROFESSIONAL 50, BUSINESS and above 100).
             language: language of returned content (default ``en``; the index
                 covers ``en fr de es it sl el nl pt pl``).
             include_text: receive full document text per hit (``hit.text``)
@@ -429,7 +452,7 @@ class AsyncLexAPI:
             filters=filters,
         )
         return await self._request(
-            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse
+            "POST", "/search/semantic", json=body, cast=SemanticSearchResponse, read_only=True
         )
 
     async def semantic_legislation_search(
@@ -440,7 +463,7 @@ class AsyncLexAPI:
         limit: int | None = None,
         language: str | None = None,
         include_text: bool = False,
-        filters: dict | None = None,
+        filters: dict[str, Any] | None = None,
         as_of: DateLike | None = None,
     ) -> SemanticLegislationResponse:
         """POST /legislation/semantic — embedding-based EU legislation search.
@@ -469,8 +492,9 @@ class AsyncLexAPI:
         settles at 4 (Cellar), 5 (browser), 1 (no text) or 0 (failed / timed
         out). A fetch the pool can't cover is skipped (``as_of_reason ==
         "insufficient_credits"``); only the search itself can 402. Corpus
-        reads are free. ``as_of`` requests can take longer — the server's
-        budget is 45 s by default, inside the client's 95 s default timeout.
+        reads are free. ``as_of`` requests can take longer — the server
+        answers within its 45 s default budget, inside the client's 95 s
+        response timeout.
         """
         body = _payloads.semantic_search_body(
             query,
@@ -482,7 +506,11 @@ class AsyncLexAPI:
             as_of=as_of,
         )
         return await self._request(
-            "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
+            "POST",
+            "/legislation/semantic",
+            json=body,
+            cast=SemanticLegislationResponse,
+            read_only=True,
         )
 
     # ── Export ────────────────────────────────────────────────────────
@@ -503,7 +531,8 @@ class AsyncLexAPI:
     ) -> AsyncExportStream:
         """GET /export — stream matching corpus rows as NDJSON (BUSINESS,
         SCALE and ENTERPRISE; lower tiers raise
-        :class:`~lexapi.TierForbiddenError`). 1 credit per row returned.
+        :class:`~lexapi.TierForbiddenError`). For the credit cost see the
+        pricing page and the response's credit fields / ``X-Export-*`` headers.
 
         Returns an :class:`~lexapi.export.AsyncExportStream`: iterate it for one
         dict per corpus row. The leading ``_meta`` envelope and trailing
@@ -552,7 +581,7 @@ class AsyncLexAPI:
             try:
                 response = await self._http.send(request, stream=True)
             except httpx.HTTPError as exc:
-                wait = exception_retry_wait(exc, attempt, self._retry)
+                wait = exception_retry_wait(exc, attempt, self._retry, method)
                 if wait is None:
                     raise transport_error(exc) from exc
                 await asyncio.sleep(wait)
@@ -563,7 +592,7 @@ class AsyncLexAPI:
             await response.aread()
             wait = status_retry_wait(method, response, attempt, self._retry)
             if wait is None:
-                process_response(response)  # raises the typed error
+                process_response(response, APIResponse)  # raises the typed error
                 raise AssertionError("unreachable")  # pragma: no cover
             await response.aclose()
             await asyncio.sleep(wait)
@@ -586,7 +615,16 @@ class AsyncLexAPI:
         json: Any | None = None,
         cast: type[R] = APIResponse,  # type: ignore[assignment]
         timeout: float | httpx.Timeout | None = None,
+        read_only: bool = False,
+        free: bool = False,
     ) -> R:
+        """One API call with retries.
+
+        ``read_only`` marks a POST that changes nothing (eligible for
+        ``RetryConfig.retry_read_only_posts``); ``free`` marks a 0-credit
+        operation, for which any transport failure or 5xx is billing-safe to
+        retry (PLAN.md §1.2).
+        """
         request_kwargs: dict[str, Any] = {"params": params, "json": json}
         request_kwargs.update(self._timeout_kwargs(timeout))
         attempt = 0
@@ -594,13 +632,15 @@ class AsyncLexAPI:
             try:
                 response = await self._http.request(method, path, **request_kwargs)
             except httpx.HTTPError as exc:
-                wait = exception_retry_wait(exc, attempt, self._retry)
+                wait = exception_retry_wait(exc, attempt, self._retry, method, free=free)
                 if wait is None:
                     raise transport_error(exc) from exc
                 await asyncio.sleep(wait)
                 attempt += 1
                 continue
-            wait = status_retry_wait(method, response, attempt, self._retry)
+            wait = status_retry_wait(
+                method, response, attempt, self._retry, read_only=read_only, free=free
+            )
             if wait is None:
                 return process_response(response, cast)
             await asyncio.sleep(wait)

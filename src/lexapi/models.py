@@ -18,10 +18,11 @@ are surfaced as attributes — never silently dropped.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from lexapi._response import APIResponse
+from lexapi._response import APIResponse, header
 
 #: Why a semantic-legislation hit could not be answered for ``asOf``
 #: (``SemanticLegislationResult.as_of_reason``), copied from openapi.yaml.
@@ -62,36 +63,36 @@ TextUnavailableReason = Literal[
 ]
 
 
-def _s(data: dict, key: str) -> str | None:
+def _s(data: dict[str, Any], key: str) -> str | None:
     value = data.get(key)
     return value if isinstance(value, str) else None
 
 
-def _i(data: dict, key: str) -> int | None:
+def _i(data: dict[str, Any], key: str) -> int | None:
     value = data.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return int(value)
 
 
-def _b(data: dict, key: str) -> bool | None:
+def _b(data: dict[str, Any], key: str) -> bool | None:
     value = data.get(key)
     return value if isinstance(value, bool) else None
 
 
-def _f(data: dict, key: str) -> float | None:
+def _f(data: dict[str, Any], key: str) -> float | None:
     value = data.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
 
 
-def _opt_dict(data: dict, key: str) -> dict | None:
+def _opt_dict(data: dict[str, Any], key: str) -> dict[str, Any] | None:
     value = data.get(key)
     return value if isinstance(value, dict) else None
 
 
-def _opt_str_list(data: dict, key: str) -> list[str] | None:
+def _opt_str_list(data: dict[str, Any], key: str) -> list[str] | None:
     """A string list that keeps ``null`` (unknown) distinct from ``[]`` (none)."""
     value = data.get(key)
     if not isinstance(value, list):
@@ -99,21 +100,31 @@ def _opt_str_list(data: dict, key: str) -> list[str] | None:
     return [item for item in value if isinstance(item, str)]
 
 
-def _dict(data: dict, key: str) -> dict:
+def _parties(value: Any) -> list[str] | None:
+    """Case-law ``parties``: the semantic upstream sends a list of names,
+    while the spec documents a string — accept both, return a list."""
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    if isinstance(value, str):
+        return [value] if value else []
+    return None
+
+
+def _dict(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key)
     return value if isinstance(value, dict) else {}
 
 
-def _list(data: dict, key: str) -> list:
+def _list(data: dict[str, Any], key: str) -> list[Any]:
     value = data.get(key)
     return value if isinstance(value, list) else []
 
 
-def _str_list(data: dict, key: str) -> list[str]:
+def _str_list(data: dict[str, Any], key: str) -> list[str]:
     return [item for item in _list(data, key) if isinstance(item, str)]
 
 
-def _parse_items(data: dict, key: str, cls: Any) -> list:
+def _parse_items(data: dict[str, Any], key: str, cls: Any) -> list[Any]:
     return [cls.from_dict(item) for item in _list(data, key) if isinstance(item, dict)]
 
 
@@ -137,10 +148,10 @@ class Article:
     number: str | None
     title: str | None
     content: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> Article:
+    def from_dict(cls, data: dict[str, Any]) -> Article:
         return cls(
             id=_s(data, "id"),
             number=_s(data, "number"),
@@ -161,10 +172,10 @@ class Recital:
 
     number: int | None
     text: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> Recital:
+    def from_dict(cls, data: dict[str, Any]) -> Recital:
         return cls(number=_i(data, "number"), text=_s(data, "text"), raw=data)
 
 
@@ -176,10 +187,10 @@ class Section:
     number: str | None
     title: str | None
     article_range: list[str] | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> Section:
+    def from_dict(cls, data: dict[str, Any]) -> Section:
         rng = data.get("articleRange")
         article_range = (
             [item for item in rng if isinstance(item, str)] if isinstance(rng, list) else None
@@ -202,12 +213,12 @@ class DocumentContent:
     recitals: list[Recital]
     paragraphs: list[Recital]
     sections: list[Section]
-    tables: list[dict]
-    annexes: list[dict]
-    raw: dict = field(repr=False, default_factory=dict)
+    tables: list[dict[str, Any]]
+    annexes: list[dict[str, Any]]
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> DocumentContent:
+    def from_dict(cls, data: dict[str, Any]) -> DocumentContent:
         return cls(
             full_text=_s(data, "fullText"),
             articles=_parse_items(data, "articles", Article),
@@ -235,10 +246,10 @@ class ConsolidatedVersionHint:
     date: str | None
     source: str | None
     available_languages: list[str] | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> ConsolidatedVersionHint:
+    def from_dict(cls, data: dict[str, Any]) -> ConsolidatedVersionHint:
         return cls(
             celex=_s(data, "celex"),
             date=_s(data, "date"),
@@ -248,7 +259,7 @@ class ConsolidatedVersionHint:
         )
 
     @classmethod
-    def parse(cls, data: dict, key: str) -> ConsolidatedVersionHint | None:
+    def parse(cls, data: dict[str, Any], key: str) -> ConsolidatedVersionHint | None:
         value = data.get(key)
         return cls.from_dict(value) if isinstance(value, dict) else None
 
@@ -274,10 +285,10 @@ class TextAvailability:
     latest_consolidated: ConsolidatedVersionHint | None
     upcoming_consolidated: ConsolidatedVersionHint | None
     newest_consolidated: ConsolidatedVersionHint | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> TextAvailability:
+    def from_dict(cls, data: dict[str, Any]) -> TextAvailability:
         return cls(
             available=_b(data, "available"),
             reason=_s(data, "reason"),
@@ -332,8 +343,8 @@ class Document:
     language_requested: str | None
     language_fallback: str | None
     content: DocumentContent | None
-    urls: dict
-    raw: dict = field(repr=False, default_factory=dict)
+    urls: dict[str, Any]
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     celex_number: str | None = None
     title_language: str | None = None
     text_availability: TextAvailability | None = None
@@ -348,7 +359,7 @@ class Document:
         return self.text_availability.available if self.text_availability else None
 
     @classmethod
-    def from_dict(cls, data: dict) -> Document:
+    def from_dict(cls, data: dict[str, Any]) -> Document:
         content = data.get("content")
         availability = data.get("textAvailability")
         return cls(
@@ -380,9 +391,7 @@ class Document:
             celex_number=_s(data, "celexNumber"),
             title_language=_s(data, "titleLanguage"),
             text_availability=(
-                TextAvailability.from_dict(availability)
-                if isinstance(availability, dict)
-                else None
+                TextAvailability.from_dict(availability) if isinstance(availability, dict) else None
             ),
             fetched_at=_s(data, "fetchedAt"),
             latest_consolidated=ConsolidatedVersionHint.parse(data, "latestConsolidated"),
@@ -404,13 +413,13 @@ class SearchHit:
     author: str | None
     available_languages: list[str]
     url: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     celex_number: str | None = None
     form: str | None = None
     date_of_document: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> SearchHit:
+    def from_dict(cls, data: dict[str, Any]) -> SearchHit:
         return cls(
             title=_s(data, "title"),
             celex=_s(data, "celex") or _s(data, "celexNumber"),
@@ -435,16 +444,45 @@ class BatchDocumentError:
     celex_number: str | None
     error: str | None
     message: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> BatchDocumentError:
+    def from_dict(cls, data: dict[str, Any]) -> BatchDocumentError:
         return cls(
             celex_number=_s(data, "celexNumber"),
             error=_s(data, "error"),
             message=_s(data, "message"),
             raw=data,
         )
+
+
+@dataclass(frozen=True)
+class PostFilterCount:
+    """One ``X-PostFiltered-Kept`` entry: rows kept of rows seen."""
+
+    kept: int
+    before: int
+
+    @property
+    def dropped(self) -> int:
+        return self.before - self.kept
+
+
+def parse_post_filtered_kept(value: str | None) -> dict[str, PostFilterCount]:
+    """Parse ``author:3/10;date:2/3`` into ``{"author": (3, 10), ...}``."""
+    result: dict[str, PostFilterCount] = {}
+    if not value:
+        return result
+    for part in value.split(";"):
+        name, sep, counts = part.strip().partition(":")
+        kept, slash, before = counts.partition("/")
+        if not (sep and slash and name):
+            continue
+        try:
+            result[name.strip()] = PostFilterCount(int(kept), int(before))
+        except ValueError:
+            continue
+    return result
 
 
 # ── Typed responses ─────────────────────────────────────────────────────
@@ -517,7 +555,7 @@ class SearchResponse(APIResponse):
         return _str_list(self._map, "ignoredDocumentTypes")
 
     @property
-    def search_parameters(self) -> dict:
+    def search_parameters(self) -> dict[str, Any]:
         """Echo of the request filters as the server read them."""
         return _dict(self._map, "searchParameters")
 
@@ -531,24 +569,32 @@ class SearchResponse(APIResponse):
         Read from the ``X-Search-Source`` header, falling back to the body's
         ``source`` field (set on corpus answers).
         """
-        return self.headers.get("x-search-source") or _s(self._map, "source")
+        return header(self.headers, "x-search-source") or _s(self._map, "source")
 
     @property
     def cache(self) -> str | None:
         """``hit`` / ``miss`` / ``bypass`` — the 60-minute result cache
         (``X-Search-Cache``). Same price either way; pass ``fresh=True`` to
         bypass."""
-        return self.headers.get("x-search-cache")
+        return header(self.headers, "x-search-cache")
 
     @property
-    def post_filtered_kept(self) -> int | None:
-        """Rows kept by the controller-side post-filter (``X-PostFiltered-Kept``)."""
-        return _header_int(self.headers.get("x-postfiltered-kept"))
+    def post_filtered_kept_raw(self) -> str | None:
+        """The raw ``X-PostFiltered-Kept`` header, e.g. ``author:3/10;date:2/3``."""
+        return header(self.headers, "x-postfiltered-kept")
+
+    @property
+    def post_filtered_kept(self) -> dict[str, PostFilterCount]:
+        """Per post-filter dimension, how many rows it kept of how many it saw
+        (parsed from ``X-PostFiltered-Kept``: ``<dimension>:<kept>/<before>``
+        joined by ``;``). Empty when no post-filter fired; malformed parts are
+        skipped (the raw value stays on :attr:`post_filtered_kept_raw`)."""
+        return parse_post_filtered_kept(self.post_filtered_kept_raw)
 
     @property
     def document_type_fan_out(self) -> int | None:
         """Size of the EUR-Lex fan-out for multi-value documentType requests."""
-        return _header_int(self.headers.get("x-documenttype-fanout"))
+        return _header_int(header(self.headers, "x-documenttype-fanout"))
 
     @property
     def fetched_at(self) -> str | None:
@@ -567,42 +613,42 @@ class DocumentResponse(APIResponse):
         """Who answered (the ``X-Source`` header): ``corpus`` (settles at 1
         credit), ``cellar`` / ``cellar-oj`` (Publications Office, 4 credits) or
         ``live`` (browser fetch of EUR-Lex, 5 credits)."""
-        return self.headers.get("x-source")
+        return header(self.headers, "x-source")
 
     @property
     def text_available(self) -> bool | None:
         """False when EUR-Lex publishes the notice but not the text
         (``X-Text-Available: false``; ``document.content`` is then ``None``).
         Falls back to ``document.text_availability.available``."""
-        header = self.headers.get("x-text-available")
-        if header is not None:
-            return header.strip().lower() != "false"
+        value = header(self.headers, "x-text-available")
+        if value is not None:
+            return value.strip().lower() != "false"
         return self.document.text_available
 
     @property
     def corpus_version(self) -> int | None:
         """Monotonic per-CELEX version (present when served from corpus)."""
-        return _header_int(self.headers.get("x-corpus-version"))
+        return _header_int(header(self.headers, "x-corpus-version"))
 
     @property
     def corpus_fetched_at(self) -> str | None:
-        return self.headers.get("x-corpus-fetchedat")
+        return header(self.headers, "x-corpus-fetchedat")
 
     @property
     def language_served(self) -> str | None:
         """The language rendition actually served (``X-Language`` header)."""
-        return self.headers.get("x-language")
+        return header(self.headers, "x-language")
 
     @property
     def language_fallback(self) -> str | None:
         """The language served instead when the requested one had no text
         (``X-Language-Fallback``): ``en`` for the automatic fallback, or the
         first ``accept_languages`` entry that had text."""
-        return self.headers.get("x-language-fallback")
+        return header(self.headers, "x-language-fallback")
 
     @property
     def cache(self) -> str | None:
-        return self.headers.get("x-cache")
+        return header(self.headers, "x-cache")
 
 
 class DocumentByUrlResponse(DocumentResponse):
@@ -627,15 +673,15 @@ class DocumentMetadataResponse(APIResponse):
     @property
     def source(self) -> str | None:
         """``corpus`` (1 credit), ``cellar`` (4) or ``live`` (5) — ``X-Source``."""
-        return self.headers.get("x-source")
+        return header(self.headers, "x-source")
 
     @property
     def corpus_version(self) -> int | None:
-        return _header_int(self.headers.get("x-corpus-version"))
+        return _header_int(header(self.headers, "x-corpus-version"))
 
     @property
     def cache(self) -> str | None:
-        return self.headers.get("x-cache")
+        return header(self.headers, "x-cache")
 
 
 class DocumentBatchResponse(APIResponse):
@@ -691,32 +737,33 @@ class DocumentBatchResponse(APIResponse):
         value = _i(self._map, "textUnavailable")
         if value is not None:
             return value
-        return _header_int(self.headers.get("x-batch-text-unavailable"))
+        return _header_int(header(self.headers, "x-batch-text-unavailable"))
 
     @property
     def corpus_hits(self) -> int | None:
         """Items served from the LexAPI corpus, 1 credit each (``X-Batch-Corpus-Hits``)."""
-        return _header_int(self.headers.get("x-batch-corpus-hits"))
+        return _header_int(header(self.headers, "x-batch-corpus-hits"))
 
     @property
     def cellar_served(self) -> int | None:
         """Items the Cellar API answered, 4 credits each (``X-Batch-Cellar-Served``)."""
-        return _header_int(self.headers.get("x-batch-cellar-served"))
+        return _header_int(header(self.headers, "x-batch-cellar-served"))
 
     @property
     def oj_recovered(self) -> int | None:
         """Items recovered from an Official Journal issue, 4 credits each
         (``X-Batch-OJ-Recovered``)."""
-        return _header_int(self.headers.get("x-batch-oj-recovered"))
+        return _header_int(header(self.headers, "x-batch-oj-recovered"))
 
     @property
     def live_fetches(self) -> int | None:
-        """Items fetched live by browser, 5 credits each (``X-Batch-Live-Fetches``)."""
-        return _header_int(self.headers.get("x-batch-live-fetches"))
+        """Items fetched live by browser (``X-Batch-Live-Fetches``): 5 credits
+        each, or 1 when the item turned out to have no text."""
+        return _header_int(header(self.headers, "x-batch-live-fetches"))
 
     @property
     def language_served(self) -> str | None:
-        return self.headers.get("x-language")
+        return header(self.headers, "x-language")
 
 
 class RecentDocumentsResponse(APIResponse):
@@ -735,22 +782,23 @@ class RecentDocumentsResponse(APIResponse):
         return _i(self._map, "resultCount")
 
     @property
-    def parameters(self) -> dict:
+    def parameters(self) -> dict[str, Any]:
         """Echo of the resolved query parameters (computed dateFrom/dateTo)."""
         return _dict(self._map, "parameters")
 
     @property
-    def language_filter(self) -> dict | None:
+    def language_filter(self) -> dict[str, Any] | None:
         """Present only when the language post-filter dropped rows."""
         value = self._map.get("languageFilter")
         return value if isinstance(value, dict) else None
 
     @property
     def source(self) -> str | None:
-        """``cellar`` (unfiltered request answered from Cellar — 3 credits
-        whatever the ``limit``) or ``live`` (EUR-Lex, priced per page) —
-        the ``X-Source`` header."""
-        return self.headers.get("x-source")
+        """``cellar`` (unfiltered request answered from Cellar — settles at 3
+        credits whatever the ``limit``, though it is admitted against
+        ``ceil(limit / 10)`` pages × 3 up front) or ``live`` (EUR-Lex, priced
+        per page) — the ``X-Source`` header."""
+        return header(self.headers, "x-source")
 
     @property
     def fetched_at(self) -> str | None:
@@ -776,10 +824,10 @@ class RelationSync:
     status: str | None
     reason: str | None
     synced_at: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> RelationSync:
+    def from_dict(cls, data: dict[str, Any]) -> RelationSync:
         return cls(
             source=_s(data, "source"),
             status=_s(data, "status"),
@@ -789,7 +837,7 @@ class RelationSync:
         )
 
     @classmethod
-    def parse(cls, data: dict) -> RelationSync | None:
+    def parse(cls, data: dict[str, Any]) -> RelationSync | None:
         value = data.get("relationSync")
         return cls.from_dict(value) if isinstance(value, dict) else None
 
@@ -802,10 +850,10 @@ class CitationEdge:
     context_snippet: str | None
     target_celex: str | None
     extracted_at: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> CitationEdge:
+    def from_dict(cls, data: dict[str, Any]) -> CitationEdge:
         return cls(
             citation_type=_s(data, "citationType"),
             context_snippet=_s(data, "contextSnippet"),
@@ -823,10 +871,10 @@ class CitationDocumentGroup:
     title: str | None
     citation_count: int | None
     citations: list[CitationEdge]
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> CitationDocumentGroup:
+    def from_dict(cls, data: dict[str, Any]) -> CitationDocumentGroup:
         return cls(
             celex_number=_s(data, "celexNumber"),
             title=_s(data, "title"),
@@ -844,10 +892,10 @@ class CitationNeighbour:
     title: str | None
     count: int | None
     types: list[str]
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> CitationNeighbour:
+    def from_dict(cls, data: dict[str, Any]) -> CitationNeighbour:
         return cls(
             celex_number=_s(data, "celexNumber"),
             title=_s(data, "title"),
@@ -867,11 +915,11 @@ class CitationPathNode:
 
     celex_number: str | None
     title: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     title_source: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> CitationPathNode:
+    def from_dict(cls, data: dict[str, Any]) -> CitationPathNode:
         return cls(
             celex_number=_s(data, "celexNumber"),
             title=_s(data, "title"),
@@ -888,11 +936,11 @@ class RelatedDocument:
     title: str | None
     shared_count: int | None
     shared_targets: list[str]
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     title_source: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> RelatedDocument:
+    def from_dict(cls, data: dict[str, Any]) -> RelatedDocument:
         return cls(
             celex_number=_s(data, "celexNumber"),
             title=_s(data, "title"),
@@ -911,10 +959,10 @@ class CitationStatsEntry:
     title: str | None
     cited_by_count: int | None
     cites_count: int | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> CitationStatsEntry:
+    def from_dict(cls, data: dict[str, Any]) -> CitationStatsEntry:
         return cls(
             celex_number=_s(data, "celexNumber"),
             title=_s(data, "title"),
@@ -1196,7 +1244,7 @@ class WebhookDelivery:
 
     id: str | None
     status: str | None
-    payload: dict
+    payload: dict[str, Any]
     response_status: int | None
     response_body: str | None
     error_message: str | None
@@ -1204,11 +1252,11 @@ class WebhookDelivery:
     next_retry_at: str | None
     delivered_at: str | None
     created_at: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     webhook_id: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> WebhookDelivery:
+    def from_dict(cls, data: dict[str, Any]) -> WebhookDelivery:
         return cls(
             id=_s(data, "id"),
             status=_s(data, "status"),
@@ -1233,10 +1281,10 @@ class WebhookRetryPolicy:
     max_attempts: int | None
     window_hours: int | None
     delays_minutes: list[int]
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> WebhookRetryPolicy:
+    def from_dict(cls, data: dict[str, Any]) -> WebhookRetryPolicy:
         return cls(
             max_attempts=_i(data, "maxAttempts"),
             window_hours=_i(data, "windowHours"),
@@ -1263,31 +1311,42 @@ class Webhook:
     deliveries, newest first). ``criteria_errors`` lists what is wrong with
     stored criteria saved before a validation rule existed (such criteria are
     skipped until fixed with an update). ``delivery_count`` is on list items
-    only. ``max_retries`` is no longer sent by the API (see ``retry_policy``)
-    and is kept for backward compatibility.
+    only. ``max_retries`` is deprecated: the API no longer sends
+    ``maxRetries``, so it is always ``None`` — reading it emits a
+    :class:`DeprecationWarning`; use ``retry_policy.max_attempts``.
     """
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "max_retries":
+            warnings.warn(
+                "Webhook.max_retries is deprecated and always None (the API no longer "
+                "sends maxRetries); use Webhook.retry_policy.max_attempts",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return object.__getattribute__(self, name)
 
     id: str | None
     name: str | None
     url: str | None
     status: str | None
-    search_criteria: dict
+    search_criteria: dict[str, Any]
     secret: str | None
     last_checked: str | None
     last_triggered: str | None
     consecutive_failures: int | None
     delivery_count: int | None
-    max_retries: int | None
+    max_retries: int | None = field(repr=False, compare=False)
     created_at: str | None
     updated_at: str | None
     recent_deliveries: list[WebhookDelivery]
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     watch_celex: list[str] = field(default_factory=list)
     criteria_errors: list[str] = field(default_factory=list)
     retry_policy: WebhookRetryPolicy | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> Webhook:
+    def from_dict(cls, data: dict[str, Any]) -> Webhook:
         policy = data.get("retryPolicy")
         criteria = data.get("searchCriteria")
         return cls(
@@ -1418,18 +1477,23 @@ class SemanticCaseLawResult:
     court: str | None
     celex: str | None
     document_type: str | None
-    metadata: dict
-    raw: dict = field(repr=False, default_factory=dict)
+    metadata: dict[str, Any]
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     snippet: str | None = None
     summary: str | None = None
-    parties: str | None = None
+    parties: list[str] | None = None
     decision_date: str | None = None
     jurisdiction: str | None = None
     language: str | None = None
     paragraph_number: int | None = None
 
+    @property
+    def parties_text(self) -> str | None:
+        """``parties`` joined with ``" v "`` (``None`` when absent)."""
+        return " v ".join(self.parties) if self.parties else None
+
     @classmethod
-    def from_dict(cls, data: dict) -> SemanticCaseLawResult:
+    def from_dict(cls, data: dict[str, Any]) -> SemanticCaseLawResult:
         metadata = _dict(data, "metadata")
         score = data.get("score")
         return cls(
@@ -1446,7 +1510,7 @@ class SemanticCaseLawResult:
             raw=data,
             snippet=_s(data, "snippet"),
             summary=_s(data, "summary"),
-            parties=_s(data, "parties"),
+            parties=_parties(data.get("parties")),
             decision_date=_s(data, "decision_date"),
             jurisdiction=_s(data, "jurisdiction"),
             language=_s(data, "language"),
@@ -1461,10 +1525,10 @@ class SemanticBaseAct:
     law_id: str | None
     article_ref: str | None
     score: float | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> SemanticBaseAct:
+    def from_dict(cls, data: dict[str, Any]) -> SemanticBaseAct:
         return cls(
             law_id=_s(data, "law_id"),
             article_ref=_s(data, "article_ref"),
@@ -1484,10 +1548,10 @@ class AsOfVersion:
     celex: str | None
     date: str | None
     kind: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> AsOfVersion:
+    def from_dict(cls, data: dict[str, Any]) -> AsOfVersion:
         return cls(
             celex=_s(data, "celex"),
             date=_s(data, "date"),
@@ -1504,10 +1568,10 @@ class MatchedVersion:
     id: str | None
     law_id: str | None
     consolidated_as_of: str | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> MatchedVersion:
+    def from_dict(cls, data: dict[str, Any]) -> MatchedVersion:
         return cls(
             id=_s(data, "id"),
             law_id=_s(data, "law_id"),
@@ -1524,10 +1588,10 @@ class AsOfSummary:
     live_fetches: int | None
     #: Hits returned with ``as_of_resolved=False``.
     unresolved: int | None
-    raw: dict = field(repr=False, default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> AsOfSummary:
+    def from_dict(cls, data: dict[str, Any]) -> AsOfSummary:
         return cls(
             live_fetches=_i(data, "liveFetches"),
             unresolved=_i(data, "unresolved"),
@@ -1564,8 +1628,8 @@ class SemanticLegislationResult:
     article_ref: str | None
     law_id: str | None
     law_title: str | None
-    metadata: dict
-    raw: dict = field(repr=False, default_factory=dict)
+    metadata: dict[str, Any]
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
     id: str | None = None
     snippet: str | None = None
     language: str | None = None
@@ -1589,7 +1653,7 @@ class SemanticLegislationResult:
         return self.base_celex if self.consolidated and self.base_celex else self.law_id
 
     @classmethod
-    def from_dict(cls, data: dict) -> SemanticLegislationResult:
+    def from_dict(cls, data: dict[str, Any]) -> SemanticLegislationResult:
         base_act = _opt_dict(data, "baseAct")
         as_of_version = _opt_dict(data, "asOfVersion")
         matched = _opt_dict(data, "matchedVersion")
@@ -1650,13 +1714,13 @@ class _SemanticResponseBase(APIResponse):
         return _i(self._map, "tookMs")
 
     @property
-    def semantic_usage(self) -> dict | None:
+    def semantic_usage(self) -> dict[str, Any] | None:
         """Legacy daily-call plans only; credit plans meter from the pool."""
         value = self._map.get("semanticUsage")
         return value if isinstance(value, dict) else None
 
     @property
-    def upstream_metadata(self) -> dict:
+    def upstream_metadata(self) -> dict[str, Any]:
         """The response-level ``metadata`` — an opaque pass-through from the
         embedding service whose shape is not guaranteed (use ``took_ms`` for
         timing)."""
@@ -1736,7 +1800,7 @@ class ResolveResponse(APIResponse):
         return _s(self._map, "resolvedVia")
 
     @property
-    def urls(self) -> dict:
+    def urls(self) -> dict[str, Any]:
         return _dict(self._map, "urls")
 
 
@@ -1757,11 +1821,11 @@ class VersionEntry:
     title: str | None
     document_type: str | None
     document_type_code: str | None
-    parsed_content: dict | None
-    raw: dict = field(repr=False, default_factory=dict)
+    parsed_content: dict[str, Any] | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> VersionEntry:
+    def from_dict(cls, data: dict[str, Any]) -> VersionEntry:
         parsed = data.get("parsedContent")
         return cls(
             version=_i(data, "version"),
@@ -1832,7 +1896,7 @@ class DocumentVersionResponse(APIResponse):
 
     @property
     def corpus_version(self) -> int | None:
-        return _header_int(self.headers.get("x-corpus-version"))
+        return _header_int(header(self.headers, "x-corpus-version"))
 
 
 class InfoResponse(APIResponse):
@@ -1853,7 +1917,7 @@ class InfoResponse(APIResponse):
         return _s(self._map, "description")
 
     @property
-    def endpoints(self) -> dict:
+    def endpoints(self) -> dict[str, Any]:
         """Self-describing capability map (per-endpoint method, path, params)."""
         return _dict(self._map, "endpoints")
 
