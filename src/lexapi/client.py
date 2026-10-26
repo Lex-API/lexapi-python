@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import datetime as _dt
 import time
 from typing import Any, TypeVar
 
@@ -10,13 +12,17 @@ import httpx
 from lexapi import _payloads
 from lexapi._base import (
     DEFAULT_BASE_URL,
+    DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_TIMEOUT,
     build_httpx_kwargs,
     exception_retry_wait,
     make_retry_config,
+    make_timeout,
     process_response,
     status_retry_wait,
     transport_error,
 )
+from lexapi._payloads import DateLike, OneOrMany, seg
 from lexapi._response import APIResponse
 from lexapi._retry import RetryConfig
 from lexapi.citations import CitationsResource
@@ -28,6 +34,7 @@ from lexapi.models import (
     DocumentResponse,
     DocumentVersionResponse,
     DocumentVersionsResponse,
+    InfoResponse,
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
@@ -45,17 +52,22 @@ class LexAPI:
     Args:
         api_key: LexAPI key (``lex_...``). Falls back to ``LEXAPI_API_KEY``.
             Keys are server-side secrets — never ship them in client-side code.
-        base_url: API base URL (defaults to production).
-        timeout: read/overall timeout in seconds, or a full ``httpx.Timeout``.
+        base_url: API base URL (defaults to production,
+            ``https://lex-api.com/api/v1``).
+        timeout: read/overall timeout in seconds (default 95 — above the
+            API's 90 s upstream budget, so a slow fetch surfaces as the
+            server's typed 504), or a full ``httpx.Timeout``.
         connect_timeout: connect timeout in seconds (ignored when ``timeout``
             is an ``httpx.Timeout``).
-        max_retries: retry budget for 429/502/503/504 and connect errors
-            (default 3). ``0`` disables retries.
+        max_retries: retry budget for 429/502/503/504/520-524 and connect
+            errors (default 3). ``0`` disables retries.
         retry_config: full :class:`~lexapi._retry.RetryConfig` override;
             takes precedence over ``max_retries``.
         user_agent_suffix: optional suffix appended to the
             ``lexapi-python/<version>`` User-Agent.
         transport: optional httpx transport (used for testing).
+
+    Per-call overrides: ``client.with_options(timeout=..., max_retries=...)``.
     """
 
     def __init__(
@@ -63,32 +75,62 @@ class LexAPI:
         api_key: str | None = None,
         *,
         base_url: str = DEFAULT_BASE_URL,
-        timeout: float | httpx.Timeout = 60.0,
-        connect_timeout: float = 10.0,
+        timeout: float | httpx.Timeout = DEFAULT_TIMEOUT,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         max_retries: int | None = None,
         retry_config: RetryConfig | None = None,
         user_agent_suffix: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._retry = make_retry_config(max_retries, retry_config)
+        self._timeout: httpx.Timeout | None = None
         self._http = httpx.Client(
             transport=transport,
             **build_httpx_kwargs(
                 api_key, base_url, timeout, connect_timeout, user_agent_suffix
             ),
         )
+        self._bind_resources()
+
+    def _bind_resources(self) -> None:
         #: Citation-graph operations (``client.citations.cited_by(...)``, ...).
         self.citations = CitationsResource(self)
         #: Webhook subscriptions (``client.webhooks.create(...)``, ...).
         self.webhooks = WebhooksResource(self)
 
+    def with_options(
+        self,
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        max_retries: int | None = None,
+        retry_config: RetryConfig | None = None,
+    ) -> LexAPI:
+        """A view of this client with a different timeout and/or retry policy.
+
+        Shares the underlying connection pool (closing either closes both),
+        so it is cheap to create per call::
+
+            client.with_options(timeout=180, max_retries=0).semantic_legislation_search(
+                "own funds requirements", as_of="2019-06-01"
+            )
+        """
+        clone = copy.copy(self)
+        if timeout is not None:
+            clone._timeout = make_timeout(timeout, connect_timeout)
+        if retry_config is not None or max_retries is not None:
+            clone._retry = make_retry_config(max_retries, retry_config)
+        clone._bind_resources()
+        return clone
+
     # ── Meta ──────────────────────────────────────────────────────────
-    def get_info(self) -> APIResponse:
+    def get_info(self) -> InfoResponse:
         """GET /info — API capabilities, subscription tier, and current usage.
 
-        Free operation (0 credits).
+        Free operation (0 credits). ``response.search_filters`` and
+        ``response.supported_languages`` carry the live filter enumerations.
         """
-        return self._request("GET", "/info")
+        return self._request("GET", "/info", cast=InfoResponse)
 
     # ── Search ────────────────────────────────────────────────────────
     def search(
@@ -96,25 +138,37 @@ class LexAPI:
         query: str | None = None,
         *,
         text_scope: str | None = None,
-        date_from: str | None = None,
-        date_to: str | None = None,
+        date_from: DateLike | None = None,
+        date_to: DateLike | None = None,
         year: int | list[int] | None = None,
         month: int | list[int] | None = None,
-        document_type: str | list[str] | None = None,
-        author: str | list[str] | None = None,
-        procedure: str | list[str] | None = None,
+        document_type: OneOrMany | None = None,
+        author: OneOrMany | None = None,
+        procedure: OneOrMany | None = None,
         domain: str | None = None,
-        subdomain: str | list[str] | None = None,
+        subdomain: OneOrMany | None = None,
         language: str | None = None,
         max_pages: int | None = None,
+        fresh: bool | None = None,
     ) -> SearchResponse:
         """POST /search — search EUR-Lex with structured filters.
 
-        At least one filter is required by the server. ``max_pages`` is
-        clamped to the subscription tier; check ``response.truncated`` /
-        ``response.partial`` / ``response.warning`` for capping signals.
-        Prefer 1-3 distinctive query terms — EUR-Lex keyword matching is
-        literal (use semantic search for concept queries).
+        At least one of ``query``, a date, ``year``/``month``,
+        ``document_type``, ``author``, ``procedure``, ``domain`` or
+        ``subdomain`` is required. ``query="*"`` means "no text constraint"
+        (a filter-only search). Prefer 1-3 distinctive terms — EUR-Lex keyword
+        matching is literal (use semantic search for concept queries).
+
+        **Cost: 3 credits per result page**, charged upfront for ``max_pages``
+        (clamped to the tier: FREE 1, STARTER 5, PROFESSIONAL 20, BUSINESS+
+        100) and refunded for pages never fetched. Identical searches within
+        60 minutes are served from a result cache (``response.cache``; same
+        price); ``fresh=True`` forces a re-fetch.
+
+        Capping and fallbacks are surfaced, never hidden: ``response.truncated``
+        / ``partial`` / ``post_filtered_by`` / ``warning`` (``X-Warning``), and
+        ``response.source`` names the upstream (``soap``, ``cellar``,
+        ``corpus`` — a corpus answer is always ``partial``).
         """
         body = _payloads.search_body(
             query,
@@ -130,6 +184,7 @@ class LexAPI:
             subdomain=subdomain,
             language=language,
             max_pages=max_pages,
+            fresh=fresh,
         )
         return self._request("POST", "/search", json=body, cast=SearchResponse)
 
@@ -140,22 +195,35 @@ class LexAPI:
         *,
         bypass_corpus: bool | None = None,
         language: str | None = None,
-        include: str | list[str] | None = None,
-        fields: str | list[str] | None = None,
+        accept_languages: str | list[str] | None = None,
+        include: OneOrMany | None = None,
+        fields: OneOrMany | None = None,
         article_id: str | None = None,
     ) -> DocumentResponse:
         """POST /documentContent — fetch one fully-parsed document by CELEX.
 
-        Corpus-first read path: ``response.source`` reports ``corpus`` or
-        ``live``; pass ``bypass_corpus=True`` to force a live scrape.
-        ``include``/``fields`` trim the payload to the listed pieces
-        (``metadata``, ``fullText``, ``articles``, ``recitals``, ``sections``,
-        ``tables``, ``annexes``); ``article_id`` narrows to one article.
+        Corpus-first: ``response.source`` reports ``corpus`` (settles at 1
+        credit), ``cellar`` / ``cellar-oj`` (4) or ``live`` (5).
+        ``bypass_corpus=True`` forces a fresh upstream read (billed at the
+        live rate). ``include``/``fields`` trim the payload to the listed
+        pieces (``metadata``, ``fullText``, ``articles``, ``recitals``,
+        ``sections``, ``tables``, ``annexes``); ``article_id`` (``art_17``,
+        ``17`` or ``Article 17``) narrows to one article.
+
+        ``language`` (default ``en``) localises the whole document; when the
+        document has no text in it, English is served (``document.language_
+        fallback``). ``accept_languages`` (an ordered list of ISO codes, or
+        ``"any"``) opts into serving the first of those that has text instead.
+
+        A document whose notice exists but whose text EUR-Lex does not publish
+        is a 200 with ``document.content is None`` and a
+        ``document.text_availability`` block saying why (billed 1 credit).
         """
         body = _payloads.document_content_body(
             celex,
             bypass_corpus=bypass_corpus,
             language=language,
+            accept_languages=accept_languages,
             include=include,
             fields=fields,
             article_id=article_id,
@@ -168,21 +236,27 @@ class LexAPI:
         *,
         bypass_corpus: bool | None = None,
         language: str | None = None,
-        include: str | list[str] | None = None,
-        fields: str | list[str] | None = None,
+        accept_languages: str | list[str] | None = None,
+        include: OneOrMany | None = None,
+        fields: OneOrMany | None = None,
         article_id: str | None = None,
     ) -> DocumentBatchResponse:
         """POST /documentContent/batch — fetch multiple documents at once.
 
         Per-CELEX failures land in ``response.errors`` instead of aborting
-        the batch. The batch size is clamped to the tier ceiling —
-        ``response.trimmed`` / ``trimmed_to`` / ``trimmed_reason`` (and the
-        ``X-Warning`` header via ``response.warning``) report clamping.
+        the batch; documents without text stay in ``documents``
+        (``response.text_unavailable`` counts them). The batch size is clamped
+        to the tier ceiling (FREE 1, STARTER 5, PROFESSIONAL 20, BUSINESS+ 50)
+        — ``response.trimmed`` / ``trimmed_to`` / ``trimmed_reason`` (and
+        ``response.warning``) report clamping; trimmed items are not charged.
+        5 credits per processed item, settled per source (``corpus_hits`` at
+        1, ``cellar_served`` / ``oj_recovered`` at 4, ``live_fetches`` at 5).
         """
         body = _payloads.document_batch_body(
             celexes,
             bypass_corpus=bypass_corpus,
             language=language,
+            accept_languages=accept_languages,
             include=include,
             fields=fields,
             article_id=article_id,
@@ -195,14 +269,21 @@ class LexAPI:
         self,
         *,
         days: int | None = None,
-        document_type: str | None = None,
-        author: str | None = None,
+        document_type: OneOrMany | None = None,
+        author: OneOrMany | None = None,
         domain: str | None = None,
-        subdomain: str | None = None,
+        subdomain: OneOrMany | None = None,
         language: str | None = None,
         limit: int | None = None,
     ) -> RecentDocumentsResponse:
-        """GET /documents/recent — documents published in the last ``days`` days."""
+        """GET /documents/recent — documents published in the last ``days``
+        days (default 7, up to ``limit`` results, default 50).
+
+        Unfiltered requests are answered from Cellar (``response.source ==
+        "cellar"``, 3 credits whatever the ``limit``); filtering on
+        ``document_type`` / ``author`` / ``domain`` / ``subdomain`` fetches
+        from EUR-Lex at 3 credits per result page (~10 results).
+        """
         params = _payloads.recent_documents_params(
             days=days,
             document_type=document_type,
@@ -220,38 +301,55 @@ class LexAPI:
         self,
         url: str,
         *,
-        include: str | list[str] | None = None,
-        fields: str | list[str] | None = None,
+        bypass_corpus: bool | None = None,
+        include: OneOrMany | None = None,
+        fields: OneOrMany | None = None,
         article_id: str | None = None,
     ) -> DocumentByUrlResponse:
         """POST /documents/url — fetch a document by any EUR-Lex URL.
 
-        The response echoes ``source_url`` and the ``extracted_celex``.
+        The URL must be on ``eur-lex.europa.eu`` and carry a ``CELEX:``
+        segment or ``uri=`` parameter (else 400 ``INVALID_URL``). The response
+        echoes ``source_url`` and the ``extracted_celex``; billed like
+        :meth:`get_document`. Served in English.
         """
         body = _payloads.document_by_url_body(
-            url, include=include, fields=fields, article_id=article_id
+            url,
+            bypass_corpus=bypass_corpus,
+            include=include,
+            fields=fields,
+            article_id=article_id,
         )
         return self._request("POST", "/documents/url", json=body, cast=DocumentByUrlResponse)
 
     def get_document_metadata(
         self, celex: str, *, bypass_corpus: bool | None = None
     ) -> DocumentMetadataResponse:
-        """POST /documents/metadata — metadata only (faster/cheaper than content)."""
+        """POST /documents/metadata — metadata only (no body parse).
+
+        5 credits, settled at 1 from the corpus and 4 from Cellar
+        (``response.source``).
+        """
         body = _payloads.drop_none({"celexNumber": celex, "bypassCorpus": bypass_corpus})
         return self._request(
             "POST", "/documents/metadata", json=body, cast=DocumentMetadataResponse
         )
 
     def resolve(self, identifier: str) -> ResolveResponse:
-        """POST /resolve — resolve a CELEX / EUR-Lex URL / ELI / ECLI to a CELEX."""
+        """POST /resolve — resolve a CELEX / EUR-Lex URL / ELI / ECLI to a CELEX.
+
+        1 credit. An identifier that doesn't resolve (e.g. an ECLI not yet in
+        the corpus) raises :class:`~lexapi.NotFoundError`.
+        """
         return self._request(
             "POST", "/resolve", json={"identifier": identifier}, cast=ResolveResponse
         )
 
     # ── Point-in-time versions ────────────────────────────────────────
-    # Requires lex-api PR #72 deployed. Versions are LexAPI observation
-    # snapshots (content-hash changes between fetches), NOT legal in-force
-    # reconstructions; history begins at first ingestion.
+    # Versions are LexAPI observation snapshots (content-hash changes
+    # between fetches), NOT legal in-force reconstructions; history begins
+    # at first ingestion. For the text in force on a date, use
+    # semantic_legislation_search(as_of=...) or a consolidated CELEX.
 
     def list_document_versions(
         self, celex: str, *, language: str | None = None
@@ -260,7 +358,7 @@ class LexAPI:
         params = _payloads.drop_none({"language": language})
         return self._request(
             "GET",
-            f"/documents/{celex}/versions",
+            f"/documents/{seg(celex)}/versions",
             params=params,
             cast=DocumentVersionsResponse,
         )
@@ -273,24 +371,25 @@ class LexAPI:
         params = _payloads.drop_none({"language": language})
         return self._request(
             "GET",
-            f"/documents/{celex}/versions/{version}",
+            f"/documents/{seg(celex)}/versions/{seg(version)}",
             params=params,
             cast=DocumentVersionResponse,
         )
 
     def get_document_at_date(
-        self, celex: str, date: str, *, language: str | None = None
+        self, celex: str, date: DateLike, *, language: str | None = None
     ) -> DocumentVersionResponse:
         """GET /documents/{celex}/at/{date} — the snapshot observed as current on ``date``.
 
-        ``date`` is ``YYYY-MM-DD`` (end-of-day UTC inclusive). Dates before
-        the document entered the corpus raise :class:`NotFoundError` with
-        the tracking start date in the message. 1 credit.
+        ``date`` is ``YYYY-MM-DD`` or a :class:`datetime.date` (end-of-day UTC
+        inclusive). Dates before the document entered the corpus raise
+        :class:`NotFoundError` with the tracking start date in the message.
+        1 credit.
         """
         params = _payloads.drop_none({"language": language})
         return self._request(
             "GET",
-            f"/documents/{celex}/at/{date}",
+            f"/documents/{seg(celex)}/at/{seg(_payloads.iso_date(date))}",
             params=params,
             cast=DocumentVersionResponse,
         )
@@ -307,7 +406,7 @@ class LexAPI:
         include_text: bool = False,
         filters: dict | None = None,
     ) -> SemanticSearchResponse:
-        """POST /search/semantic — embedding-based CJEU case-law search.
+        """POST /search/semantic — embedding-based CJEU case-law search (5 credits).
 
         Args:
             query: natural-language query to embed.
@@ -324,10 +423,12 @@ class LexAPI:
                 the upstream applies a ~0.7 relevance floor — if you got fewer
                 results than ``limit``, lower this (e.g. 0.5) to widen recall,
                 or pass 0 to disable the floor.
-            limit: max results (clamped to the tier's maxResults).
-            language: language of returned content (default ``en``).
-            include_text: receive full document text per hit instead of the
-                default ~600-char snippet (10-50x payload increase).
+            limit: max results (clamped to the tier's maxResults: 20/50/100).
+            language: language of returned content (default ``en``; the index
+                covers ``en fr de es it sl el nl pt pl``).
+            include_text: receive full document text per hit (``hit.text``)
+                instead of the default ~600-char ``hit.snippet`` (10-50x
+                payload increase).
             filters: free-form filter object forwarded to the backend.
 
         The response exposes ``hint`` (low-confidence signal), ``hyde``
@@ -356,13 +457,36 @@ class LexAPI:
         language: str | None = None,
         include_text: bool = False,
         filters: dict | None = None,
+        as_of: DateLike | None = None,
     ) -> SemanticLegislationResponse:
         """POST /legislation/semantic — embedding-based EU legislation search.
 
         Article-level matches (``article_ref``, ``law_id``, ``law_title``,
-        ``score``). Same ``min_score`` relevance-floor semantics as
-        :meth:`semantic_search`. HyDE is case-law only — the ``hyde`` param
-        is ignored by this endpoint, so it is not offered here.
+        ``score``). Same ``min_score`` / ``language`` / ``include_text``
+        semantics as :meth:`semantic_search`; ``limit`` is capped at 50 here.
+        HyDE is case-law only, so it is not offered. When an act and its
+        consolidated version match the same article you get one hit, the
+        consolidated one, labelled ``consolidated`` / ``base_celex`` /
+        ``consolidated_note`` with the authentic act's match in ``base_act``.
+
+        Args:
+            as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01 to
+                today UTC. Each hit answers with the version in force on that
+                date — the act as published before its first consolidation,
+                otherwise the consolidated version in force — after checking
+                the act was in force then. Hits that cannot be answered keep
+                their latest text with ``as_of_resolved=False`` and an
+                ``as_of_reason``. A malformed or out-of-range date is a 400
+                (refunded).
+
+        **Cost:** 5 credits for the search. With ``as_of``, each version the
+        corpus doesn't hold is fetched live (at most 3 per request by
+        default): each fetch reserves 5 credits just before it starts and
+        settles at 4 (Cellar), 5 (browser), 1 (no text) or 0 (failed / timed
+        out). A fetch the pool can't cover is skipped (``as_of_reason ==
+        "insufficient_credits"``); only the search itself can 402. Corpus
+        reads are free. ``as_of`` requests can take longer — the server's
+        budget is 45 s by default, inside the client's 95 s default timeout.
         """
         body = _payloads.semantic_search_body(
             query,
@@ -371,6 +495,7 @@ class LexAPI:
             language=language,
             include_text=include_text,
             filters=filters,
+            as_of=as_of,
         )
         return self._request(
             "POST", "/legislation/semantic", json=body, cast=SemanticLegislationResponse
@@ -380,25 +505,28 @@ class LexAPI:
     def export(
         self,
         *,
-        document_type: str | list[str] | None = None,
-        author: str | list[str] | None = None,
-        subdomain: str | list[str] | None = None,
+        document_type: OneOrMany | None = None,
+        author: OneOrMany | None = None,
+        subdomain: OneOrMany | None = None,
         language: str | None = None,
-        date_from: str | None = None,
-        date_to: str | None = None,
-        fetched_since: str | None = None,
+        date_from: DateLike | None = None,
+        date_to: DateLike | None = None,
+        fetched_since: str | _dt.datetime | None = None,
         include_html: bool | None = None,
         include_content: bool | None = None,
+        include_stubs: bool | None = None,
         limit: int | None = None,
     ) -> ExportStream:
-        """GET /export — stream matching corpus rows as NDJSON (BUSINESS tier).
+        """GET /export — stream matching corpus rows as NDJSON (BUSINESS,
+        SCALE and ENTERPRISE; lower tiers raise
+        :class:`~lexapi.TierForbiddenError`). 1 credit per row returned.
 
         Returns an :class:`~lexapi.export.ExportStream`: iterate it for one
         dict per corpus row. The leading ``_meta`` envelope and trailing
         ``_done`` line are captured on ``.meta`` / ``.done`` (with
         ``.total`` / ``.streaming`` / ``.truncated`` from the export
-        headers). Use it as a context manager to guarantee the connection
-        is closed::
+        headers, and ``.written`` / ``.skipped_stubs`` from the trailer).
+        Use it as a context manager to guarantee the connection is closed::
 
             with client.export(document_type="regulation", limit=1000) as stream:
                 for row in stream:
@@ -406,8 +534,11 @@ class LexAPI:
                 print(stream.done, stream.truncated)
 
         List filters (``document_type``, ``author``, ``subdomain``) are sent
-        comma-separated per the spec. ``fetched_since`` filters on the row's
-        ``lastSeenAt`` (ISO date-time) for incremental syncs.
+        comma-separated. ``fetched_since`` (ISO date-time string or a
+        :class:`datetime.datetime`) filters on the row's ``lastSeenAt`` for
+        incremental syncs. Metadata-only rows (no text) are skipped unless
+        ``include_stubs=True``. Licensing: see Terms §6 — training ML models on
+        exported content needs a separate licence.
         """
         params = export_params(
             document_type=document_type,
@@ -419,6 +550,7 @@ class LexAPI:
             fetched_since=fetched_since,
             include_html=include_html,
             include_content=include_content,
+            include_stubs=include_stubs,
             limit=limit,
         )
         return ExportStream(self._stream_request("GET", "/export", params=params))
@@ -430,7 +562,9 @@ class LexAPI:
         :meth:`_request`; the response body is left unread on success."""
         attempt = 0
         while True:
-            request = self._http.build_request(method, path, params=params)
+            request = self._http.build_request(
+                method, path, params=params, **self._timeout_kwargs()
+            )
             try:
                 response = self._http.send(request, stream=True)
             except httpx.HTTPError as exc:
@@ -446,11 +580,19 @@ class LexAPI:
             wait = status_retry_wait(method, response, attempt, self._retry)
             if wait is None:
                 process_response(response)  # raises the typed error
+                raise AssertionError("unreachable")  # pragma: no cover
             response.close()
             time.sleep(wait)
             attempt += 1
 
     # ── Request core ──────────────────────────────────────────────────
+    def _timeout_kwargs(self, timeout: float | httpx.Timeout | None = None) -> dict[str, Any]:
+        if timeout is not None:
+            return {"timeout": timeout}
+        if self._timeout is not None:
+            return {"timeout": self._timeout}
+        return {}
+
     def _request(
         self,
         method: str,
@@ -462,8 +604,7 @@ class LexAPI:
         timeout: float | httpx.Timeout | None = None,
     ) -> R:
         request_kwargs: dict[str, Any] = {"params": params, "json": json}
-        if timeout is not None:
-            request_kwargs["timeout"] = timeout
+        request_kwargs.update(self._timeout_kwargs(timeout))
         attempt = 0
         while True:
             try:

@@ -9,7 +9,10 @@ per line, then a trailing ``_done`` line. :class:`ExportStream` /
   line is read; call ``read_meta()`` / ``await read_meta()`` to fetch it
   eagerly before iterating (no document rows are lost).
 - ``stream.done`` — the ``_done`` trailer, populated once the iterator is
-  exhausted; carries ``truncated: true`` when the server row cap was hit.
+  exhausted; carries ``written``, ``truncated: true`` when the server row
+  cap was hit, and ``skippedStubs`` (metadata-only rows left out because
+  ``include_stubs`` was not set) — also exposed as ``stream.written`` /
+  ``stream.skipped_stubs``.
 - ``stream.total`` / ``stream.streaming`` / ``stream.truncated`` — from the
   ``X-Export-Total`` / ``X-Export-Streaming`` / ``X-Export-Truncated``
   response headers, available immediately.
@@ -20,13 +23,26 @@ when iteration finishes, on ``close()``/``aclose()``, or on context exit.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import httpx
 
-from lexapi._payloads import drop_none
+from lexapi._payloads import DateLike, drop_none, iso_date
+
+
+def _bool(value: bool | None) -> str | None:
+    if value is None:
+        return None
+    return "true" if value else "false"
+
+
+def _iso_datetime(value: str | _dt.datetime | None) -> str | None:
+    if isinstance(value, _dt.datetime):
+        return value.isoformat()
+    return value
 
 
 def export_params(
@@ -35,14 +51,16 @@ def export_params(
     author: str | list[str] | None = None,
     subdomain: str | list[str] | None = None,
     language: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    fetched_since: str | None = None,
+    date_from: DateLike | None = None,
+    date_to: DateLike | None = None,
+    fetched_since: str | _dt.datetime | None = None,
     include_html: bool | None = None,
     include_content: bool | None = None,
+    include_stubs: bool | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Query params for /export. List values are joined comma-separated."""
+    """Query params for /export. List values are joined comma-separated;
+    booleans are sent as ``true`` / ``false``; dates may be ``datetime.date``."""
 
     def _join(value: str | list[str] | None) -> str | None:
         if isinstance(value, list):
@@ -55,11 +73,12 @@ def export_params(
             "author": _join(author),
             "subdomain": _join(subdomain),
             "language": language,
-            "dateFrom": date_from,
-            "dateTo": date_to,
-            "fetchedSince": fetched_since,
-            "includeHtml": include_html,
-            "includeContent": include_content,
+            "dateFrom": iso_date(date_from),
+            "dateTo": iso_date(date_to),
+            "fetchedSince": _iso_datetime(fetched_since),
+            "includeHtml": _bool(include_html),
+            "includeContent": _bool(include_content),
+            "includeStubs": _bool(include_stubs),
             "limit": limit,
         }
     )
@@ -104,6 +123,25 @@ class _ExportStreamBase:
         if isinstance(self.done, dict) and self.done.get("truncated") is True:
             return True
         return False
+
+    @property
+    def written(self) -> int | None:
+        """Rows the server wrote (``_done.written``; after iteration)."""
+        return self._done_int("written")
+
+    @property
+    def skipped_stubs(self) -> int | None:
+        """Metadata-only rows skipped because ``include_stubs`` was off
+        (``_done.skippedStubs``; after iteration)."""
+        return self._done_int("skippedStubs")
+
+    def _done_int(self, key: str) -> int | None:
+        if not isinstance(self.done, dict):
+            return None
+        value = self.done.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
 
     def _header_int(self, name: str) -> int | None:
         value = self.headers.get(name)

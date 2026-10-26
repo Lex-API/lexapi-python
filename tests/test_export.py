@@ -147,7 +147,7 @@ def test_export_param_serialization():
     }
 
 
-def test_export_tier_402_raises_typed_error():
+def test_export_credit_pool_402_raises_typed_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             402,
@@ -155,7 +155,7 @@ def test_export_tier_402_raises_typed_error():
                 "success": False,
                 "error": {
                     "code": "CREDITS_EXHAUSTED",
-                    "message": "Subscription does not include corpus export",
+                    "message": "Credit pool exhausted",
                 },
             },
         )

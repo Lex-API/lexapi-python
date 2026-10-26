@@ -3,17 +3,24 @@
 Defaults (SDK contract §1.2):
 
 - up to 3 retries with exponential backoff + full jitter (base 0.5 s, cap 30 s)
-- retryable statuses: 429, 502, 503, 504 — plus connect-phase transport
-  errors (the request never reached the server, so any method is safe)
+- retryable statuses: 429, 502, 503, 504 and Cloudflare's 520-524 origin
+  errors — plus connect-phase transport errors (the request never reached
+  the server, so any method is safe)
 - non-idempotent methods (POST/PUT/PATCH/DELETE) retry **only** on 429
   (and connect-phase errors); GET retries on every retryable status
+- a 429 that reports an exhausted *quota* (legacy daily-call plans, legacy
+  monthly semantic quota: the body carries a ``usage`` block and no
+  ``retryAfter``) is not retried — it cannot succeed before ``resetsAt``
 - server-directed wait wins over computed backoff. Resolution order:
 
-  1. ``Retry-After`` response header (seconds or HTTP-date),
-  2. ``RateLimit-Reset`` / ``X-RateLimit-Reset`` header (delta-seconds),
-  3. the JSON ``retryAfter`` body field — **last resort only**: a known
-     server bug emitted epoch seconds instead of delta seconds here, so
-     epoch-looking values are converted to a delta defensively,
+  1. ``Retry-After`` response header (seconds or HTTP-date), on any status,
+  2. on a 429 only: ``RateLimit-Reset`` / ``X-RateLimit-Reset`` header
+     (delta-seconds). LexAPI sends the draft-6 ``RateLimit-*`` headers on
+     **every** ``/api/v1`` response, so outside a 429 they describe the
+     rate-limit window, not when a failed request may be retried,
+  3. on a 429 only: the JSON ``retryAfter`` body field. Older deployments
+     emitted epoch seconds here, so epoch-looking values are converted to a
+     delta defensively,
   4. computed exponential backoff.
 """
 
@@ -41,7 +48,9 @@ class RetryConfig:
     max_retries: int = 3
     backoff_base: float = 0.5
     backoff_cap: float = 30.0
-    retry_statuses: frozenset = field(default_factory=lambda: frozenset({429, 502, 503, 504}))
+    retry_statuses: frozenset = field(
+        default_factory=lambda: frozenset({429, 502, 503, 504, 520, 521, 522, 523, 524})
+    )
     #: Statuses retried even for non-idempotent methods.
     retry_statuses_non_idempotent: frozenset = field(default_factory=lambda: frozenset({429}))
 
@@ -86,17 +95,24 @@ def _body_retry_after(body: Any) -> float | None:
     return value
 
 
-def server_wait_hint(headers: httpx.Headers, body: Any) -> float | None:
-    """Resolve the server-directed wait for a 429/5xx response, if any.
+def server_wait_hint(
+    headers: httpx.Headers, body: Any, status: int | None = None
+) -> float | None:
+    """Resolve the server-directed wait for a failed response, if any.
 
-    Header sources are preferred over the JSON ``retryAfter`` body field
-    (which was buggy — epoch seconds — until a pending server fix).
+    ``Retry-After`` applies to any status. The rate-limit-window sources
+    (``RateLimit-Reset`` and the JSON ``retryAfter``) only apply to a 429:
+    LexAPI sends ``RateLimit-*`` on every response, so on a 502 they would
+    otherwise turn a sub-second retry into a wait for the rate window.
+    ``status=None`` (unknown) consults every source.
     """
     header = headers.get("retry-after")
     if header is not None:
         parsed = parse_retry_after(header)
         if parsed is not None:
             return parsed
+    if status is not None and status != 429:
+        return None
     for name in ("ratelimit-reset", "x-ratelimit-reset"):
         reset = headers.get(name)
         if reset is not None:
@@ -109,6 +125,22 @@ def server_wait_hint(headers: httpx.Headers, body: Any) -> float | None:
             if seconds >= 0:
                 return seconds
     return _body_retry_after(body)
+
+
+def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
+    """True for a 429 that reports an exhausted quota rather than a rate limit.
+
+    Legacy daily-call plans (``"Daily quota exceeded"``) and the legacy
+    monthly semantic quota answer 429 with a ``usage`` block carrying
+    ``resetsAt`` and no ``retryAfter`` / ``Retry-After`` — retrying before
+    the reset only burns the retry budget.
+    """
+    if status != 429 or headers.get("retry-after") is not None:
+        return False
+    if not isinstance(body, dict) or "retryAfter" in body:
+        return False
+    usage = body.get("usage")
+    return isinstance(usage, dict) and isinstance(usage.get("resetsAt"), str)
 
 
 def is_retryable_exception(exc: httpx.HTTPError) -> bool:
@@ -140,9 +172,12 @@ def retry_wait(
     """
     if attempt >= config.max_retries:
         return None
-    if not is_retryable_status(method, response.status_code, config):
+    status = response.status_code
+    if not is_retryable_status(method, status, config):
         return None
-    hint = server_wait_hint(response.headers, body)
+    if is_quota_exhausted(status, response.headers, body):
+        return None
+    hint = server_wait_hint(response.headers, body, status)
     if hint is not None:
         return min(hint, config.backoff_cap)
     return compute_backoff(attempt, config)

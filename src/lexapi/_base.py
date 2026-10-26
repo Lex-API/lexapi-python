@@ -30,6 +30,14 @@ from lexapi.errors import (
 
 DEFAULT_BASE_URL = "https://lex-api.com/api/v1"
 
+#: Default read/overall timeout in seconds. Above the API's 90 s hard
+#: upstream timeout (so a slow EUR-Lex fetch surfaces as the server's typed
+#: 504 ``TIMEOUT`` rather than a local cut-off) and below Cloudflare's
+#: 100 s proxy timeout.
+DEFAULT_TIMEOUT = 95.0
+#: Default connect timeout in seconds.
+DEFAULT_CONNECT_TIMEOUT = 10.0
+
 R = TypeVar("R", bound=APIResponse)
 
 
@@ -40,6 +48,15 @@ def resolve_api_key(api_key: str | None) -> str:
     return key
 
 
+def make_timeout(
+    timeout: float | httpx.Timeout, connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
+) -> httpx.Timeout:
+    """An ``httpx.Timeout`` from a read/overall budget plus a connect budget."""
+    if isinstance(timeout, httpx.Timeout):
+        return timeout
+    return httpx.Timeout(timeout, connect=connect_timeout)
+
+
 def build_httpx_kwargs(
     api_key: str | None,
     base_url: str,
@@ -48,13 +65,9 @@ def build_httpx_kwargs(
     user_agent_suffix: str | None,
 ) -> dict[str, Any]:
     """Keyword arguments shared by ``httpx.Client`` and ``httpx.AsyncClient``."""
-    if isinstance(timeout, httpx.Timeout):
-        resolved_timeout = timeout
-    else:
-        resolved_timeout = httpx.Timeout(timeout, connect=connect_timeout)
     return {
         "base_url": base_url.rstrip("/"),
-        "timeout": resolved_timeout,
+        "timeout": make_timeout(timeout, connect_timeout),
         "headers": {
             "x-api-key": resolve_api_key(api_key),
             "user-agent": user_agent(user_agent_suffix),
@@ -83,7 +96,7 @@ def process_response(
     raise error_from_response(
         response.status_code,
         body,
-        retry_after=server_wait_hint(response.headers, body),
+        retry_after=server_wait_hint(response.headers, body, response.status_code),
     )
 
 
