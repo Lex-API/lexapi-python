@@ -545,12 +545,14 @@ class LexAPI:
         self,
         *,
         document_type: OneOrMany | None = None,
+        document_type_code: OneOrMany | None = None,
         author: OneOrMany | None = None,
         subdomain: OneOrMany | None = None,
         language: str | None = None,
         date_from: DateLike | None = None,
         date_to: DateLike | None = None,
         fetched_since: str | _dt.datetime | None = None,
+        changed_since: str | _dt.datetime | None = None,
         include_html: bool | None = None,
         include_content: bool | None = None,
         include_stubs: bool | None = None,
@@ -558,8 +560,8 @@ class LexAPI:
     ) -> ExportStream:
         """GET /export — stream matching corpus rows as NDJSON (BUSINESS,
         SCALE and ENTERPRISE; lower tiers raise
-        :class:`~lexapi.TierForbiddenError`). For the credit cost see the
-        pricing page and the response's credit fields / ``X-Export-*`` headers.
+        :class:`~lexapi.TierForbiddenError`). Billing is
+        described below.
 
         Returns an :class:`~lexapi.export.ExportStream`: iterate it for one
         dict per corpus row. The leading ``_meta`` envelope and trailing
@@ -573,21 +575,47 @@ class LexAPI:
                     handle(row["celex"], row.get("parsedContent"))
                 print(stream.done, stream.truncated)
 
-        List filters (``document_type``, ``author``, ``subdomain``) are sent
-        comma-separated. ``fetched_since`` (ISO date-time string or a
-        :class:`datetime.datetime`) filters on the row's ``lastSeenAt`` for
-        incremental syncs. Metadata-only rows (no text) are skipped unless
-        ``include_stubs=True``. Licensing: see Terms §6 — training ML models on
-        exported content needs a separate licence.
+        Filters (requires lex-api API 2.3.0; list values are sent
+        comma-separated and ORed):
+
+        - ``document_type``: the stored label, matched exactly ignoring case
+          (``"regulation"`` matches ``Regulation``, not ``Implementing
+          regulation``).
+        - ``document_type_code``: a type family by the ``documentTypeCode``
+          each row carries (``"regulation"`` includes implementing and
+          delegated regulations).
+        - ``author``: whole stored author values, ignoring case.
+        - ``date_from`` / ``date_to``: document-date range, ``YYYY-MM-DD``
+          (or ``datetime.date``).
+        - ``fetched_since``: rows whose ``lastSeenAt`` is at or after the time
+          (any write to the row). ``changed_since``: rows whose text changed
+          (``contentChangedAt``) — the cheapest incremental sync. Both take an
+          ISO 8601 date or a date-time *with a timezone*, or a timezone-aware
+          :class:`datetime.datetime` (a naive one raises ``ValueError``).
+        - ``limit``: a positive integer (else ``ValueError``); the server
+          clamps it to its 50,000-row ceiling.
+
+        Billing (credit plans): 1 credit per row written, at least 1 per
+        export. The call is admitted for 1 credit, the matching rows are
+        counted, and the rest of 1 credit per row it can return is reserved;
+        a pool that cannot cover it raises
+        :class:`~lexapi.CreditsExhaustedError` before anything streams.
+        Unwritten rows are refunded when the stream ends; the settled charge
+        is ``stream.done["credits"]["charged"]``. Metadata-only rows (no
+        text) are skipped unless ``include_stubs=True``. Licensing: see
+        Terms §6 — training ML models on exported content needs a separate
+        licence.
         """
         params = export_params(
             document_type=document_type,
+            document_type_code=document_type_code,
             author=author,
             subdomain=subdomain,
             language=language,
             date_from=date_from,
             date_to=date_to,
             fetched_since=fetched_since,
+            changed_since=changed_since,
             include_html=include_html,
             include_content=include_content,
             include_stubs=include_stubs,

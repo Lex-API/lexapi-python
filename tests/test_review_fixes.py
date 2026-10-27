@@ -411,27 +411,37 @@ def test_e1_async_missing_trailer():
     assert asyncio.run(run()) == [{"celex": "A"}]
 
 
-def test_e2_skipped_stubs_are_not_truncation():
-    lines = [
-        line({"_meta": {"totalMatching": 3}}),
+def test_e2_done_truncated_is_authoritative_once_read():
+    # API 2.3.0 (lex-api #303 R4): `_done.truncated` is never derived from
+    # the count and does not count skipped stubs, so it wins over the
+    # count-based header and _meta once the trailer has been read.
+    not_reached = [
+        line({"_meta": {"truncated": False}}),
         line({"celex": "A"}),
-        line({"_done": {"written": 1, "truncated": True, "skippedStubs": 2}}),
+        line({"_done": {"written": 1, "truncated": True, "truncatedBy": "credits"}}),
     ]
-    with export_client(_ChunkStream(lines), headers={"X-Export-Total": "3"}) as client:
+    with export_client(_ChunkStream(not_reached), headers={"X-Export-Truncated": "0"}) as client:
+        export = client.export()
+        assert export.truncated is False  # before the trailer: the header hint
+        list(export)
+    assert export.truncated is True  # rows added since the count were not reached
+    assert export.done is not None and export.done["truncatedBy"] == "credits"
+
+    reached = [
+        line({"_meta": {"totalMatching": 3, "truncated": True}}),
+        line({"celex": "A"}),
+        line({"_done": {"written": 1, "truncated": False, "skippedStubs": 2}}),
+    ]
+    with export_client(_ChunkStream(reached), headers={"X-Export-Truncated": "1"}) as client:
         export = client.export()
         list(export)
     assert export.truncated is False
-
-    with export_client(_ChunkStream(lines), headers={"X-Export-Truncated": "0"}) as client:
-        export = client.export()
-        list(export)
-    assert export.truncated is False  # the header is cap-only and wins
 
     capped = [line({"_meta": {"truncated": True}}), line({"_done": {"written": 1}})]
     with export_client(_ChunkStream(capped)) as client:
         export = client.export()
         list(export)
-    assert export.truncated is True
+    assert export.truncated is True  # a trailer without the flag: _meta
 
 
 # ── W1 / W3 / P1 ───────────────────────────────────────────────────────
@@ -510,10 +520,11 @@ def test_w2_max_retries_warns():
 # ── D1 / M4 / M5 / K: copy and packaging ───────────────────────────────
 
 
-def test_d1_no_per_row_export_price_in_docs():
-    assert "per row" not in (LexAPI.export.__doc__ or "")
-    assert "per row" not in (AsyncLexAPI.export.__doc__ or "")
-    assert "per row" not in (ROOT / "README.md").read_text()
+def test_d1_export_price_in_docs_is_the_api_23_model():
+    # PLAN.md §1.8: stated exactly as lex-api #303 (API 2.3.0) bills it.
+    for doc in (LexAPI.export.__doc__ or "", AsyncLexAPI.export.__doc__ or ""):
+        assert "1 credit per row written, at least 1 per" in doc
+        assert "CreditsExhaustedError" in doc
 
 
 def test_m4_m5_docstrings_name_real_limits():

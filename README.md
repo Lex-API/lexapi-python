@@ -236,12 +236,24 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)
 
 `export()` streams NDJSON rows with constant memory; the `_meta` / `_done`
-envelopes and export headers are exposed on the stream. For the credit cost
-see the [pricing page](https://lex-api.com/pricing?ref=pypi-sdk) and the
-response's credit fields.
+envelopes and export headers are exposed on the stream.
+
+**Billing (credit plans, API 2.3.0):** 1 credit per row written, at least 1 per
+export. The call is admitted for 1 credit, the matching rows are counted, and
+the rest of 1 credit per row it can return is reserved; a pool that cannot
+cover it raises `CreditsExhaustedError` before anything streams. Unwritten
+rows are refunded when the stream ends: `stream.done["credits"]["charged"]`.
+
+**Filters:** `document_type` matches the stored label exactly, ignoring case;
+`document_type_code="regulation"` selects the family (incl. implementing and
+delegated regulations); `author` matches whole values; `date_from` / `date_to`
+are `YYYY-MM-DD`; `changed_since` returns rows whose text changed (the
+cheapest incremental sync) and `fetched_since` rows written to at all — both an
+ISO date or a timezone-aware date-time (a naive `datetime` raises
+`ValueError`); `limit` is a positive integer.
 
 ```python
-with client.export(document_type="regulation", date_from="2024-01-01", limit=10_000) as stream:
+with client.export(document_type_code="regulation", date_from="2024-01-01", limit=10_000) as stream:
     print(stream.total, stream.streaming)  # X-Export-Total / X-Export-Streaming
     for row in stream:  # one dict per corpus row
         ingest(row["celex"], row.get("parsedContent"))
@@ -336,7 +348,7 @@ from lexapi import (
     NotFoundError,  # 404 NOT_FOUND
     InvalidCelexError,  # 400 INVALID_CELEX
     InvalidParamsError,  # 400 INVALID_PARAMS (e.g. an invalid as_of)
-    RateLimitedError,  # 429 — .retry_after; .quota_exhausted / .resets_at on legacy quotas
+    RateLimitedError,  # 429 — .retry_after; code QUOTA_EXHAUSTED / .quota_exhausted / .resets_at on legacy quotas
     CreditsExhaustedError,  # 402 CREDITS_EXHAUSTED — .resets_at, .operation, .weight, .available
     TierForbiddenError,  # 403 TIER_FORBIDDEN — .upgrade_url on legacy tier gates
     UpstreamError,  # 502 UPSTREAM_ERROR
@@ -345,7 +357,7 @@ from lexapi import (
     RequestTimeoutError,  # the SDK's own timeout elapsed
     ServiceUnavailableError,  # 503 (SDK code SERVICE_UNAVAILABLE; subclass of UpstreamError)
     InvalidResponseError,  # a 2xx whose body is not JSON (e.g. a proxy's HTML page)
-    IncompleteExportError,  # export stream ended without its _done trailer
+    IncompleteExportError,  # export stream ended without a complete _done trailer
 )
 
 try:
@@ -377,7 +389,7 @@ POSTs, including webhook create/update/test, are never retried on a 5xx by
 default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
 read-only POSTs (search, document reads, resolve, semantic search) on an
 app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
-is not retried (it can't succeed before `resets_at`), and neither is a 402.
+(`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
 
 ```python
 from lexapi import LexAPI, RetryConfig
