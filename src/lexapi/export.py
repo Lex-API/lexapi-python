@@ -11,7 +11,7 @@ per line, then a trailing ``_done`` line. :class:`ExportStream` /
 - ``stream.done`` — the ``_done`` trailer, populated once the iterator is
   exhausted; carries ``written``, ``truncated: true`` when matching rows
   remain that the export did not reach (``truncatedBy``: ``limit``,
-  ``max_rows`` or ``credits``), and ``skippedStubs`` (metadata-only rows
+  ``max_rows``, ``credits`` or ``recovered``), and ``skippedStubs`` (metadata-only rows
   left out because ``include_stubs`` was not set) — also exposed as ``stream.written`` /
   ``stream.skipped_stubs``.
 - ``stream.total`` / ``stream.streaming`` — from the ``X-Export-Total`` /

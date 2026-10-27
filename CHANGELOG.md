@@ -202,7 +202,7 @@ refunded.
   lex-api #303 is deployed.**
 - **`stream.truncated` reads `_done.truncated` first once the trailer has
   been read.** From API 2.3.0 that flag is authoritative: it is set when
-  matching rows remain unreached (`truncatedBy`: `limit`, `max_rows` or
+  matching rows remain unreached (`truncatedBy`: `limit`, `max_rows`, `recovered` or
   `credits`) and never derived from the row count. The `X-Export-Truncated`
   header and `_meta.truncated` come from an up-front count that may be a
   minute old and never caps the stream, so they are now only the fallback
