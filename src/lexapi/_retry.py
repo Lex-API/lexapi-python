@@ -42,9 +42,12 @@ Wait resolution (server-directed wins, clamped to ``backoff_cap``):
 Numeric hints are delta-seconds; a value above 1e12 is read as epoch
 milliseconds and above 1e9 as epoch seconds and converted to a delta.
 
-A 429 that reports an exhausted *quota* (legacy plans: a ``usage`` block
-with ``resetsAt`` and neither ``Retry-After`` nor ``retryAfter``) is never
-retried — it cannot succeed before ``resetsAt``.
+A 429 that reports an exhausted *quota* is never retried — it cannot
+succeed before ``resetsAt``. It is recognised by the body's top-level
+``code: "QUOTA_EXHAUSTED"`` (lex-api #304 on), whatever else the response
+carries, or, from older servers, by the legacy shape: a ``usage`` block with
+``resetsAt`` and neither ``Retry-After`` nor ``retryAfter``
+(:func:`is_quota_exhausted`).
 """
 
 from __future__ import annotations

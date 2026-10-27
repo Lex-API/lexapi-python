@@ -9,13 +9,16 @@ per line, then a trailing ``_done`` line. :class:`ExportStream` /
   line is read; call ``read_meta()`` / ``await read_meta()`` to fetch it
   eagerly before iterating (no document rows are lost).
 - ``stream.done`` — the ``_done`` trailer, populated once the iterator is
-  exhausted; carries ``written``, ``truncated: true`` when the server row
-  cap was hit, and ``skippedStubs`` (metadata-only rows left out because
-  ``include_stubs`` was not set) — also exposed as ``stream.written`` /
+  exhausted; carries ``written``, ``truncated: true`` when matching rows
+  remain that the export did not reach (``truncatedBy``: ``limit``,
+  ``max_rows`` or ``credits``), and ``skippedStubs`` (metadata-only rows
+  left out because ``include_stubs`` was not set) — also exposed as ``stream.written`` /
   ``stream.skipped_stubs``.
-- ``stream.total`` / ``stream.streaming`` / ``stream.truncated`` — from the
-  ``X-Export-Total`` / ``X-Export-Streaming`` / ``X-Export-Truncated``
-  response headers, available immediately.
+- ``stream.total`` / ``stream.streaming`` — from the ``X-Export-Total`` /
+  ``X-Export-Streaming`` response headers, available immediately.
+- ``stream.truncated`` — ``_done.truncated`` once the trailer has been read
+  (authoritative); before that, the ``X-Export-Truncated`` header, a hint
+  from the up-front count.
 
 Iterating a stream whose ``_done`` trailer was never read raises
 :class:`~lexapi.IncompleteExportError` — whether the body ended early, or the
@@ -193,25 +196,26 @@ class _ExportStreamBase:
 
     @property
     def truncated(self) -> bool:
-        """True when the server's row cap (``limit`` / ``EXPORT_MAX_ROWS``)
-        cut the result short.
+        """True when matching rows remain that this export did not reach.
 
-        Read from ``X-Export-Truncated`` (cap only), else ``_meta.truncated``.
-        The ``_done.truncated`` flag is a last resort and is discounted by
-        ``skippedStubs``: the API sets it to ``written < total``, and ``total``
-        counts metadata-only rows that ``include_stubs=False`` then skips.
+        Once the ``_done`` trailer has been read, its ``truncated`` flag is
+        authoritative (API 2.3.0): the server sets it when it wrote up to
+        ``limit`` / ``EXPORT_MAX_ROWS`` and found another matching row past
+        the last one it read, or when the credit pool could not pay for rows
+        added since its count (``done["truncatedBy"]`` says which). It never
+        derives it from the row count, and skipped stubs do not count.
+
+        Before the trailer, it falls back to ``X-Export-Truncated``, then
+        ``_meta.truncated``. Both come from the up-front count, which may be
+        cached for up to a minute and never caps the stream: a hint only.
         """
+        if isinstance(self.done, dict) and isinstance(self.done.get("truncated"), bool):
+            return bool(self.done["truncated"])
         value = header(self.headers, "x-export-truncated")
         if value is not None and value.strip() in ("0", "1"):
             return value.strip() == "1"
         if isinstance(self.meta, dict) and isinstance(self.meta.get("truncated"), bool):
             return bool(self.meta["truncated"])
-        if isinstance(self.done, dict):
-            written, skipped = self._done_int("written"), self._done_int("skippedStubs")
-            total = self.total
-            if written is not None and skipped is not None and total is not None:
-                return written + skipped < total
-            return self.done.get("truncated") is True
         return False
 
     @property

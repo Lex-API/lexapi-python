@@ -200,6 +200,13 @@ refunded.
   request (the API answers 400 to both). Docstrings and README describe the
   per-row billing and the filter semantics of API 2.3.0. **Publish only after
   lex-api #303 is deployed.**
+- **`stream.truncated` reads `_done.truncated` first once the trailer has
+  been read.** From API 2.3.0 that flag is authoritative: it is set when
+  matching rows remain unreached (`truncatedBy`: `limit`, `max_rows` or
+  `credits`) and never derived from the row count. The `X-Export-Truncated`
+  header and `_meta.truncated` come from an up-front count that may be a
+  minute old and never caps the stream, so they are now only the fallback
+  before the trailer arrives. (PLAN.md §1.8; lex-api #303.)
 
 ## [0.1.0] — 2026-07-02
 
