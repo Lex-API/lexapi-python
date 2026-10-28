@@ -137,7 +137,11 @@ class NationalResource:
         )
 
     def get_document(
-        self, jurisdiction: str, id: str, *, language: str | None = None  # noqa: A002 - matches the API's own name
+        self,
+        jurisdiction: str,
+        id: str,
+        *,
+        language: str | None = None,  # noqa: A002 - matches the API's own name
     ) -> NationalDocumentResponse:
         """``GET /{jurisdiction}/documents/{id}`` — one national document.
 
@@ -206,8 +210,13 @@ class NationalResource:
             "POST",
             f"/{_jur(jurisdiction)}/search/semantic",
             json=_semantic_case_law_body(
-                query, hyde=hyde, min_score=min_score, limit=limit, language=language,
-                include_text=include_text, filters=filters,
+                query,
+                hyde=hyde,
+                min_score=min_score,
+                limit=limit,
+                language=language,
+                include_text=include_text,
+                filters=filters,
             ),
             cast=NationalSemanticSearchResponse,
             read_only=True,
@@ -236,8 +245,12 @@ class NationalResource:
             "POST",
             f"/{_jur(jurisdiction)}/legislation/semantic",
             json=_semantic_legislation_body(
-                query, min_score=min_score, limit=limit, language=language,
-                include_text=include_text, filters=filters,
+                query,
+                min_score=min_score,
+                limit=limit,
+                language=language,
+                include_text=include_text,
+                filters=filters,
             ),
             cast=NationalSemanticLegislationResponse,
             read_only=True,
@@ -258,7 +271,11 @@ class AsyncNationalResource:
         )
 
     async def get_document(
-        self, jurisdiction: str, id: str, *, language: str | None = None  # noqa: A002
+        self,
+        jurisdiction: str,
+        id: str,
+        *,
+        language: str | None = None,  # noqa: A002
     ) -> NationalDocumentResponse:
         """``GET /{jurisdiction}/documents/{id}`` — see :meth:`NationalResource.get_document`."""
         return await self._client._request(
@@ -304,8 +321,13 @@ class AsyncNationalResource:
             "POST",
             f"/{_jur(jurisdiction)}/search/semantic",
             json=_semantic_case_law_body(
-                query, hyde=hyde, min_score=min_score, limit=limit, language=language,
-                include_text=include_text, filters=filters,
+                query,
+                hyde=hyde,
+                min_score=min_score,
+                limit=limit,
+                language=language,
+                include_text=include_text,
+                filters=filters,
             ),
             cast=NationalSemanticSearchResponse,
             read_only=True,
@@ -328,8 +350,12 @@ class AsyncNationalResource:
             "POST",
             f"/{_jur(jurisdiction)}/legislation/semantic",
             json=_semantic_legislation_body(
-                query, min_score=min_score, limit=limit, language=language,
-                include_text=include_text, filters=filters,
+                query,
+                min_score=min_score,
+                limit=limit,
+                language=language,
+                include_text=include_text,
+                filters=filters,
             ),
             cast=NationalSemanticLegislationResponse,
             read_only=True,

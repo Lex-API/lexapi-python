@@ -2067,15 +2067,18 @@ class NationalJurisdictionCoverage:
             launched_at=_s(data, "launchedAt"),
             legislation=(
                 NationalCoverageAvailability.from_dict(legislation)
-                if legislation is not None else None
+                if legislation is not None
+                else None
             ),
             case_law=(
                 NationalCaseLawCoverageAvailability.from_dict(case_law)
-                if case_law is not None else None
+                if case_law is not None
+                else None
             ),
             semantic_search=(
                 NationalSemanticSearchAvailability.from_dict(semantic)
-                if semantic is not None else None
+                if semantic is not None
+                else None
             ),
             sources=_parse_items(data, "sources", NationalSource),
             last_sync_at=_s(data, "lastSyncAt"),
