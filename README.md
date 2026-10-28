@@ -233,6 +233,52 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
     return 200
 ```
 
+### National law (launching 2026-11-03)
+
+National (non-EU) jurisdictions live under `client.national`. Call `coverage()`
+first — a jurisdiction that has not launched yet answers every other national
+method with `NotFoundError`, exactly like one that does not exist:
+
+```python
+coverage = client.national.coverage()  # public, free
+for j in coverage.jurisdictions:
+    if j.live:
+        print(j.code, j.name, j.legislation.documents, j.case_law.courts)
+        for source in j.sources:
+            print(source.name, source.licence, source.attribution)  # show this to users
+
+doc = client.national.get_document("AT", "AT-NOR-12345")
+print(doc.document.title, doc.document.attribution)  # always show attribution
+
+page = client.national.list_documents("AT", q="Datenschutz", document_type="regulation", limit=20)
+print(page.total, [d.title for d in page.results])
+
+hits = client.national.semantic_search("AT", "data breach notification duty")
+for r in hits.results:
+    print(r.document_id, r.score, r.attribution)
+
+legislation_hits = client.national.legislation_semantic_search("AT", "right to erasure")
+```
+
+**Pricing below BUSINESS** (FREE, STARTER, PROFESSIONAL): each call to the four
+non-coverage methods above also draws from a monthly allowance of national
+calls (FREE 30, STARTER 500, PROFESSIONAL 2,000 per UTC month). A used-up
+allowance raises `NationalAllowanceExhaustedError` (402) with `jurisdiction`,
+`limit`, `remaining`, `resets_at` and `upgrade_url`, before any credit is
+charged; BUSINESS and above have no separate limit. Every response from
+these methods exposes `response.national_allowance_limit` /
+`national_allowance_remaining` / `national_allowance_resets_at` (present
+only for FREE/STARTER/PROFESSIONAL).
+
+```python
+from lexapi import NationalAllowanceExhaustedError
+
+try:
+    client.national.get_document("AT", "AT-NOR-12345")
+except NationalAllowanceExhaustedError as err:
+    print(err.limit, err.remaining, err.resets_at, err.upgrade_url)
+```
+
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)
 
 `export()` streams NDJSON rows with constant memory; the `_meta` / `_done`

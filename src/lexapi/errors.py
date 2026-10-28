@@ -251,6 +251,62 @@ class CreditsExhaustedError(LexAPIError):
         return self._detail_int("used")
 
 
+class NationalAllowanceExhaustedError(LexAPIError):
+    """402 ``NATIONAL_ALLOWANCE_EXHAUSTED`` — the monthly national-law call
+    allowance of a plan below BUSINESS (FREE 30, STARTER 500, PROFESSIONAL
+    2,000 calls per UTC month; lex-api PR #306) is used up.
+
+    Raised only by the national documents and national semantic-search
+    endpoints (``client.national.*``); BUSINESS and above have no separate
+    limit and never see this error. ``details`` carries ``jurisdiction``,
+    ``limit``, ``remaining`` (always 0 here), ``resetsAt`` and
+    ``upgradeUrl`` — each exposed as a typed attribute. Not retried: wait
+    for ``resets_at`` or upgrade.
+    """
+
+    default_code = "NATIONAL_ALLOWANCE_EXHAUSTED"
+
+    def __init__(self, message: str, *, resets_at: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.resets_at = resets_at
+
+    def _detail_str(self, key: str) -> str | None:
+        if not isinstance(self.details, dict):
+            return None
+        value = self.details.get(key)
+        return value if isinstance(value, str) else None
+
+    def _detail_int(self, key: str) -> int | None:
+        if not isinstance(self.details, dict):
+            return None
+        value = self.details.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
+
+    @property
+    def jurisdiction(self) -> str | None:
+        """The jurisdiction code (e.g. ``AT``) the refused call targeted."""
+        return self._detail_str("jurisdiction")
+
+    @property
+    def limit(self) -> int | None:
+        """The plan's monthly allowance."""
+        return self._detail_int("limit")
+
+    @property
+    def remaining(self) -> int | None:
+        """Calls left this month (always 0 on this error)."""
+        return self._detail_int("remaining")
+
+    @property
+    def upgrade_url(self) -> str | None:
+        """``details.upgradeUrl`` (e.g. ``/pricing``) — overrides the base
+        class's property, which reads the top-level body instead of
+        ``details``, where this endpoint puts it."""
+        return self._detail_str("upgradeUrl")
+
+
 class UpstreamError(LexAPIError):
     """502 ``UPSTREAM_ERROR`` — EUR-Lex (or the semantic service) returned an error."""
 
@@ -322,6 +378,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "QUOTA_EXHAUSTED": RateLimitedError,
     "TIER_FORBIDDEN": TierForbiddenError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
+    "NATIONAL_ALLOWANCE_EXHAUSTED": NationalAllowanceExhaustedError,
     "UPSTREAM_ERROR": UpstreamError,
     "SERVICE_UNAVAILABLE": ServiceUnavailableError,
     "TIMEOUT": TimeoutError,
@@ -397,6 +454,6 @@ def error_from_response(status: int, body: Any, retry_after: float | None = None
         "body": body,
         "retry_after": retry_after,
     }
-    if error_cls is CreditsExhaustedError:
+    if error_cls is CreditsExhaustedError or error_cls is NationalAllowanceExhaustedError:
         kwargs["resets_at"] = _extract_resets_at(details, body)
     return error_cls(message, **kwargs)

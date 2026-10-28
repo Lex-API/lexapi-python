@@ -41,6 +41,7 @@ from lexapi.models import (
     SemanticLegislationResponse,
     SemanticSearchResponse,
 )
+from lexapi.national import NationalResource
 from lexapi.webhooks import WebhooksResource
 
 R = TypeVar("R", bound=APIResponse)
@@ -98,6 +99,8 @@ class LexAPI:
         self.citations = CitationsResource(self)
         #: Webhook subscriptions (``client.webhooks.create(...)``, ...).
         self.webhooks = WebhooksResource(self)
+        #: National-law operations (``client.national.coverage()``, ...).
+        self.national = NationalResource(self)
 
     def with_options(
         self,

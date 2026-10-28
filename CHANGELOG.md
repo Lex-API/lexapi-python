@@ -4,6 +4,70 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (0.x: minors may break, documented here).
 
+## [0.3.0] — 2026-10-28
+
+Adds support for LexAPI's national-law surface, ahead of its launch
+(2026-11-03). Written against the server code directly
+(`server/routes/api.js`, `server/routes/semantic.js`,
+`server/middleware/jurisdiction.js`, `server/controllers/nationalController.js`,
+`server/controllers/nationalSemanticController.js`,
+`server/utils/jurisdictions.js`) and the diff of lex-api PR #306 (the
+monthly allowance for FREE/STARTER/PROFESSIONAL). **The public coverage
+endpoint and PR #306 had not shipped yet when this was written** — re-verify
+against the live API once both are deployed.
+
+### Added
+
+- **`client.national` / `client.national` (async)** — new resource
+  namespace (`NationalResource` / `AsyncNationalResource`):
+  - `coverage()` — `GET /national/coverage` (public, free). Which
+    jurisdictions are live, their legislation / case-law coverage
+    (`documents`, `from`, `courts`), semantic-search availability, and the
+    `sources` to attribute (`NationalCoverageResponse`,
+    `NationalJurisdictionCoverage`, `NationalCoverageAvailability`,
+    `NationalCaseLawCoverageAvailability`, `NationalSemanticSearchAvailability`,
+    `NationalSource`). Call this before any other national method — an
+    unlaunched or unknown jurisdiction code answers every other national
+    endpoint with a plain 404.
+  - `get_document(jurisdiction, id, language=None)` — `GET /{jurisdiction}/documents/{id}`
+    (`NationalDocumentResponse`, `NationalDocument`, `NationalTextBasis`).
+    5 credits upfront, settled to 1 — national reads are always served from
+    the corpus, never a live fetch.
+  - `list_documents(jurisdiction, page=, limit=, q=, document_type=, include_repealed=)`
+    — `GET /{jurisdiction}/documents` (`NationalDocumentListResponse`). 3
+    credits flat per call (not per page).
+  - `semantic_search(jurisdiction, query, hyde=, min_score=, limit=, language=, include_text=, filters=)`
+    — `POST /{jurisdiction}/search/semantic` (`NationalSemanticSearchResponse`,
+    `NationalSemanticCaseLawResult`). `hyde` is accepted for parity but never
+    bills the 15-credit EU premium — the national index never rewrites.
+  - `legislation_semantic_search(jurisdiction, query, min_score=, limit=, language=, include_text=, filters=)`
+    — `POST /{jurisdiction}/legislation/semantic`
+    (`NationalSemanticLegislationResponse`, `NationalSemanticLegislationResult`).
+    No `hyde`, no `as_of` (both EU-only).
+  - Every national result carries `attribution` — always show it to the end
+    user next to the content.
+- **`NationalAllowanceExhaustedError`** (402 `NATIONAL_ALLOWANCE_EXHAUSTED`) —
+  the monthly national-call allowance of a plan below BUSINESS (FREE 30,
+  STARTER 500, PROFESSIONAL 2,000 calls/UTC month) is used up. Typed
+  `jurisdiction`, `limit`, `remaining`, `resets_at`, `upgrade_url`. Not
+  retried.
+- `APIResponse.national_allowance_limit` / `national_allowance_remaining` /
+  `national_allowance_resets_at`, reading the `X-National-Limit` /
+  `X-National-Remaining` / `X-National-Reset` headers (present only for
+  FREE/STARTER/PROFESSIONAL accounts on the four non-coverage national
+  endpoints).
+
+### Notes
+
+- `NationalSemanticLegislationResult.in_force` / `.valid_to` mirror the
+  server's own inconsistent wire field names for this one endpoint
+  (`in_force` / `valid_to`, snake_case) — unlike every other camelCase field
+  in this SDK. Intentional; do not "fix" it, it would stop matching the API.
+- National semantic responses never carry a `credits` body block, the same
+  gap as the existing EU `semantic_search` / `semantic_legislation_search`
+  (`semantic.js` does not attach the credits envelope) — read the
+  `national_allowance_*` / `rate_limit_*` headers instead.
+
 ## [0.2.0] — 2026-10-26
 
 Synced with the LexAPI API as of `openapi.yaml` on lex-api `main` at
