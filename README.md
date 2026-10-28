@@ -285,7 +285,11 @@ search yet) and `NationalSemanticUnavailableError` (503 — temporarily down,
 a `ServiceUnavailableError`); both expose `.jurisdiction` and charge nothing:
 
 ```python
-from lexapi import NationalSemanticNotEnabledError, NationalSemanticUnavailableError, ServiceUnavailableError
+from lexapi import (
+    NationalSemanticNotEnabledError,
+    NationalSemanticUnavailableError,
+    ServiceUnavailableError,
+)
 
 try:
     client.national.semantic_search("AT", "Datenschutz")
