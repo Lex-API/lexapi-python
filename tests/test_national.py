@@ -5,7 +5,15 @@ import json
 
 import httpx
 
-from lexapi import AsyncLexAPI, LexAPI, NationalAllowanceExhaustedError, NotFoundError
+from lexapi import (
+    AsyncLexAPI,
+    LexAPI,
+    NationalAllowanceExhaustedError,
+    NationalSemanticNotEnabledError,
+    NationalSemanticUnavailableError,
+    NotFoundError,
+    ServiceUnavailableError,
+)
 
 
 def capture_client(response_json, status=200, headers=None):
@@ -34,13 +42,16 @@ COVERAGE_BODY = {
                 "available": True,
                 "description": "Federal law",
                 "documents": 12000,
-                "from": "1945",
+                # legislation.from is currently always null server-side —
+                # see nationalCoverageController.js liveJurisdiction().
+                "from": None,
             },
             "caseLaw": {
                 "available": True,
                 "description": "OGH decisions",
                 "documents": 4000,
-                "from": "2000",
+                # caseLaw.from IS populated: an int year, not a string.
+                "from": 2000,
                 "courts": ["OGH"],
             },
             "semanticSearch": {"legislation": True, "caseLaw": True},
@@ -53,7 +64,26 @@ COVERAGE_BODY = {
                 }
             ],
             "lastSyncAt": "2026-10-27T00:00:00.000Z",
-        }
+        },
+        {
+            # darkJurisdiction() shape: registered but not live — nothing
+            # beyond name/code is populated.
+            "code": "DE",
+            "name": "Germany",
+            "live": False,
+            "launchedAt": None,
+            "legislation": {"available": False, "description": "", "documents": None, "from": None},
+            "caseLaw": {
+                "available": False,
+                "description": "",
+                "documents": None,
+                "from": None,
+                "courts": [],
+            },
+            "semanticSearch": {"legislation": False, "caseLaw": False},
+            "sources": [],
+            "lastSyncAt": None,
+        },
     ],
 }
 
@@ -66,13 +96,23 @@ def test_coverage():
     assert seen["method"] == "GET"
     assert seen["path"] == "/api/v1/national/coverage"
     assert resp.updated_at == "2026-10-28T00:00:00.000Z"
-    j = resp.jurisdictions[0]
-    assert j.code == "AT"
-    assert j.live is True
-    assert j.legislation.documents == 12000
-    assert j.case_law.courts == ["OGH"]
-    assert j.semantic_search.case_law is True
-    assert j.sources[0].attribution.startswith("Data source: RIS")
+    at, de = resp.jurisdictions
+    assert at.code == "AT"
+    assert at.live is True
+    assert at.legislation.documents == 12000
+    assert at.legislation.from_ is None
+    assert at.case_law.from_ == 2000
+    assert at.case_law.courts == ["OGH"]
+    assert at.semantic_search.case_law is True
+    assert at.sources[0].attribution.startswith("Data source: RIS")
+
+    assert de.code == "DE"
+    assert de.live is False
+    assert de.legislation.available is False
+    assert de.legislation.documents is None
+    assert de.legislation.description == ""  # always a string, never None
+    assert de.case_law.from_ is None
+    assert de.sources == []
 
 
 DOCUMENT_BODY = {
@@ -118,12 +158,17 @@ def test_get_document():
 
 
 def test_get_document_404():
+    # Typed envelope since lex-api commit 6ec7440 (part of #314's stack):
+    # the national 404 used to be the legacy bare shape, now it matches the
+    # EU document routes.
     client, _ = capture_client(
         {
-            "error": "Document not found",
-            "code": "NOT_FOUND",
-            "id": "AT-NOR-999",
-            "jurisdiction": "AT",
+            "success": False,
+            "error": {
+                "code": "NOT_FOUND",
+                "message": "No AT document found with id AT-NOR-999",
+                "details": {"id": "AT-NOR-999", "jurisdiction": "AT"},
+            },
         },
         status=404,
     )
@@ -134,6 +179,7 @@ def test_get_document_404():
             raise AssertionError("expected NotFoundError")
         except NotFoundError as err:
             assert err.status == 404
+            assert err.details == {"id": "AT-NOR-999", "jurisdiction": "AT"}
 
 
 LIST_BODY = {
@@ -305,6 +351,77 @@ def test_national_allowance_exhausted_error():
             assert err.remaining == 0
             assert err.resets_at == "2026-12-01T00:00:00.000Z"
             assert err.upgrade_url == "/pricing"
+
+
+def test_national_allowance_exhausted_not_retried():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            402,
+            json={
+                "success": False,
+                "error": {
+                    "code": "NATIONAL_ALLOWANCE_EXHAUSTED",
+                    "message": "used up",
+                    "details": {"jurisdiction": "AT", "limit": 30, "remaining": 0},
+                },
+            },
+        )
+
+    client = LexAPI(api_key="lex_test_key", transport=httpx.MockTransport(handler))
+    with client:
+        try:
+            client.national.get_document("AT", "AT-NOR-1")
+            raise AssertionError("expected NationalAllowanceExhaustedError")
+        except NationalAllowanceExhaustedError:
+            pass
+
+    assert calls["n"] == 1
+
+
+def test_national_semantic_not_enabled_409():
+    client, _ = capture_client(
+        {
+            "success": False,
+            "code": "NATIONAL_SEMANTIC_NOT_ENABLED",
+            "error": "National semantic search not enabled",
+            "message": "Semantic search over Austria (AT) is not enabled yet. No credits charged.",
+            "jurisdiction": "AT",
+        },
+        status=409,
+    )
+
+    with client:
+        try:
+            client.national.semantic_search("AT", "Datenschutz")
+            raise AssertionError("expected NationalSemanticNotEnabledError")
+        except NationalSemanticNotEnabledError as err:
+            assert err.status == 409
+            assert err.jurisdiction == "AT"
+
+
+def test_national_semantic_unavailable_503():
+    client, _ = capture_client(
+        {
+            "success": False,
+            "code": "NATIONAL_SEMANTIC_UNAVAILABLE",
+            "error": "National semantic index unavailable",
+            "message": "The Austria (AT) semantic index is temporarily unavailable.",
+            "jurisdiction": "AT",
+        },
+        status=503,
+    )
+
+    with client:
+        try:
+            client.national.legislation_semantic_search("AT", "right to erasure")
+            raise AssertionError("expected NationalSemanticUnavailableError")
+        except NationalSemanticUnavailableError as err:
+            assert err.status == 503
+            assert err.jurisdiction == "AT"
+            assert isinstance(err, ServiceUnavailableError)
 
 
 def make_async_client(handler, **kwargs) -> AsyncLexAPI:

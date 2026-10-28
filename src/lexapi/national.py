@@ -198,13 +198,22 @@ class NationalResource:
         """``POST /{jurisdiction}/search/semantic`` — national case-law
         semantic search. Same request shape as :meth:`LexAPI.semantic_search`,
         but ``filters`` only honours ``court``, ``date_from``, ``date_to``,
-        ``ecli`` and ``language`` here (an unsupported key is a 400).
+        ``ecli``, ``language`` and ``jurisdiction`` here (an unsupported key
+        is a 400). ``filters["jurisdiction"]`` must equal the path's
+        jurisdiction when given (or be omitted) — it is never a way to
+        query a different country. ``language`` (top-level or in
+        ``filters``) must be one this jurisdiction is indexed in; any other
+        value is a 400.
 
         5 credits flat, whatever ``hyde`` says: the national index never
         rewrites, so ``hyde=True`` never bills the 15-credit EU premium —
         the response reports ``hyde=False`` when requested. Below BUSINESS,
         counts against the monthly national-call allowance (checked, and
-        validation runs, before any credit is charged).
+        validation runs, before any credit is charged). Raises
+        :class:`~lexapi.errors.NationalSemanticNotEnabledError` (409) when
+        the index does not search this jurisdiction, or
+        :class:`~lexapi.errors.NationalSemanticUnavailableError` (503) when
+        it is temporarily down — neither charges anything.
         """
         return self._client._request(
             "POST",
@@ -235,11 +244,18 @@ class NationalResource:
     ) -> NationalSemanticLegislationResponse:
         """``POST /{jurisdiction}/legislation/semantic`` — national
         legislation semantic search. ``filters`` honours ``id``/``law_id``,
-        ``inForce``/``in_force`` and ``documentType``/``law_type``, plus
-        ``language``. No ``hyde``, no ``as_of`` — both are EU-only.
+        ``inForce``/``in_force``, ``documentType``/``law_type``,
+        ``language`` and ``jurisdiction``. No ``hyde``, no ``as_of`` — both
+        are EU-only. ``filters["jurisdiction"]`` must equal the path's
+        jurisdiction when given (or be omitted). ``language`` (top-level or
+        in ``filters``) must be one this jurisdiction is indexed in; any
+        other value is a 400.
 
         5 credits flat. Below BUSINESS, counts against the monthly
-        national-call allowance.
+        national-call allowance. Raises
+        :class:`~lexapi.errors.NationalSemanticNotEnabledError` (409) or
+        :class:`~lexapi.errors.NationalSemanticUnavailableError` (503) —
+        see :meth:`semantic_search`.
         """
         return self._client._request(
             "POST",

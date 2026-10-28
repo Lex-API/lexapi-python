@@ -279,6 +279,27 @@ except NationalAllowanceExhaustedError as err:
     print(err.limit, err.remaining, err.resets_at, err.upgrade_url)
 ```
 
+The two `semantic_search` / `legislation_semantic_search` methods also raise
+`NationalSemanticNotEnabledError` (409 — this jurisdiction's index doesn't
+search yet) and `NationalSemanticUnavailableError` (503 — temporarily down,
+a `ServiceUnavailableError`); both expose `.jurisdiction` and charge nothing:
+
+```python
+from lexapi import NationalSemanticNotEnabledError, NationalSemanticUnavailableError, ServiceUnavailableError
+
+try:
+    client.national.semantic_search("AT", "Datenschutz")
+except NationalSemanticNotEnabledError as err:
+    print(f"{err.jurisdiction} semantic search isn't enabled yet")
+except ServiceUnavailableError as err:  # catches NationalSemanticUnavailableError too
+    print(f"{err.jurisdiction} semantic index is temporarily down, retry later")
+```
+
+`include_national` on the citation-graph methods (`client.citations.*`) and
+national ids on `/citations/*` are in the documented API contract but not
+yet implemented in this SDK — tracked in the CHANGELOG, not silently
+dropped.
+
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)
 
 `export()` streams NDJSON rows with constant memory; the `_meta` / `_done`

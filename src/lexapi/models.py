@@ -1965,7 +1965,12 @@ class NationalCoverageAvailability:
     available: bool | None
     description: str | None
     documents: int | None
-    from_: str | None
+    #: Earliest decision year LexAPI holds (an int year, or ``None``) —
+    #: NOT a date string. ``legislation.from_`` is currently always
+    #: ``None`` server-side (the coverage controller hardcodes it); the
+    #: field exists because ``caseLaw.from_`` (the subclass below) is the
+    #: same field and IS populated.
+    from_: int | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
@@ -1974,7 +1979,7 @@ class NationalCoverageAvailability:
             available=_b(data, "available"),
             description=_s(data, "description"),
             documents=_i(data, "documents"),
-            from_=_s(data, "from"),
+            from_=_i(data, "from"),
             raw=data,
         )
 
@@ -1991,7 +1996,7 @@ class NationalCaseLawCoverageAvailability(NationalCoverageAvailability):
             available=_b(data, "available"),
             description=_s(data, "description"),
             documents=_i(data, "documents"),
-            from_=_s(data, "from"),
+            from_=_i(data, "from"),
             raw=data,
             courts=_str_list(data, "courts"),
         )
@@ -2263,8 +2268,12 @@ class NationalSemanticLegislationResult(SemanticLegislationResult):
     in this SDK, ``in_force`` / ``valid_to`` here are the server's own
     snake_case wire names (``in_force`` / ``valid_to``, not ``inForce`` /
     ``validTo``) — do not "fix" this, it would stop matching the API.
-    They are present only when a confirmed repeal overrides the upstream
-    hit's ``in_force`` toward ``False``.
+
+    ``in_force`` comes from the semantic index on every hit (``True`` or
+    ``False``) — it is not limited to the override case. ``valid_to`` is
+    narrower: LexAPI's own corpus row only ever adds it (and forces
+    ``in_force`` to ``False``) when it independently confirms a repeal the
+    index has not caught up with yet; it never asserts an act IS in force.
     """
 
     document_id: str | None = None

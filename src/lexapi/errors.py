@@ -307,6 +307,27 @@ class NationalAllowanceExhaustedError(LexAPIError):
         return self._detail_str("upgradeUrl")
 
 
+def _body_jurisdiction(err: LexAPIError) -> str | None:
+    if isinstance(err.body, dict) and isinstance(err.body.get("jurisdiction"), str):
+        return str(err.body["jurisdiction"])
+    return None
+
+
+class NationalSemanticNotEnabledError(LexAPIError):
+    """409 ``NATIONAL_SEMANTIC_NOT_ENABLED`` — the national semantic index
+    does not search this jurisdiction (yet). Legacy-shape body with a
+    top-level ``jurisdiction`` (not nested in ``details``). Not retryable;
+    nothing was charged.
+    """
+
+    default_code = "NATIONAL_SEMANTIC_NOT_ENABLED"
+
+    @property
+    def jurisdiction(self) -> str | None:
+        """The jurisdiction code (e.g. ``AT``) from the top-level body."""
+        return _body_jurisdiction(self)
+
+
 class UpstreamError(LexAPIError):
     """502 ``UPSTREAM_ERROR`` — EUR-Lex (or the semantic service) returned an error."""
 
@@ -320,6 +341,22 @@ class ServiceUnavailableError(UpstreamError):
     (where 503 mapped to ``UPSTREAM_ERROR``) keeps catching it."""
 
     default_code = "SERVICE_UNAVAILABLE"
+
+
+class NationalSemanticUnavailableError(ServiceUnavailableError):
+    """503 ``NATIONAL_SEMANTIC_UNAVAILABLE`` — the national semantic index
+    for this jurisdiction is temporarily down. A subclass of
+    :class:`ServiceUnavailableError` (itself a :class:`UpstreamError`), so
+    ``except ServiceUnavailableError`` still catches it. Legacy-shape body
+    with a top-level ``jurisdiction``. Retryable later; nothing was charged.
+    """
+
+    default_code = "NATIONAL_SEMANTIC_UNAVAILABLE"
+
+    @property
+    def jurisdiction(self) -> str | None:
+        """The jurisdiction code (e.g. ``AT``) from the top-level body."""
+        return _body_jurisdiction(self)
 
 
 class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
@@ -379,8 +416,10 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "TIER_FORBIDDEN": TierForbiddenError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "NATIONAL_ALLOWANCE_EXHAUSTED": NationalAllowanceExhaustedError,
+    "NATIONAL_SEMANTIC_NOT_ENABLED": NationalSemanticNotEnabledError,
     "UPSTREAM_ERROR": UpstreamError,
     "SERVICE_UNAVAILABLE": ServiceUnavailableError,
+    "NATIONAL_SEMANTIC_UNAVAILABLE": NationalSemanticUnavailableError,
     "TIMEOUT": TimeoutError,
     "INTERNAL": InternalServerError,
 }

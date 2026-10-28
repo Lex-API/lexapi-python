@@ -11,10 +11,12 @@ Adds support for LexAPI's national-law surface, ahead of its launch
 (`server/routes/api.js`, `server/routes/semantic.js`,
 `server/middleware/jurisdiction.js`, `server/controllers/nationalController.js`,
 `server/controllers/nationalSemanticController.js`,
-`server/utils/jurisdictions.js`) and the diff of lex-api PR #306 (the
-monthly allowance for FREE/STARTER/PROFESSIONAL). **The public coverage
-endpoint and PR #306 had not shipped yet when this was written** — re-verify
-against the live API once both are deployed.
+`server/utils/jurisdictions.js`, `server/controllers/nationalCoverageController.js`
+on `feat/national-launch-switch`, commit `6ec7440`) and the diffs of lex-api
+PR #306 (the monthly allowance) and PR #314 (the documented contract,
+openapi.yaml/docs.md, API 2.5.0). **PR #306, the launch-switch branch and
+PR #314 had not merged to `main` when this was written** — re-verify against
+the live API once all three deploy.
 
 ### Added
 
@@ -51,11 +53,35 @@ against the live API once both are deployed.
   STARTER 500, PROFESSIONAL 2,000 calls/UTC month) is used up. Typed
   `jurisdiction`, `limit`, `remaining`, `resets_at`, `upgrade_url`. Not
   retried.
+- **`NationalSemanticNotEnabledError`** (409 `NATIONAL_SEMANTIC_NOT_ENABLED`)
+  and **`NationalSemanticUnavailableError`** (503
+  `NATIONAL_SEMANTIC_UNAVAILABLE`, a `ServiceUnavailableError` subclass) —
+  the national semantic index does not search a jurisdiction, or is
+  temporarily down. Legacy-shape bodies with a top-level `jurisdiction`
+  (not nested in `details`); both are typed as that attribute. Neither
+  charges anything.
 - `APIResponse.national_allowance_limit` / `national_allowance_remaining` /
   `national_allowance_resets_at`, reading the `X-National-Limit` /
   `X-National-Remaining` / `X-National-Reset` headers (present only for
   FREE/STARTER/PROFESSIONAL accounts on the four non-coverage national
   endpoints).
+
+### Fixed (post-review)
+
+- `NationalCoverageAvailability.from_` / `NationalCaseLawCoverageAvailability.from_`
+  were parsed with the string helper (`_s()`), so they were always `None`
+  on a real response — the contract sends an int year or `null`. Now
+  `_i()`, typed `int | None`.
+- The national document 404 is the typed envelope
+  (`{success: false, error: {code, message, details: {id, jurisdiction}}}`),
+  not the legacy bare shape it used to be — matches lex-api commit `6ec7440`.
+- `NationalSemanticLegislationResult`'s docstring overstated how narrow
+  `in_force` is: it comes from the semantic index on every hit (`True` or
+  `False`); only `valid_to` (and forcing `in_force` to `False`) is limited
+  to LexAPI's own confirmed-repeal override.
+- `semantic_search()` / `legislation_semantic_search()` docstrings now note
+  `filters["jurisdiction"]` (must match the path, or be omitted) and that
+  `language` must be one the jurisdiction is indexed in.
 
 ### Notes
 
@@ -66,7 +92,34 @@ against the live API once both are deployed.
 - National semantic responses never carry a `credits` body block, the same
   gap as the existing EU `semantic_search` / `semantic_legislation_search`
   (`semantic.js` does not attach the credits envelope) — read the
-  `national_allowance_*` / `rate_limit_*` headers instead.
+  `national_allowance_*` / `rate_limit_*` headers instead. (lex-api PR #314's
+  openapi.yaml lists `credits` on these response schemas — that's drift to
+  fix on the API side, not here.)
+- **Not in this release:** `include_national` on the citation-graph methods
+  (`cited_by`/`cites`/`network`/`path`/`related`/`stats`), and national ids
+  on `/citations/*` generally — both BUSINESS+, both in the documented
+  contract (lex-api PR #314), both deliberately deferred here pending
+  confirmation of scope. See the hardening checklist below.
+
+### Known upcoming changes (lex-api `fix/national-api-hardening` — not implemented here)
+
+- Withdrawn documents will answer 410 `DOCUMENT_WITHDRAWN` with
+  `details {id, jurisdiction, withdrawnAt}`, serving nothing of the
+  document. Needs a `DocumentWithdrawnError` (+ `withdrawn_at`), a README
+  row, a test, and the `NationalDocument` / `get_document` docstrings
+  rewritten so a withdrawal isn't described as "missing text."
+- Listing pagination: `cursor=` on `list_documents` (sync + async);
+  `next_cursor` / `has_more` / `total_exact` on `NationalDocumentListResponse`;
+  `page` absent in cursor mode. Server limits: `q` 3–200 code points; `page`
+  past offset 1000 is a 400. Ordering becomes `dateOfDocument` desc.
+- Listing credit weight 3 → 1 (update `national.py`, the docstrings, the
+  README).
+- Typed national citation 404: likely no parser change needed (both shapes
+  already map to `NotFoundError`) — re-check once `include_national` ships.
+- `hyde` validation on legislation semantic: no bug today
+  (`legislation_semantic_search` never sends `hyde`); add a regression test
+  asserting the request body never has a `hyde` key, to catch a future
+  regression.
 
 ## [0.2.0] — 2026-10-26
 
