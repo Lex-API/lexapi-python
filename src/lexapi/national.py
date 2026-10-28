@@ -193,9 +193,8 @@ class NationalResource:
         is capped at 10,000 and flagged ``total_exact=False`` past that or
         on a slow count.
 
-        1 credit flat per call (not per page; API 2.5.0 dropped this from
-        3 — confirm against the live API before relying on it). Below
-        BUSINESS, counts against the monthly national-call allowance.
+        3 credits flat per call (not per page). Below BUSINESS, counts
+        against the monthly national-call allowance.
         """
         return self._client._request(
             "GET",

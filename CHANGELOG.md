@@ -16,9 +16,7 @@ This round was verified against lex-api **PR #320** (`fix/national-api-hardening
 #306 (the allowance), plus `nationalAllowance.js` on `feat/national-allowance`
 and `nationalCoverageController.js` on `feat/national-launch-switch`. **None
 of the three had merged to `main` when this was written** — re-verify
-against the live API once all three deploy; see the per-item notes below
-for what is still provisional (the listing's credit weight, PR #320's
-"your call").
+against the live API once all three deploy.
 
 ### Added
 
@@ -39,14 +37,13 @@ for what is still provisional (the listing's credit weight, PR #320's
     the corpus, never a live fetch.
   - `list_documents(jurisdiction, page=, cursor=, limit=, q=, document_type=, include_repealed=)`
     / `iter_documents(...)` (a ready-made cursor walk, sync + async) —
-    `GET /{jurisdiction}/documents` (`NationalDocumentListResponse`). 1
-    credit flat per call (not per page; API 2.5.0 dropped this from 3 —
-    **pending Nejc's confirmation**, PR #320 calls it "your call", so this
-    is easy to revert). `page` only reaches the first 1,000 rows (a 400 past
-    that — `InvalidParamsError`); `cursor` (from `next_cursor`) works at any
-    depth. New response fields `total_exact`, `has_more`, `next_cursor`;
-    `page` is `None` in cursor mode. Newest-first by the document's own
-    date. A slow page raises `TimeoutError` (504, refunded, retry-safe).
+    `GET /{jurisdiction}/documents` (`NationalDocumentListResponse`). 3
+    credits flat per call (not per page). `page` only reaches the first
+    1,000 rows (a 400 past that — `InvalidParamsError`); `cursor` (from
+    `next_cursor`) works at any depth. New response fields `total_exact`,
+    `has_more`, `next_cursor`; `page` is `None` in cursor mode. Newest-first
+    by the document's own date. A slow page raises `TimeoutError` (504,
+    refunded, retry-safe).
   - `semantic_search(jurisdiction, query, hyde=, min_score=, limit=, language=, include_text=, filters=)`
     — `POST /{jurisdiction}/search/semantic` (`NationalSemanticSearchResponse`,
     `NationalSemanticCaseLawResult`). `hyde` is accepted for parity but never
@@ -132,8 +129,6 @@ Verified against PR #320's actual `openapi.yaml`/`docs.md`/controller diff
 - `DocumentWithdrawnError` (410 `DOCUMENT_WITHDRAWN`) — see above.
 - Listing cursor pagination, `total_exact`/`has_more`/`next_cursor`,
   `iter_documents()` — see above.
-- Listing credit weight note updated to 1 (was 3) — **pending Nejc's
-  confirmation**, see above.
 - Typed national citation 404 already carries a top-level `code: NOT_FOUND`
   — no parser change was needed (the existing legacy-shape top-level-`code`
   fallback already handles it); added a regression test.

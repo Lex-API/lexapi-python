@@ -2252,8 +2252,7 @@ class NationalDocumentResponse(APIResponse):
 
 class NationalDocumentListResponse(APIResponse):
     """``GET /{jurisdiction}/documents`` — a page of one jurisdiction's
-    documents. 1 credit flat per call (not per page; API 2.5.0 dropped this
-    from 3 — confirm against the live API before relying on it). Newest-first
+    documents. 3 credits flat per call (not per page). Newest-first
     by the document's own date (undated rows last), then by id."""
 
     @property
