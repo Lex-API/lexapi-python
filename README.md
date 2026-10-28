@@ -183,7 +183,19 @@ if path.found:
 related = client.citations.related("32016R0679", limit=10)  # bibliographic coupling
 stats = client.citations.stats()
 print(stats.most_cited[0].celex_number)
+
+# National documents in the graph (BUSINESS, SCALE, ENTERPRISE only — TierForbiddenError below that):
+with_national = client.citations.cited_by("32016R0679", include_national=True)
+print(with_national.include_national)  # present once honoured; None while no jurisdiction is live
+national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
 ```
+
+`cited_by`, `cites`, `network`, `path`, `related` and `stats` all accept
+`include_national=True` to also return/follow national documents of live
+jurisdictions (BUSINESS, SCALE and ENTERPRISE only). `celex` (and `path`'s
+`from_celex`/`to_celex`) may be a national document id directly, with or
+without the flag; such an id whose jurisdiction isn't live raises
+`NotFoundError`.
 
 ### Webhooks
 
@@ -299,10 +311,8 @@ except ServiceUnavailableError as err:  # catches NationalSemanticUnavailableErr
     print(f"{err.jurisdiction} semantic index is temporarily down, retry later")
 ```
 
-`include_national` on the citation-graph methods (`client.citations.*`) and
-national ids on `/citations/*` are in the documented API contract but not
-yet implemented in this SDK — tracked in the CHANGELOG, not silently
-dropped.
+`include_national` on the citation-graph methods and national ids on
+`/citations/*` are implemented — see [Citations](#citations) above.
 
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)
 

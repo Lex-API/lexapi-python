@@ -1042,6 +1042,13 @@ class CitedByResponse(APIResponse):
         the amount to advance ``offset`` by, since paging is in edges."""
         return sum(group.citation_count or len(group.citations) for group in self.cited_by)
 
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were included (see ``include_national``
+        on :meth:`CitationsResource.cited_by`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
 
 class CitesResponse(APIResponse):
     """``GET /citations/cites/{celex}`` — outbound edges, grouped by target."""
@@ -1075,6 +1082,13 @@ class CitesResponse(APIResponse):
     def edge_count(self) -> int:
         """Edges in this page — the amount to advance ``offset`` by."""
         return sum(group.citation_count or len(group.citations) for group in self.cites)
+
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were included (see ``include_national``
+        on :meth:`CitationsResource.cites`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
 
 
 class CitationNetworkResponse(APIResponse):
@@ -1146,6 +1160,13 @@ class CitationNetworkResponse(APIResponse):
         """Freshness of the Cellar-sourced amendment/corrigendum/repeal edges."""
         return RelationSync.parse(self._map)
 
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national neighbours were included (see ``include_national``
+        on :meth:`CitationsResource.network`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
 
 class CitationStatsResponse(APIResponse):
     """``GET /citations/stats`` — global citation-graph counters."""
@@ -1169,6 +1190,13 @@ class CitationStatsResponse(APIResponse):
     @property
     def most_citing(self) -> list[CitationStatsEntry]:
         return _parse_items(_dict(self._map, "stats"), "mostCiting", CitationStatsEntry)
+
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were counted (see ``include_national``
+        on :meth:`CitationsResource.stats`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
 
 
 class CitationPathResponse(APIResponse):
@@ -1206,6 +1234,13 @@ class CitationPathResponse(APIResponse):
     def message(self) -> str | None:
         return _s(self._map, "message")
 
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were followed (see ``include_national``
+        on :meth:`CitationsResource.path`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
 
 class RelatedDocumentsResponse(APIResponse):
     """``GET /citations/related/{celex}`` — bibliographic-coupling neighbours."""
@@ -1234,6 +1269,13 @@ class RelatedDocumentsResponse(APIResponse):
     def message(self) -> str | None:
         """Present when the seed has no outbound citations to couple on."""
         return _s(self._map, "message")
+
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were considered (see ``include_national``
+        on :meth:`CitationsResource.related`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
 
 
 # ── Webhooks ────────────────────────────────────────────────────────────

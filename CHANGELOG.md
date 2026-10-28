@@ -65,6 +65,18 @@ the live API once all three deploy.
   `X-National-Remaining` / `X-National-Reset` headers (present only for
   FREE/STARTER/PROFESSIONAL accounts on the four non-coverage national
   endpoints).
+- **`include_national`** on all six citation-graph methods (`cited_by`,
+  `cites`, `network`, `path`, `related`, `stats`, sync and async): also
+  returns/follows national documents of live jurisdictions — BUSINESS,
+  SCALE and ENTERPRISE only (`TierForbiddenError` below that; no code
+  change needed, it already raises the existing error). `celex` (and
+  `path`'s `from_celex`/`to_celex`) accept a national document id directly
+  (e.g. `"AT-NOR-10001597"`); such an id whose jurisdiction isn't live
+  raises a plain `NotFoundError`. `stats()` gained an optional
+  `include_national` keyword (back-compatible — `stats()` with no
+  arguments still works). Every response class gained an
+  `include_national: bool | None` property, set once the flag was
+  honoured.
 
 ### Fixed (post-review)
 
@@ -95,11 +107,6 @@ the live API once all three deploy.
   `national_allowance_*` / `rate_limit_*` headers instead. (lex-api PR #314's
   openapi.yaml lists `credits` on these response schemas — that's drift to
   fix on the API side, not here.)
-- **Not in this release:** `include_national` on the citation-graph methods
-  (`cited_by`/`cites`/`network`/`path`/`related`/`stats`), and national ids
-  on `/citations/*` generally — both BUSINESS+, both in the documented
-  contract (lex-api PR #314), both deliberately deferred here pending
-  confirmation of scope. See the hardening checklist below.
 
 ### Known upcoming changes (lex-api `fix/national-api-hardening` — not implemented here)
 
