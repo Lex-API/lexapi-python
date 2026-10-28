@@ -22,6 +22,7 @@ once both ship.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
 from lexapi._payloads import drop_none, seg
@@ -56,10 +57,12 @@ def _list_params(
     q: str | None,
     document_type: str | None,
     include_repealed: bool | None,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     return drop_none(
         {
             "page": page,
+            "cursor": cursor,
             "limit": limit,
             "q": q,
             "type": document_type,
@@ -145,11 +148,14 @@ class NationalResource:
     ) -> NationalDocumentResponse:
         """``GET /{jurisdiction}/documents/{id}`` — one national document.
 
-        5 credits upfront, settled to 1: national reads are always served
-        from the corpus (no live fetch). 404 for an unknown id, or for a
-        jurisdiction that does not exist or has not launched yet (see
-        :meth:`coverage`). Below BUSINESS, counts against the monthly
-        national-call allowance (:class:`~lexapi.errors.NationalAllowanceExhaustedError`
+        5 credits upfront, settled to 1 (an unknown id too): national reads
+        are always served from the corpus (no live fetch). 404 for an
+        unknown id, or for a jurisdiction that does not exist or has not
+        launched yet (see :meth:`coverage`). A document its source withdrew
+        raises :class:`~lexapi.errors.DocumentWithdrawnError` (410) instead
+        — nothing of it is served, not even the title; drop any copy you
+        hold. Below BUSINESS, counts against the monthly national-call
+        allowance (:class:`~lexapi.errors.NationalAllowanceExhaustedError`
         on 402).
         """
         return self._client._request(
@@ -164,24 +170,64 @@ class NationalResource:
         jurisdiction: str,
         *,
         page: int | None = None,
+        cursor: str | None = None,
         limit: int | None = None,
         q: str | None = None,
         document_type: str | None = None,
         include_repealed: bool | None = None,
     ) -> NationalDocumentListResponse:
         """``GET /{jurisdiction}/documents`` — a page of one jurisdiction's
-        documents (title search ``q``, ``document_type`` filter, pagination).
-        Repealed acts are excluded unless ``include_repealed=True``.
+        documents (title search ``q``, 3-200 characters; ``document_type``
+        filter; pagination). Repealed acts are excluded unless
+        ``include_repealed=True``. Newest-first by the document's own date
+        (undated rows last), then by id.
 
-        3 credits flat per call (not per page). Below BUSINESS, counts
-        against the monthly national-call allowance.
+        **Paging:** ``page`` only reaches the first 1,000 rows (a 400 past
+        that); page further with ``cursor`` (each response's
+        ``next_cursor``), which works at any depth — see
+        :meth:`iter_documents` for a ready-made walk. A slow page raises
+        :class:`~lexapi.TimeoutError` (504, refunded, retry-safe); ``total``
+        is capped at 10,000 and flagged ``total_exact=False`` past that or
+        on a slow count.
+
+        1 credit flat per call (not per page; API 2.5.0 dropped this from
+        3 — confirm against the live API before relying on it). Below
+        BUSINESS, counts against the monthly national-call allowance.
         """
         return self._client._request(
             "GET",
             f"/{_jur(jurisdiction)}/documents",
-            params=_list_params(page, limit, q, document_type, include_repealed),
+            params=_list_params(page, limit, q, document_type, include_repealed, cursor),
             cast=NationalDocumentListResponse,
         )
+
+    def iter_documents(
+        self,
+        jurisdiction: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        q: str | None = None,
+        document_type: str | None = None,
+        include_repealed: bool | None = None,
+    ) -> Iterator[NationalDocumentListResponse]:
+        """Walk every page of :meth:`list_documents` via ``cursor`` (reaches
+        past the 1,000-row ``page`` ceiling). Each page is a separate billed
+        call. Stops after a page with ``has_more=False`` or an empty page.
+        """
+        while True:
+            page = self.list_documents(
+                jurisdiction,
+                cursor=cursor,
+                limit=limit,
+                q=q,
+                document_type=document_type,
+                include_repealed=include_repealed,
+            )
+            yield page
+            if not page.has_more or not page.next_cursor or not page.results:
+                return
+            cursor = page.next_cursor
 
     def semantic_search(
         self,
@@ -306,6 +352,7 @@ class AsyncNationalResource:
         jurisdiction: str,
         *,
         page: int | None = None,
+        cursor: str | None = None,
         limit: int | None = None,
         q: str | None = None,
         document_type: str | None = None,
@@ -315,9 +362,34 @@ class AsyncNationalResource:
         return await self._client._request(
             "GET",
             f"/{_jur(jurisdiction)}/documents",
-            params=_list_params(page, limit, q, document_type, include_repealed),
+            params=_list_params(page, limit, q, document_type, include_repealed, cursor),
             cast=NationalDocumentListResponse,
         )
+
+    async def iter_documents(
+        self,
+        jurisdiction: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        q: str | None = None,
+        document_type: str | None = None,
+        include_repealed: bool | None = None,
+    ) -> AsyncIterator[NationalDocumentListResponse]:
+        """Async twin of :meth:`NationalResource.iter_documents`."""
+        while True:
+            page = await self.list_documents(
+                jurisdiction,
+                cursor=cursor,
+                limit=limit,
+                q=q,
+                document_type=document_type,
+                include_repealed=include_repealed,
+            )
+            yield page
+            if not page.has_more or not page.next_cursor or not page.results:
+                return
+            cursor = page.next_cursor
 
     async def semantic_search(
         self,

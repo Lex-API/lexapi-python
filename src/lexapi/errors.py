@@ -313,6 +313,18 @@ def _body_jurisdiction(err: LexAPIError) -> str | None:
     return None
 
 
+def _field(err: LexAPIError, key: str) -> Any:
+    """``error.details[key]`` (typed envelope) falling back to the raw
+    ``body[key]`` (legacy envelope, where the same context is a top-level
+    sibling of ``code``/``error`` instead of nested) — correct for either
+    shape without the caller needing to know which one answered."""
+    if isinstance(err.details, dict) and key in err.details:
+        return err.details[key]
+    if isinstance(err.body, dict):
+        return err.body.get(key)
+    return None
+
+
 class NationalSemanticNotEnabledError(LexAPIError):
     """409 ``NATIONAL_SEMANTIC_NOT_ENABLED`` — the national semantic index
     does not search this jurisdiction (yet). Legacy-shape body with a
@@ -357,6 +369,44 @@ class NationalSemanticUnavailableError(ServiceUnavailableError):
     def jurisdiction(self) -> str | None:
         """The jurisdiction code (e.g. ``AT``) from the top-level body."""
         return _body_jurisdiction(self)
+
+
+class DocumentWithdrawnError(LexAPIError):
+    """410 ``DOCUMENT_WITHDRAWN`` (lex-api PR #320) — a national document its
+    source withdrew (a takedown, a pseudonymisation fix, a robots.txt
+    listing). LexAPI serves nothing of it: no title, no metadata, no text.
+
+    Two envelope shapes carry this code: the TYPED envelope on a direct
+    document read (``get_document``, ``error.details: {id, jurisdiction,
+    withdrawnAt}``), and the LEGACY shape with those same three fields as
+    top-level siblings of ``code``/``error`` on the citation methods (a
+    withdrawn id queried directly, or reached via ``include_national``).
+    :attr:`id` / :attr:`jurisdiction` / :attr:`withdrawn_at` read ``details``
+    first, then fall back to the raw ``body`` — correct for either shape.
+
+    Not retryable (the document is gone, not temporarily failing); nothing
+    is ever charged for it. If you hold a cached copy, drop it — the
+    withdrawal may be a legal takedown or a pseudonymisation fix (Terms §7:
+    no re-identification of anonymised or pseudonymised people).
+    """
+
+    default_code = "DOCUMENT_WITHDRAWN"
+
+    @property
+    def id(self) -> str | None:  # noqa: A003 - mirrors the wire field name
+        value = _field(self, "id")
+        return value if isinstance(value, str) else None
+
+    @property
+    def jurisdiction(self) -> str | None:
+        value = _field(self, "jurisdiction")
+        return value if isinstance(value, str) else None
+
+    @property
+    def withdrawn_at(self) -> str | None:
+        """ISO date-time the source withdrew the document; ``None`` when unknown."""
+        value = _field(self, "withdrawnAt")
+        return value if isinstance(value, str) else None
 
 
 class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
@@ -420,6 +470,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "UPSTREAM_ERROR": UpstreamError,
     "SERVICE_UNAVAILABLE": ServiceUnavailableError,
     "NATIONAL_SEMANTIC_UNAVAILABLE": NationalSemanticUnavailableError,
+    "DOCUMENT_WITHDRAWN": DocumentWithdrawnError,
     "TIMEOUT": TimeoutError,
     "INTERNAL": InternalServerError,
 }

@@ -7,16 +7,18 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 ## [0.3.0] — 2026-10-28
 
 Adds support for LexAPI's national-law surface, ahead of its launch
-(2026-11-03). Written against the server code directly
+(2026-11-03). **Requires LexAPI API 2.5.0** (lex-api PRs #306, #314 and #320
+— the allowance, the documented contract and the pre-launch hardening pass).
+Written against the server code directly
 (`server/routes/api.js`, `server/routes/semantic.js`,
 `server/middleware/jurisdiction.js`, `server/controllers/nationalController.js`,
 `server/controllers/nationalSemanticController.js`,
 `server/utils/jurisdictions.js`, `server/controllers/nationalCoverageController.js`
 on `feat/national-launch-switch`, commit `6ec7440`) and the diffs of lex-api
-PR #306 (the monthly allowance) and PR #314 (the documented contract,
-openapi.yaml/docs.md, API 2.5.0). **PR #306, the launch-switch branch and
-PR #314 had not merged to `main` when this was written** — re-verify against
-the live API once all three deploy.
+PR #306, PR #314 and PR #320. **None of the three had merged to `main` when
+this was written** — re-verify against the live API once all three deploy;
+see the per-item notes below for what is still provisional (the listing's
+credit weight, PR #320's "your call").
 
 ### Added
 
@@ -35,9 +37,16 @@ the live API once all three deploy.
     (`NationalDocumentResponse`, `NationalDocument`, `NationalTextBasis`).
     5 credits upfront, settled to 1 — national reads are always served from
     the corpus, never a live fetch.
-  - `list_documents(jurisdiction, page=, limit=, q=, document_type=, include_repealed=)`
-    — `GET /{jurisdiction}/documents` (`NationalDocumentListResponse`). 3
-    credits flat per call (not per page).
+  - `list_documents(jurisdiction, page=, cursor=, limit=, q=, document_type=, include_repealed=)`
+    / `iter_documents(...)` (a ready-made cursor walk, sync + async) —
+    `GET /{jurisdiction}/documents` (`NationalDocumentListResponse`). 1
+    credit flat per call (not per page; API 2.5.0 dropped this from 3 —
+    **pending Nejc's confirmation**, PR #320 calls it "your call", so this
+    is easy to revert). `page` only reaches the first 1,000 rows (a 400 past
+    that — `InvalidParamsError`); `cursor` (from `next_cursor`) works at any
+    depth. New response fields `total_exact`, `has_more`, `next_cursor`;
+    `page` is `None` in cursor mode. Newest-first by the document's own
+    date. A slow page raises `TimeoutError` (504, refunded, retry-safe).
   - `semantic_search(jurisdiction, query, hyde=, min_score=, limit=, language=, include_text=, filters=)`
     — `POST /{jurisdiction}/search/semantic` (`NationalSemanticSearchResponse`,
     `NationalSemanticCaseLawResult`). `hyde` is accepted for parity but never
@@ -60,6 +69,14 @@ the live API once all three deploy.
   temporarily down. Legacy-shape bodies with a top-level `jurisdiction`
   (not nested in `details`); both are typed as that attribute. Neither
   charges anything.
+- **`DocumentWithdrawnError`** (410 `DOCUMENT_WITHDRAWN` — lex-api PR #320) —
+  a national document its source withdrew (a takedown, a pseudonymisation
+  fix) is served nowhere: no title, no metadata, no text. Raised by
+  `get_document` (typed envelope, `details: {id, jurisdiction, withdrawnAt}`)
+  and by the citation methods for a withdrawn national id (legacy shape, the
+  same three fields as top-level siblings instead). `.id`/`.jurisdiction`/
+  `.withdrawn_at` read whichever shape answered. Not retryable; nothing is
+  ever charged for it.
 - `APIResponse.national_allowance_limit` / `national_allowance_remaining` /
   `national_allowance_resets_at`, reading the `X-National-Limit` /
   `X-National-Remaining` / `X-National-Reset` headers (present only for
@@ -108,25 +125,23 @@ the live API once all three deploy.
   openapi.yaml lists `credits` on these response schemas — that's drift to
   fix on the API side, not here.)
 
-### Known upcoming changes (lex-api `fix/national-api-hardening` — not implemented here)
+### lex-api PR #320 (hardening, API 2.5.0) — implemented
 
-- Withdrawn documents will answer 410 `DOCUMENT_WITHDRAWN` with
-  `details {id, jurisdiction, withdrawnAt}`, serving nothing of the
-  document. Needs a `DocumentWithdrawnError` (+ `withdrawn_at`), a README
-  row, a test, and the `NationalDocument` / `get_document` docstrings
-  rewritten so a withdrawal isn't described as "missing text."
-- Listing pagination: `cursor=` on `list_documents` (sync + async);
-  `next_cursor` / `has_more` / `total_exact` on `NationalDocumentListResponse`;
-  `page` absent in cursor mode. Server limits: `q` 3–200 code points; `page`
-  past offset 1000 is a 400. Ordering becomes `dateOfDocument` desc.
-- Listing credit weight 3 → 1 (update `national.py`, the docstrings, the
-  README).
-- Typed national citation 404: likely no parser change needed (both shapes
-  already map to `NotFoundError`) — re-check once `include_national` ships.
-- `hyde` validation on legislation semantic: no bug today
-  (`legislation_semantic_search` never sends `hyde`); add a regression test
-  asserting the request body never has a `hyde` key, to catch a future
-  regression.
+Verified against PR #320's actual `openapi.yaml`/`docs.md`/controller diff
+(`fix/national-api-hardening`, stacked on #314):
+
+- `DocumentWithdrawnError` (410 `DOCUMENT_WITHDRAWN`) — see above.
+- Listing cursor pagination, `total_exact`/`has_more`/`next_cursor`,
+  `iter_documents()` — see above.
+- Listing credit weight note updated to 1 (was 3) — **pending Nejc's
+  confirmation**, see above.
+- Typed national citation 404 already carries a top-level `code: NOT_FOUND`
+  — no parser change was needed (the existing legacy-shape top-level-`code`
+  fallback already handles it); added a regression test.
+- `hyde` validation on legislation semantic: no change needed —
+  `legislation_semantic_search` never had a `hyde` kwarg to begin with (no
+  `**kwargs` catch-all either), so there was nothing to strip; the existing
+  test already asserts the request body has no `hyde` key.
 
 ## [0.2.0] — 2026-10-26
 

@@ -8,6 +8,7 @@ from lexapi.client import LexAPI
 from lexapi.errors import (
     AuthenticationError,
     CreditsExhaustedError,
+    DocumentWithdrawnError,
     IncompleteExportError,
     InternalServerError,
     InvalidCelexError,
@@ -137,6 +138,7 @@ __all__ = [
     "DocumentResponse",
     "DocumentVersionResponse",
     "DocumentVersionsResponse",
+    "DocumentWithdrawnError",
     "ExportStream",
     "IncompleteExportError",
     "InfoResponse",

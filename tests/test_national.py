@@ -4,9 +4,11 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from lexapi import (
     AsyncLexAPI,
+    DocumentWithdrawnError,
     LexAPI,
     NationalAllowanceExhaustedError,
     NationalSemanticNotEnabledError,
@@ -185,9 +187,12 @@ def test_get_document_404():
 LIST_BODY = {
     "jurisdiction": "AT",
     "total": 1,
+    "totalExact": True,
     "page": 1,
     "limit": 20,
     "includeRepealed": False,
+    "hasMore": False,
+    "nextCursor": None,
     "results": [
         {
             "id": "AT-NOR-12345",
@@ -217,8 +222,170 @@ def test_list_documents():
         "includeRepealed": "false",
     }
     assert resp.total == 1
+    assert resp.total_exact is True
+    assert resp.has_more is False
+    assert resp.next_cursor is None
     assert resp.results[0].id == "AT-NOR-12345"
     assert resp.results[0].content is None  # summary rows carry no content
+
+
+def test_list_documents_cursor_paging():
+    page1 = {
+        "jurisdiction": "AT",
+        "total": 3,
+        "totalExact": True,
+        "limit": 2,
+        "includeRepealed": False,
+        "hasMore": True,
+        "nextCursor": "c1",
+        "results": [
+            {
+                "id": "AT-NOR-1",
+                "jurisdiction": "AT",
+                "language": "de",
+                "version": 1,
+                "fetchedAt": "2026-10-01T00:00:00.000Z",
+            }
+        ],
+    }
+    page2 = {
+        "jurisdiction": "AT",
+        "total": 3,
+        "totalExact": True,
+        "limit": 2,
+        "includeRepealed": False,
+        "hasMore": False,
+        "nextCursor": None,
+        "results": [
+            {
+                "id": "AT-NOR-2",
+                "jurisdiction": "AT",
+                "language": "de",
+                "version": 1,
+                "fetchedAt": "2026-10-02T00:00:00.000Z",
+            }
+        ],
+    }
+    calls = {"n": 0, "params": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["params"].append(dict(request.url.params))
+        calls["n"] += 1
+        return httpx.Response(200, json=page1 if calls["n"] == 1 else page2)
+
+    client = LexAPI(api_key="lex_test_key", transport=httpx.MockTransport(handler))
+    with client:
+        seen = [p.results[0].id for p in client.national.iter_documents("AT", limit=2)]
+
+    assert seen == ["AT-NOR-1", "AT-NOR-2"]
+    assert calls["n"] == 2
+    assert "cursor" not in calls["params"][0]
+    assert calls["params"][1]["cursor"] == "c1"
+
+
+def test_list_documents_sends_cursor_not_page():
+    client, seen = capture_client(
+        {
+            "jurisdiction": "AT",
+            "total": 1200,
+            "totalExact": False,
+            "limit": 20,
+            "includeRepealed": False,
+            "hasMore": True,
+            "nextCursor": "eyJhIjoxfQ",
+            "results": [],
+        }
+    )
+    with client:
+        resp = client.national.list_documents("AT", cursor="abc123")
+    assert seen["params"]["cursor"] == "abc123"
+    assert "page" not in seen["params"]
+    assert resp.page is None
+    assert resp.has_more is True
+
+
+def test_list_documents_page_past_1000_rows_is_invalid_params():
+    from lexapi import InvalidParamsError
+
+    client, _ = capture_client(
+        {
+            "success": False,
+            "error": {
+                "code": "INVALID_PARAMS",
+                "message": (
+                    "page reaches past the first 1000 results — page further "
+                    "with cursor (each page's nextCursor)"
+                ),
+            },
+        },
+        status=400,
+    )
+    with client, pytest.raises(InvalidParamsError):
+        client.national.list_documents("AT", page=51, limit=20)
+
+
+def test_list_documents_slow_page_is_retry_safe_timeout():
+    from lexapi import TimeoutError as LexAPITimeoutError
+
+    client, _ = capture_client(
+        {
+            "success": False,
+            "error": {
+                "code": "TIMEOUT",
+                "message": "The listing took too long. Narrow it (q, type) and retry.",
+            },
+        },
+        status=504,
+    )
+    with client, pytest.raises(LexAPITimeoutError) as exc_info:
+        client.national.list_documents("AT", q="xyz")
+    assert exc_info.value.status == 504
+
+
+def test_document_withdrawn_error_typed_envelope():
+    client, _ = capture_client(
+        {
+            "success": False,
+            "error": {
+                "code": "DOCUMENT_WITHDRAWN",
+                "message": (
+                    "AT document AT-NOR-5 was withdrawn by its source and is no longer served"
+                ),
+                "details": {
+                    "id": "AT-NOR-5",
+                    "jurisdiction": "AT",
+                    "withdrawnAt": "2026-10-20T00:00:00.000Z",
+                },
+            },
+        },
+        status=410,
+    )
+    with client, pytest.raises(DocumentWithdrawnError) as exc_info:
+        client.national.get_document("AT", "AT-NOR-5")
+    err = exc_info.value
+    assert err.status == 410
+    assert err.id == "AT-NOR-5"
+    assert err.jurisdiction == "AT"
+    assert err.withdrawn_at == "2026-10-20T00:00:00.000Z"
+
+
+def test_document_withdrawn_error_legacy_shape_on_citations():
+    body = {
+        "success": False,
+        "code": "DOCUMENT_WITHDRAWN",
+        "error": "Document withdrawn: AT-NOR-5",
+        "message": "AT document AT-NOR-5 was withdrawn by its source and is no longer served.",
+        "id": "AT-NOR-5",
+        "jurisdiction": "AT",
+        "withdrawnAt": "2026-10-20T00:00:00.000Z",
+    }
+    client, _ = capture_client(body, status=410)
+    with client, pytest.raises(DocumentWithdrawnError) as exc_info:
+        client.citations.cites("AT-NOR-5")
+    err = exc_info.value
+    assert err.id == "AT-NOR-5"
+    assert err.jurisdiction == "AT"
+    assert err.withdrawn_at == "2026-10-20T00:00:00.000Z"
 
 
 SEMANTIC_CASE_LAW_BODY = {

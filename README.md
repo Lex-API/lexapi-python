@@ -263,7 +263,11 @@ doc = client.national.get_document("AT", "AT-NOR-12345")
 print(doc.document.title, doc.document.attribution)  # always show attribution
 
 page = client.national.list_documents("AT", q="Datenschutz", document_type="regulation", limit=20)
-print(page.total, [d.title for d in page.results])
+print(page.total, page.total_exact, [d.title for d in page.results])
+for p in client.national.iter_documents(
+    "AT", q="Datenschutz", limit=100
+):  # cursor paging past page's 1,000-row ceiling
+    print(p.has_more, p.next_cursor)
 
 hits = client.national.semantic_search("AT", "data breach notification duty")
 for r in hits.results:
@@ -313,6 +317,19 @@ except ServiceUnavailableError as err:  # catches NationalSemanticUnavailableErr
 
 `include_national` on the citation-graph methods and national ids on
 `/citations/*` are implemented — see [Citations](#citations) above.
+
+`get_document` (and the citation methods, for a withdrawn national id)
+raise `DocumentWithdrawnError` (410) for a document its source withdrew —
+nothing of it is served, not even the title; drop any copy you hold:
+
+```python
+from lexapi import DocumentWithdrawnError
+
+try:
+    client.national.get_document("AT", "AT-NOR-5")
+except DocumentWithdrawnError as err:
+    print(err.id, err.jurisdiction, err.withdrawn_at)
+```
 
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)
 

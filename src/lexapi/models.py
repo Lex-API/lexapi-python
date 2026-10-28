@@ -2180,8 +2180,12 @@ class NationalDocument:
     """A document from a national-law jurisdiction (not EUR-Lex).
 
     National reads are always served from the LexAPI corpus — there is no
-    live-fetch fallback, so ``content is None`` means EUR-Lex-style
-    "no published text", not a cold cache. ``attribution`` is the
+    live-fetch fallback, so ``content is None`` means the source publishes
+    no machine-readable text for this id (check ``text_availability`` for
+    why) — never a withdrawal. A document its source withdrew (a takedown, a
+    pseudonymisation fix) is never a 200 with ``content: None``: `get_document`
+    raises :class:`~lexapi.errors.DocumentWithdrawnError` (410) instead, and
+    nothing of it — not even the title — is served. ``attribution`` is the
     jurisdiction's required attribution notice: always show it next to the
     content.
     """
@@ -2248,7 +2252,9 @@ class NationalDocumentResponse(APIResponse):
 
 class NationalDocumentListResponse(APIResponse):
     """``GET /{jurisdiction}/documents`` — a page of one jurisdiction's
-    documents. 3 credits flat per call (not per page)."""
+    documents. 1 credit flat per call (not per page; API 2.5.0 dropped this
+    from 3 — confirm against the live API before relying on it). Newest-first
+    by the document's own date (undated rows last), then by id."""
 
     @property
     def jurisdiction(self) -> str | None:
@@ -2256,10 +2262,18 @@ class NationalDocumentListResponse(APIResponse):
 
     @property
     def total(self) -> int | None:
+        """Matching rows, counted up to 10,000 — see :attr:`total_exact`."""
         return _i(self._map, "total")
 
     @property
+    def total_exact(self) -> bool | None:
+        """``False`` when :attr:`total` is a lower bound (more than 10,000
+        rows matched, or the count timed out)."""
+        return _b(self._map, "totalExact")
+
+    @property
     def page(self) -> int | None:
+        """Present only when the request paged with ``page`` (``None`` in cursor mode)."""
         return _i(self._map, "page")
 
     @property
@@ -2269,6 +2283,16 @@ class NationalDocumentListResponse(APIResponse):
     @property
     def include_repealed(self) -> bool | None:
         return _b(self._map, "includeRepealed")
+
+    @property
+    def has_more(self) -> bool | None:
+        """``True`` when another page follows — page with :attr:`next_cursor`."""
+        return _b(self._map, "hasMore")
+
+    @property
+    def next_cursor(self) -> str | None:
+        """Opaque cursor for the next page, or ``None`` on the last page."""
+        return _s(self._map, "nextCursor")
 
     @property
     def results(self) -> list[NationalDocument]:
