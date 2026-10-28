@@ -45,7 +45,10 @@ def _jur(jurisdiction: str) -> str:
 
 
 def _bool(value: bool | None) -> str | None:
-    """``true`` / ``false`` (httpx would otherwise send Python's ``True``/``False``)."""
+    """``true`` / ``false``. httpx (0.28+) already encodes a bool query
+    param this way on its own — same as the citation methods' bare
+    ``include_national`` rely on, with no helper — so this is a belt-and-
+    braces explicit pin, not a workaround for different behaviour."""
     if value is None:
         return None
     return "true" if value else "false"

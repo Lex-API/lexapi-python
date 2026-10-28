@@ -2377,12 +2377,13 @@ class NationalSemanticSearchResponse(_NationalSemanticResponseBase):
 
     5 credits flat. ``hyde`` is accepted for API compatibility but the
     national index never rewrites: a request with ``hyde=True`` gets
-    ``hyde=False`` back, never a 15-credit charge. Unlike the EU endpoint,
-    this response never carries a ``credits`` block in the body (same gap
-    as :class:`SemanticSearchResponse` — ``semantic.js`` does not attach the
-    credits envelope); read the ``X-National-*`` headers
-    (``national_allowance_limit`` / ``_remaining`` / ``_resets_at``) for
-    FREE/STARTER/PROFESSIONAL accounts instead.
+    ``hyde=False`` back, never a 15-credit charge. This response carries a
+    ``credits`` block like the other routes (lex-api PR #314 round 2
+    restored the envelope on the semantic routes generally — ``api.js``'s
+    router-level ``attachCreditsEnvelope`` wraps ``res.json`` before the
+    semantic router charges); below BUSINESS it also carries the
+    ``X-National-*`` headers (``national_allowance_limit`` / ``_remaining``
+    / ``_resets_at``).
     """
 
     @property

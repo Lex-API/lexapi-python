@@ -283,6 +283,61 @@ def test_list_documents_cursor_paging():
     assert calls["params"][1]["cursor"] == "c1"
 
 
+def test_async_iter_documents_cursor_paging():
+    page1 = {
+        "jurisdiction": "AT",
+        "total": 3,
+        "totalExact": True,
+        "limit": 2,
+        "includeRepealed": False,
+        "hasMore": True,
+        "nextCursor": "c1",
+        "results": [
+            {
+                "id": "AT-NOR-1",
+                "jurisdiction": "AT",
+                "language": "de",
+                "version": 1,
+                "fetchedAt": "2026-10-01T00:00:00.000Z",
+            }
+        ],
+    }
+    page2 = {
+        "jurisdiction": "AT",
+        "total": 3,
+        "totalExact": True,
+        "limit": 2,
+        "includeRepealed": False,
+        "hasMore": False,
+        "nextCursor": None,
+        "results": [
+            {
+                "id": "AT-NOR-2",
+                "jurisdiction": "AT",
+                "language": "de",
+                "version": 1,
+                "fetchedAt": "2026-10-02T00:00:00.000Z",
+            }
+        ],
+    }
+    calls = {"n": 0, "params": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["params"].append(dict(request.url.params))
+        calls["n"] += 1
+        return httpx.Response(200, json=page1 if calls["n"] == 1 else page2)
+
+    async def run():
+        async with make_async_client(handler) as client:
+            return [p.results[0].id async for p in client.national.iter_documents("AT", limit=2)]
+
+    seen = asyncio.run(run())
+    assert seen == ["AT-NOR-1", "AT-NOR-2"]
+    assert calls["n"] == 2
+    assert "cursor" not in calls["params"][0]
+    assert calls["params"][1]["cursor"] == "c1"
+
+
 def test_list_documents_sends_cursor_not_page():
     client, seen = capture_client(
         {

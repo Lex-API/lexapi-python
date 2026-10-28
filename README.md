@@ -262,7 +262,9 @@ for j in coverage.jurisdictions:
 doc = client.national.get_document("AT", "AT-NOR-12345")
 print(doc.document.title, doc.document.attribution)  # always show attribution
 
-page = client.national.list_documents("AT", q="Datenschutz", document_type="regulation", limit=20)
+page = client.national.list_documents(
+    "AT", q="Datenschutz", limit=20
+)  # document_type is the source's own label (German for RIS), not an EU-style enum
 print(page.total, page.total_exact, [d.title for d in page.results])
 for p in client.national.iter_documents(
     "AT", q="Datenschutz", limit=100
@@ -301,17 +303,15 @@ search yet) and `NationalSemanticUnavailableError` (503 — temporarily down,
 a `ServiceUnavailableError`); both expose `.jurisdiction` and charge nothing:
 
 ```python
-from lexapi import (
-    NationalSemanticNotEnabledError,
-    NationalSemanticUnavailableError,
-    ServiceUnavailableError,
-)
+from lexapi import NationalSemanticNotEnabledError, NationalSemanticUnavailableError
 
 try:
     client.national.semantic_search("AT", "Datenschutz")
 except NationalSemanticNotEnabledError as err:
     print(f"{err.jurisdiction} semantic search isn't enabled yet")
-except ServiceUnavailableError as err:  # catches NationalSemanticUnavailableError too
+except NationalSemanticUnavailableError as err:
+    # Catch this specific subclass, not the broader ServiceUnavailableError
+    # it extends — a plain EU 503 has no .jurisdiction attribute.
     print(f"{err.jurisdiction} semantic index is temporarily down, retry later")
 ```
 

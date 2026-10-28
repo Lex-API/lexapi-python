@@ -9,16 +9,16 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 Adds support for LexAPI's national-law surface, ahead of its launch
 (2026-11-03). **Requires LexAPI API 2.5.0** (lex-api PRs #306, #314 and #320
 — the allowance, the documented contract and the pre-launch hardening pass).
-Written against the server code directly
-(`server/routes/api.js`, `server/routes/semantic.js`,
-`server/middleware/jurisdiction.js`, `server/controllers/nationalController.js`,
-`server/controllers/nationalSemanticController.js`,
-`server/utils/jurisdictions.js`, `server/controllers/nationalCoverageController.js`
-on `feat/national-launch-switch`, commit `6ec7440`) and the diffs of lex-api
-PR #306, PR #314 and PR #320. **None of the three had merged to `main` when
-this was written** — re-verify against the live API once all three deploy;
-see the per-item notes below for what is still provisional (the listing's
-credit weight, PR #320's "your call").
+This round was verified against lex-api **PR #320** (`fix/national-api-hardening`
+@ `e49881b`: `openapi.yaml` 2.5.0, `docs.md`, the national controllers,
+`nationalWithdrawn.js`, `jurisdiction.js`, `utils/errors.js`,
+`operationWeights.js`), stacked on PR #314 (the documented contract) and PR
+#306 (the allowance), plus `nationalAllowance.js` on `feat/national-allowance`
+and `nationalCoverageController.js` on `feat/national-launch-switch`. **None
+of the three had merged to `main` when this was written** — re-verify
+against the live API once all three deploy; see the per-item notes below
+for what is still provisional (the listing's credit weight, PR #320's
+"your call").
 
 ### Added
 
@@ -118,12 +118,11 @@ credit weight, PR #320's "your call").
   server's own inconsistent wire field names for this one endpoint
   (`in_force` / `valid_to`, snake_case) — unlike every other camelCase field
   in this SDK. Intentional; do not "fix" it, it would stop matching the API.
-- National semantic responses never carry a `credits` body block, the same
-  gap as the existing EU `semantic_search` / `semantic_legislation_search`
-  (`semantic.js` does not attach the credits envelope) — read the
-  `national_allowance_*` / `rate_limit_*` headers instead. (lex-api PR #314's
-  openapi.yaml lists `credits` on these response schemas — that's drift to
-  fix on the API side, not here.)
+- National semantic responses DO carry a `credits` body block, like the
+  other credit-metered routes — lex-api PR #314 round 2 (`7b5619f`) restored
+  the envelope on the semantic routes generally (`api.js`'s router-level
+  `attachCreditsEnvelope` wraps `res.json` before the semantic router
+  charges). An earlier note here claimed the opposite; that was wrong.
 
 ### lex-api PR #320 (hardening, API 2.5.0) — implemented
 
