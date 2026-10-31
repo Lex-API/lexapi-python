@@ -1042,6 +1042,13 @@ class CitedByResponse(APIResponse):
         the amount to advance ``offset`` by, since paging is in edges."""
         return sum(group.citation_count or len(group.citations) for group in self.cited_by)
 
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were included (see ``include_national``
+        on :meth:`CitationsResource.cited_by`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
 
 class CitesResponse(APIResponse):
     """``GET /citations/cites/{celex}`` — outbound edges, grouped by target."""
@@ -1075,6 +1082,13 @@ class CitesResponse(APIResponse):
     def edge_count(self) -> int:
         """Edges in this page — the amount to advance ``offset`` by."""
         return sum(group.citation_count or len(group.citations) for group in self.cites)
+
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were included (see ``include_national``
+        on :meth:`CitationsResource.cites`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
 
 
 class CitationNetworkResponse(APIResponse):
@@ -1146,6 +1160,13 @@ class CitationNetworkResponse(APIResponse):
         """Freshness of the Cellar-sourced amendment/corrigendum/repeal edges."""
         return RelationSync.parse(self._map)
 
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national neighbours were included (see ``include_national``
+        on :meth:`CitationsResource.network`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
 
 class CitationStatsResponse(APIResponse):
     """``GET /citations/stats`` — global citation-graph counters."""
@@ -1169,6 +1190,13 @@ class CitationStatsResponse(APIResponse):
     @property
     def most_citing(self) -> list[CitationStatsEntry]:
         return _parse_items(_dict(self._map, "stats"), "mostCiting", CitationStatsEntry)
+
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were counted (see ``include_national``
+        on :meth:`CitationsResource.stats`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
 
 
 class CitationPathResponse(APIResponse):
@@ -1206,6 +1234,13 @@ class CitationPathResponse(APIResponse):
     def message(self) -> str | None:
         return _s(self._map, "message")
 
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were followed (see ``include_national``
+        on :meth:`CitationsResource.path`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
 
 class RelatedDocumentsResponse(APIResponse):
     """``GET /citations/related/{celex}`` — bibliographic-coupling neighbours."""
@@ -1234,6 +1269,13 @@ class RelatedDocumentsResponse(APIResponse):
     def message(self) -> str | None:
         """Present when the seed has no outbound citations to couple on."""
         return _s(self._map, "message")
+
+    @property
+    def include_national(self) -> bool | None:
+        """Whether national documents were considered (see ``include_national``
+        on :meth:`CitationsResource.related`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
 
 
 # ── Webhooks ────────────────────────────────────────────────────────────
@@ -1943,3 +1985,618 @@ class InfoResponse(APIResponse):
     @property
     def supported_languages(self) -> list[str]:
         return _str_list(self._map, "supportedLanguages")
+
+
+# ── National law ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class NationalCoverageAvailability:
+    """``legislation`` block of one jurisdiction's coverage entry."""
+
+    available: bool | None
+    description: str | None
+    documents: int | None
+    #: Earliest decision year LexAPI holds (an int year, or ``None``) —
+    #: NOT a date string. ``legislation.from_`` is currently always
+    #: ``None`` server-side (the coverage controller hardcodes it); the
+    #: field exists because ``caseLaw.from_`` (the subclass below) is the
+    #: same field and IS populated.
+    from_: int | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCoverageAvailability:
+        return cls(
+            available=_b(data, "available"),
+            description=_s(data, "description"),
+            documents=_i(data, "documents"),
+            from_=_i(data, "from"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class NationalCaseLawCoverageAvailability(NationalCoverageAvailability):
+    """``caseLaw`` block — adds the list of courts covered."""
+
+    courts: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCaseLawCoverageAvailability:
+        return cls(
+            available=_b(data, "available"),
+            description=_s(data, "description"),
+            documents=_i(data, "documents"),
+            from_=_i(data, "from"),
+            raw=data,
+            courts=_str_list(data, "courts"),
+        )
+
+
+@dataclass(frozen=True)
+class NationalSemanticSearchAvailability:
+    """``semanticSearch`` block: whether each semantic index is live."""
+
+    legislation: bool | None
+    case_law: bool | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalSemanticSearchAvailability:
+        return cls(
+            legislation=_b(data, "legislation"),
+            case_law=_b(data, "caseLaw"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class NationalSource:
+    """One entry in a jurisdiction's ``sources`` list."""
+
+    name: str | None
+    url: str | None
+    licence: str | None
+    attribution: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalSource:
+        return cls(
+            name=_s(data, "name"),
+            url=_s(data, "url"),
+            licence=_s(data, "licence"),
+            attribution=_s(data, "attribution"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class NationalJurisdictionCoverage:
+    """One jurisdiction's entry in ``GET /national/coverage``.
+
+    Always show ``sources`` (name, licence, attribution) to the end user
+    when presenting national-law content — it is the attribution notice
+    the upstream data providers require.
+    """
+
+    code: str | None
+    name: str | None
+    live: bool | None
+    launched_at: str | None
+    legislation: NationalCoverageAvailability | None
+    case_law: NationalCaseLawCoverageAvailability | None
+    semantic_search: NationalSemanticSearchAvailability | None
+    sources: list[NationalSource]
+    last_sync_at: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalJurisdictionCoverage:
+        legislation = _opt_dict(data, "legislation")
+        case_law = _opt_dict(data, "caseLaw")
+        semantic = _opt_dict(data, "semanticSearch")
+        return cls(
+            code=_s(data, "code"),
+            name=_s(data, "name"),
+            live=_b(data, "live"),
+            launched_at=_s(data, "launchedAt"),
+            legislation=(
+                NationalCoverageAvailability.from_dict(legislation)
+                if legislation is not None
+                else None
+            ),
+            case_law=(
+                NationalCaseLawCoverageAvailability.from_dict(case_law)
+                if case_law is not None
+                else None
+            ),
+            semantic_search=(
+                NationalSemanticSearchAvailability.from_dict(semantic)
+                if semantic is not None
+                else None
+            ),
+            sources=_parse_items(data, "sources", NationalSource),
+            last_sync_at=_s(data, "lastSyncAt"),
+            raw=data,
+        )
+
+
+class NationalCoverageResponse(APIResponse):
+    """``GET /national/coverage`` — public, free. Call this first: a
+    jurisdiction not yet launched answers 404 on every other national
+    endpoint, exactly like one that does not exist."""
+
+    @property
+    def updated_at(self) -> str | None:
+        return _s(self._map, "updatedAt")
+
+    @property
+    def jurisdictions(self) -> list[NationalJurisdictionCoverage]:
+        return _parse_items(self._map, "jurisdictions", NationalJurisdictionCoverage)
+
+
+@dataclass(frozen=True)
+class NationalTextBasis:
+    """``textBasis`` — only from sources that say which text they publish
+    (e.g. PL: the act as announced vs. an official consolidated text). The
+    API sends ``textBasis: null`` for every other source (API 2.8.0), which
+    parses to ``NationalDocument.text_basis is None``."""
+
+    basis: str | None
+    as_of: str | None
+    newer_consolidation_exists: bool | None
+    newest_pdf_only_date: str | None
+    newer_pdf_only: list[str]
+    amended_since: bool | None
+    text_from: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalTextBasis:
+        return cls(
+            basis=_s(data, "basis"),
+            as_of=_s(data, "asOf"),
+            newer_consolidation_exists=_b(data, "newerConsolidationExists"),
+            newest_pdf_only_date=_s(data, "newestPdfOnlyDate"),
+            newer_pdf_only=_str_list(data, "newerPdfOnly"),
+            amended_since=_b(data, "amendedSince"),
+            text_from=_s(data, "textFrom"),
+            raw=data,
+        )
+
+
+NationalDocumentKind = Literal["act", "decision"]
+"""``documentKind`` — what a national document is, in one vocabulary for
+every jurisdiction (API 2.8.0): ``"act"`` (legislation) or ``"decision"``
+(case law). Use it, not ``document_type`` (the source's own label)."""
+
+_DOCUMENT_KINDS = ("act", "decision")
+
+
+@dataclass(frozen=True)
+class NationalCitedNorm:
+    """One entry of :attr:`NationalDecision.cited_norms`.
+
+    ``text`` is the source's citation string (``"§ 62 Abs 1a S 3 EStG 2009"``);
+    ``document_id`` the LexAPI id of the cited act when the source identifies
+    it (CZ, SI, PL, SE) — whether or not LexAPI holds that act — else ``None``.
+    """
+
+    text: str | None
+    document_id: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCitedNorm:
+        return cls(text=_s(data, "text"), document_id=_s(data, "documentId"))
+
+
+@dataclass(frozen=True)
+class NationalDecision:
+    """``decision`` — a national decision's case-law metadata (API 2.8.0).
+
+    The same fields in every jurisdiction; values are the source's own (local
+    language and spelling). The server reads them from whichever field the
+    source uses (Austria's ``gericht``, Germany's ``aktenzeichen``, …) — read
+    these, never the raw source keys under ``content.details``.
+
+    - ``court`` — the deciding court as the source names it (``"OGH"``,
+      ``"BFH 3. Senat"``, ``"Gerechtshof Amsterdam"``), or ``None``.
+    - ``chamber`` — chamber / section / department where the source names it
+      apart from the court (``"Sección Cuarta"``); ``None`` otherwise.
+    - ``case_numbers`` — docket numbers as written (``["III R 27/24"]``); ``[]``
+      when the source gives none.
+    - ``cited_norms`` — legislation the decision cites, where the source lists
+      it; ``[]`` otherwise.
+    """
+
+    court: str | None
+    chamber: str | None
+    case_numbers: list[str]
+    cited_norms: list[NationalCitedNorm]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalDecision:
+        return cls(
+            court=_s(data, "court"),
+            chamber=_s(data, "chamber"),
+            case_numbers=_str_list(data, "caseNumbers"),
+            cited_norms=_parse_items(data, "citedNorms", NationalCitedNorm),
+        )
+
+
+@dataclass(frozen=True)
+class NationalArticle:
+    """One unit of a national act (article, section, annex) — the same fields
+    in every jurisdiction (API 2.8.0).
+
+    ``number`` is the source's own label (``"§ 1"``, ``"Art. 1"``,
+    ``"1 kap. 1 §"``; ``None`` for an unnumbered unit); ``section`` the part
+    or chapter it sits in; ``text`` is ``None`` when the source publishes no
+    text for the unit — never an empty provision; ``in_force_from`` /
+    ``in_force_to`` (``YYYY-MM-DD``) where the source dates units (AT, ES,
+    FR). ``details`` holds the source's other unit fields (unit ids, kinds,
+    notes) — source-specific.
+    """
+
+    number: str | None
+    title: str | None
+    section: str | None
+    text: str | None
+    in_force_from: str | None
+    in_force_to: str | None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalArticle:
+        return cls(
+            number=_s(data, "number"),
+            title=_s(data, "title"),
+            section=_s(data, "section"),
+            text=_s(data, "text"),
+            in_force_from=_s(data, "inForceFrom"),
+            in_force_to=_s(data, "inForceTo"),
+            details=_dict(data, "details"),
+        )
+
+
+@dataclass(frozen=True)
+class NationalRepeal:
+    """``content.repeal`` — the source's confirmation behind ``valid_to``."""
+
+    valid_to: str | None
+    basis: str | None
+    detected_at: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalRepeal:
+        return cls(
+            valid_to=_s(data, "validTo"),
+            basis=_s(data, "basis"),
+            detected_at=_s(data, "detectedAt"),
+        )
+
+
+@dataclass(frozen=True)
+class NationalDocumentContent:
+    """``content`` of a national document — a closed key set, the same in
+    every jurisdiction (API 2.8.0).
+
+    - ``full_text``; ``articles`` (:class:`NationalArticle`, in order; ``[]``
+      for decisions and for acts the source publishes without units).
+    - ``text_languages`` — the languages the text is in (Dutch treaties: as
+      BWB publishes them, e.g. ``["en", "nl"]``; otherwise the one language).
+      ``text_language`` — set when the whole text is in one language other
+      than the document's ``language``. ``embedded_foreign_text`` — the text
+      includes text in another language.
+    - ``repeal`` (:class:`NationalRepeal`, or ``None``).
+    - ``source`` (provenance) and ``details`` (everything else the source
+      provides, under its own field names) — source-specific, keys differ by
+      jurisdiction.
+    """
+
+    full_text: str
+    articles: list[NationalArticle]
+    text_languages: list[str]
+    text_language: str | None
+    embedded_foreign_text: bool
+    repeal: NationalRepeal | None
+    source: dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalDocumentContent:
+        repeal = _opt_dict(data, "repeal")
+        return cls(
+            full_text=_s(data, "fullText") or "",
+            articles=_parse_items(data, "articles", NationalArticle),
+            text_languages=_str_list(data, "textLanguages"),
+            text_language=_s(data, "textLanguage"),
+            embedded_foreign_text=_b(data, "embeddedForeignText") is True,
+            repeal=NationalRepeal.from_dict(repeal) if repeal is not None else None,
+            source=_dict(data, "source"),
+            details=_dict(data, "details"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class NationalDocument:
+    """A document from a national-law jurisdiction (not EUR-Lex) — one shape
+    for every jurisdiction (API 2.8.0).
+
+    Listing rows (:attr:`NationalDocumentListResponse.results`) and every
+    semantic hit's ``document`` are the summary: ``id``, ``jurisdiction``,
+    ``language``, ``document_kind`` (``"act"`` | ``"decision"``), ``title``,
+    ``document_type`` (the source's own label), ``ecli``, ``eli``,
+    ``date_of_document`` (``YYYY-MM-DD``), ``version``, ``fetched_at``,
+    ``valid_to`` and ``in_force`` — always sent, ``None`` when the source has
+    nothing. A full read (:meth:`~lexapi.national.NationalResource.get_document`)
+    adds ``decision`` (:class:`NationalDecision` on a decision, ``None`` for
+    acts — also when the decision has no text), ``content``
+    (:class:`NationalDocumentContent`), ``text_availability``,
+    ``attribution`` and ``text_basis``.
+
+    National reads are always served from the LexAPI corpus — there is no
+    live-fetch fallback, so ``content is None`` means the source publishes
+    no machine-readable text for this id (check ``text_availability`` for
+    why) — never a withdrawal. A document its source withdrew (a takedown, a
+    pseudonymisation fix) is never a 200 with ``content: None``: `get_document`
+    raises :class:`~lexapi.errors.DocumentWithdrawnError` (410) instead, and
+    nothing of it — not even the title — is served. ``attribution`` is the
+    jurisdiction's required attribution notice: always show it next to the
+    content.
+    """
+
+    id: str | None
+    jurisdiction: str | None
+    language: str | None
+    document_kind: NationalDocumentKind | None
+    title: str | None
+    document_type: str | None
+    ecli: str | None
+    eli: str | None
+    date_of_document: str | None
+    version: int | None
+    fetched_at: str | None
+    valid_to: str | None
+    in_force: bool | None
+    decision: NationalDecision | None
+    content: NationalDocumentContent | None
+    text_availability: TextAvailability | None
+    attribution: str | None
+    text_basis: NationalTextBasis | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @property
+    def is_decision(self) -> bool:
+        """``True`` for case law (``document_kind == "decision"``), in every
+        jurisdiction. On a full read, ``decision`` then carries the court,
+        chamber, case numbers and cited norms."""
+        return self.document_kind == "decision"
+
+    @property
+    def is_act(self) -> bool:
+        """``True`` for legislation (``document_kind == "act"``)."""
+        return self.document_kind == "act"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalDocument:
+        content = _opt_dict(data, "content")
+        availability = _opt_dict(data, "textAvailability")
+        text_basis = _opt_dict(data, "textBasis")
+        decision = _opt_dict(data, "decision")
+        kind = _s(data, "documentKind")
+        return cls(
+            id=_s(data, "id"),
+            jurisdiction=_s(data, "jurisdiction"),
+            language=_s(data, "language"),
+            document_kind=kind if kind in _DOCUMENT_KINDS else None,  # type: ignore[arg-type]
+            title=_s(data, "title"),
+            document_type=_s(data, "documentType"),
+            ecli=_s(data, "ecli"),
+            eli=_s(data, "eli"),
+            date_of_document=_s(data, "dateOfDocument"),
+            version=_i(data, "version"),
+            fetched_at=_s(data, "fetchedAt"),
+            valid_to=_s(data, "validTo"),
+            in_force=_b(data, "inForce"),
+            decision=NationalDecision.from_dict(decision) if decision is not None else None,
+            content=NationalDocumentContent.from_dict(content) if content is not None else None,
+            text_availability=(
+                TextAvailability.from_dict(availability) if availability is not None else None
+            ),
+            attribution=_s(data, "attribution"),
+            text_basis=NationalTextBasis.from_dict(text_basis) if text_basis is not None else None,
+            raw=data,
+        )
+
+
+class NationalDocumentResponse(APIResponse):
+    """``GET /{jurisdiction}/documents/{id}`` — one national document.
+
+    No ``success`` key (unlike the EU document endpoints) — the national
+    controller answers ``{"document": {...}}`` directly. 5 credits upfront,
+    settled to 1 (``CORPUS_HIT_WEIGHT``): every national read is a corpus
+    read, never a live fetch.
+    """
+
+    @property
+    def document(self) -> NationalDocument:
+        return NationalDocument.from_dict(_dict(self._map, "document"))
+
+
+class NationalDocumentListResponse(APIResponse):
+    """``GET /{jurisdiction}/documents`` — a page of one jurisdiction's
+    documents. 3 credits flat per call (not per page). Newest-first
+    by the document's own date (undated rows last), then by id."""
+
+    @property
+    def jurisdiction(self) -> str | None:
+        return _s(self._map, "jurisdiction")
+
+    @property
+    def total(self) -> int | None:
+        """Matching rows, counted up to 10,000 — see :attr:`total_exact`."""
+        return _i(self._map, "total")
+
+    @property
+    def total_exact(self) -> bool | None:
+        """``False`` when :attr:`total` is a lower bound (more than 10,000
+        rows matched, or the count timed out)."""
+        return _b(self._map, "totalExact")
+
+    @property
+    def page(self) -> int | None:
+        """Present only when the request paged with ``page`` (``None`` in cursor mode)."""
+        return _i(self._map, "page")
+
+    @property
+    def limit(self) -> int | None:
+        return _i(self._map, "limit")
+
+    @property
+    def include_repealed(self) -> bool | None:
+        return _b(self._map, "includeRepealed")
+
+    @property
+    def has_more(self) -> bool | None:
+        """``True`` when another page follows — page with :attr:`next_cursor`."""
+        return _b(self._map, "hasMore")
+
+    @property
+    def next_cursor(self) -> str | None:
+        """Opaque cursor for the next page, or ``None`` on the last page."""
+        return _s(self._map, "nextCursor")
+
+    @property
+    def results(self) -> list[NationalDocument]:
+        """Summaries only (every summary field present, ``None`` when the
+        source has nothing): no ``decision`` / ``content`` /
+        ``text_availability`` / ``attribution`` — those are ``None``."""
+        return _parse_items(self._map, "results", NationalDocument)
+
+
+@dataclass(frozen=True)
+class NationalSemanticCaseLawResult(SemanticCaseLawResult):
+    """A :class:`SemanticCaseLawResult` plus the national extras the
+    controller adds: ``document_id`` / ``jurisdiction`` (also mirrored into
+    ``metadata.celex_id``), ``document`` (the matched decision as the
+    listing returns it — a :class:`NationalDocument` summary with the same
+    fields in every jurisdiction, whatever metadata the index carries;
+    API 2.8.0), ``valid_to`` / ``in_force`` (only present when the source
+    recorded an end of validity) and ``attribution`` (always show it next to
+    the content). Which index fields (``court``, ``case_number``, …) are
+    filled depends on the national source — prefer ``document``."""
+
+    document_id: str | None = None
+    document: NationalDocument | None = None
+    valid_to: str | None = None
+    in_force: bool | None = None
+    attribution: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalSemanticCaseLawResult:
+        base = SemanticCaseLawResult.from_dict(data)
+        document = _opt_dict(data, "document")
+        return cls(
+            **{f.name: getattr(base, f.name) for f in base.__dataclass_fields__.values()},
+            document_id=_s(data, "documentId"),
+            document=NationalDocument.from_dict(document) if document is not None else None,
+            valid_to=_s(data, "validTo"),
+            in_force=_b(data, "inForce"),
+            attribution=_s(data, "attribution"),
+        )
+
+
+@dataclass(frozen=True)
+class NationalSemanticLegislationResult(SemanticLegislationResult):
+    """A :class:`SemanticLegislationResult` plus the national extras.
+
+    ``law_id`` / ``document_id`` are the national id (e.g. ``AT-NOR-...``);
+    ``document`` is the matched act as the listing returns it (a
+    :class:`NationalDocument` summary; API 2.8.0). Unlike the EU hit, the
+    API always sends ``law_title``, ``article_ref`` (the unit's label, as in
+    ``content.articles[].number``), ``section``, ``language``, ``in_force``,
+    ``valid_from``, ``valid_to`` and ``law_type`` — ``None`` when the index
+    has nothing for the unit (which of them it has differs by jurisdiction).
+
+    Quirk straight from the server: unlike every camelCase field elsewhere
+    in this SDK, these index fields are the server's own snake_case wire
+    names (``in_force`` / ``valid_from`` / ``valid_to`` / ``law_type``) —
+    do not "fix" this, it would stop matching the API.
+
+    ``in_force`` comes from the semantic index, as of today (``None`` when
+    unknown). LexAPI's own corpus row only ever forces it to ``False`` (and
+    sets ``valid_to``) when it independently confirms a repeal the index has
+    not caught up with yet; it never asserts an act IS in force.
+    """
+
+    document_id: str | None = None
+    jurisdiction: str | None = None
+    document: NationalDocument | None = None
+    in_force: bool | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
+    law_type: str | None = None
+    attribution: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalSemanticLegislationResult:
+        base = SemanticLegislationResult.from_dict(data)
+        document = _opt_dict(data, "document")
+        return cls(
+            **{f.name: getattr(base, f.name) for f in base.__dataclass_fields__.values()},
+            document_id=_s(data, "documentId"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document=NationalDocument.from_dict(document) if document is not None else None,
+            # Server wire names are snake_case here (in_force / valid_to,
+            # not inForce / validTo) — see the class docstring.
+            in_force=_b(data, "in_force"),
+            valid_from=_s(data, "valid_from"),
+            valid_to=_s(data, "valid_to"),
+            law_type=_s(data, "law_type"),
+            attribution=_s(data, "attribution"),
+        )
+
+
+class _NationalSemanticResponseBase(_SemanticResponseBase):
+    @property
+    def jurisdiction(self) -> str | None:
+        return _s(self._map, "jurisdiction")
+
+    @property
+    def attribution(self) -> str | None:
+        """The jurisdiction's attribution notice — always show it to the user."""
+        return _s(self._map, "attribution")
+
+
+class NationalSemanticSearchResponse(_NationalSemanticResponseBase):
+    """``POST /{jurisdiction}/search/semantic`` — national case-law search.
+
+    5 credits flat. ``hyde`` is accepted for API compatibility but the
+    national index never rewrites: a request with ``hyde=True`` gets
+    ``hyde=False`` back, never a 15-credit charge. This response carries a
+    ``credits`` block like the other credit-metered routes; below BUSINESS
+    it also carries the ``X-National-*`` headers
+    (``national_allowance_limit`` / ``_remaining`` / ``_resets_at``).
+    """
+
+    @property
+    def results(self) -> list[NationalSemanticCaseLawResult]:
+        return _parse_items(self._map, "results", NationalSemanticCaseLawResult)
+
+    @property
+    def hyde(self) -> bool | None:
+        return _b(self._map, "hyde")
+
+
+class NationalSemanticLegislationResponse(_NationalSemanticResponseBase):
+    """``POST /{jurisdiction}/legislation/semantic`` — national legislation
+    search. 5 credits flat. No ``hyde``, no ``as_of`` (both EU-only)."""
+
+    @property
+    def results(self) -> list[NationalSemanticLegislationResult]:
+        return _parse_items(self._map, "results", NationalSemanticLegislationResult)

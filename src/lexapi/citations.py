@@ -26,9 +26,19 @@ _EDGE_PAGE_SIZE = 100
 
 
 def _edge_params(
-    citation_type: str | None, limit: int | None, offset: int | None
+    citation_type: str | None,
+    limit: int | None,
+    offset: int | None,
+    include_national: bool | None = None,
 ) -> dict[str, Any]:
-    return drop_none({"citationType": citation_type, "limit": limit, "offset": offset})
+    return drop_none(
+        {
+            "citationType": citation_type,
+            "limit": limit,
+            "offset": offset,
+            "includeNational": include_national,
+        }
+    )
 
 
 def _page_done(rows: int, page_size: int) -> bool:
@@ -64,6 +74,7 @@ class CitationsResource:
         citation_type: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        include_national: bool | None = None,
     ) -> CitedByResponse:
         """GET /citations/cited-by/{celex} — inbound edges (documents citing this one).
 
@@ -74,11 +85,18 @@ class CitationsResource:
         see ``response.relation_sync``). 1 credit. ``citation_type``:
         ``reference``, ``amendment``, ``repeal``, ``corrigendum``,
         ``implementation``, ``legal-basis``, ``proposal``.
+
+        ``celex`` may be a national document id (e.g. ``AT-NOR-10001597``).
+        ``include_national=True`` also returns national neighbours of live
+        jurisdictions — BUSINESS, SCALE and ENTERPRISE only
+        (:class:`~lexapi.TierForbiddenError` below that, nothing charged). A
+        national id whose jurisdiction is not live raises
+        :class:`~lexapi.NotFoundError`.
         """
         return self._client._request(
             "GET",
             f"/citations/cited-by/{seg(celex)}",
-            params=_edge_params(citation_type, limit, offset),
+            params=_edge_params(citation_type, limit, offset, include_national),
             cast=CitedByResponse,
         )
 
@@ -89,16 +107,19 @@ class CitationsResource:
         citation_type: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        include_national: bool | None = None,
     ) -> CitesResponse:
         """GET /citations/cites/{celex} — outbound edges (documents this one cites).
 
         A document must have been crawled via :meth:`extract` to appear here.
-        1 credit.
+        1 credit. ``celex`` may be a national document id;
+        ``include_national`` also returns national neighbours — see
+        :meth:`cited_by`.
         """
         return self._client._request(
             "GET",
             f"/citations/cites/{seg(celex)}",
-            params=_edge_params(citation_type, limit, offset),
+            params=_edge_params(citation_type, limit, offset, include_national),
             cast=CitesResponse,
         )
 
@@ -155,53 +176,80 @@ class CitationsResource:
         citation_type: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        include_national: bool | None = None,
     ) -> CitationNetworkResponse:
         """GET /citations/network/{celex} — both directions in one call.
 
         ``limit`` applies per direction (max 500). On server-side budget
         expiry the response is still 200 with ``partial=True`` and empty
-        arrays — always check ``response.partial``. 20 credits.
+        arrays — always check ``response.partial``. 20 credits. ``celex`` may
+        be a national document id; ``include_national`` also includes
+        national neighbours — see :meth:`cited_by`.
         """
         return self._client._request(
             "GET",
             f"/citations/network/{seg(celex)}",
-            params=_edge_params(citation_type, limit, offset),
+            params=_edge_params(citation_type, limit, offset, include_national),
             cast=CitationNetworkResponse,
         )
 
     def path(
-        self, from_celex: str, to_celex: str, *, max_depth: int | None = None
+        self,
+        from_celex: str,
+        to_celex: str,
+        *,
+        max_depth: int | None = None,
+        include_national: bool | None = None,
     ) -> CitationPathResponse:
         """GET /citations/path/{from}/{to} — shortest citation path (BFS).
 
         No path within the budget is a graceful ``found=False`` response
         (HTTP 200), not an error. ``max_depth`` defaults to 3 (max 8).
-        20 credits.
+        20 credits. ``from_celex``/``to_celex`` may be national document ids;
+        ``include_national`` also follows national documents along the way —
+        see :meth:`cited_by`.
         """
         return self._client._request(
             "GET",
             f"/citations/path/{seg(from_celex)}/{seg(to_celex)}",
-            params=drop_none({"maxDepth": max_depth}),
+            params=drop_none({"maxDepth": max_depth, "includeNational": include_national}),
             cast=CitationPathResponse,
         )
 
-    def related(self, celex: str, *, limit: int | None = None) -> RelatedDocumentsResponse:
+    def related(
+        self,
+        celex: str,
+        *,
+        limit: int | None = None,
+        include_national: bool | None = None,
+    ) -> RelatedDocumentsResponse:
         """GET /citations/related/{celex} — bibliographic-coupling neighbours.
 
         Seeds with no outbound citations return an empty list plus a
         ``message`` (graceful, not an error). ``limit`` defaults to 10 (max
-        50). 20 credits.
+        50). 20 credits. ``celex`` may be a national document id;
+        ``include_national`` also considers national documents — see
+        :meth:`cited_by`.
         """
         return self._client._request(
             "GET",
             f"/citations/related/{seg(celex)}",
-            params=drop_none({"limit": limit}),
+            params=drop_none({"limit": limit, "includeNational": include_national}),
             cast=RelatedDocumentsResponse,
         )
 
-    def stats(self) -> CitationStatsResponse:
-        """GET /citations/stats — global citation-graph counters and top-10s (20 credits)."""
-        return self._client._request("GET", "/citations/stats", cast=CitationStatsResponse)
+    def stats(self, *, include_national: bool | None = None) -> CitationStatsResponse:
+        """GET /citations/stats — global citation-graph counters and top-10s
+        (20 credits). ``include_national`` also counts national documents of
+        live jurisdictions — BUSINESS, SCALE and ENTERPRISE only
+        (:class:`~lexapi.TierForbiddenError` below that).
+        """
+        return self._client._request(
+            "GET",
+            "/citations/stats",
+            params=drop_none({"includeNational": include_national}),
+            cast=CitationStatsResponse,
+        )
 
 
 class AsyncCitationsResource:
@@ -226,12 +274,13 @@ class AsyncCitationsResource:
         citation_type: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        include_national: bool | None = None,
     ) -> CitedByResponse:
         """GET /citations/cited-by/{celex} — see :meth:`CitationsResource.cited_by`."""
         return await self._client._request(
             "GET",
             f"/citations/cited-by/{seg(celex)}",
-            params=_edge_params(citation_type, limit, offset),
+            params=_edge_params(citation_type, limit, offset, include_national),
             cast=CitedByResponse,
         )
 
@@ -242,12 +291,13 @@ class AsyncCitationsResource:
         citation_type: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        include_national: bool | None = None,
     ) -> CitesResponse:
         """GET /citations/cites/{celex} — see :meth:`CitationsResource.cites`."""
         return await self._client._request(
             "GET",
             f"/citations/cites/{seg(celex)}",
-            params=_edge_params(citation_type, limit, offset),
+            params=_edge_params(citation_type, limit, offset, include_national),
             cast=CitesResponse,
         )
 
@@ -298,35 +348,52 @@ class AsyncCitationsResource:
         citation_type: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
+        include_national: bool | None = None,
     ) -> CitationNetworkResponse:
         """GET /citations/network/{celex} — see :meth:`CitationsResource.network`."""
         return await self._client._request(
             "GET",
             f"/citations/network/{seg(celex)}",
-            params=_edge_params(citation_type, limit, offset),
+            params=_edge_params(citation_type, limit, offset, include_national),
             cast=CitationNetworkResponse,
         )
 
     async def path(
-        self, from_celex: str, to_celex: str, *, max_depth: int | None = None
+        self,
+        from_celex: str,
+        to_celex: str,
+        *,
+        max_depth: int | None = None,
+        include_national: bool | None = None,
     ) -> CitationPathResponse:
         """GET /citations/path/{from}/{to} — see :meth:`CitationsResource.path`."""
         return await self._client._request(
             "GET",
             f"/citations/path/{seg(from_celex)}/{seg(to_celex)}",
-            params=drop_none({"maxDepth": max_depth}),
+            params=drop_none({"maxDepth": max_depth, "includeNational": include_national}),
             cast=CitationPathResponse,
         )
 
-    async def related(self, celex: str, *, limit: int | None = None) -> RelatedDocumentsResponse:
+    async def related(
+        self,
+        celex: str,
+        *,
+        limit: int | None = None,
+        include_national: bool | None = None,
+    ) -> RelatedDocumentsResponse:
         """GET /citations/related/{celex} — see :meth:`CitationsResource.related`."""
         return await self._client._request(
             "GET",
             f"/citations/related/{seg(celex)}",
-            params=drop_none({"limit": limit}),
+            params=drop_none({"limit": limit, "includeNational": include_national}),
             cast=RelatedDocumentsResponse,
         )
 
-    async def stats(self) -> CitationStatsResponse:
+    async def stats(self, *, include_national: bool | None = None) -> CitationStatsResponse:
         """GET /citations/stats — see :meth:`CitationsResource.stats`."""
-        return await self._client._request("GET", "/citations/stats", cast=CitationStatsResponse)
+        return await self._client._request(
+            "GET",
+            "/citations/stats",
+            params=drop_none({"includeNational": include_national}),
+            cast=CitationStatsResponse,
+        )

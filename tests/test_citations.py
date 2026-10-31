@@ -4,8 +4,9 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
-from lexapi import AsyncLexAPI, LexAPI
+from lexapi import AsyncLexAPI, LexAPI, NotFoundError, TierForbiddenError
 
 
 def capture_client(response_json, status=200):
@@ -300,3 +301,162 @@ def test_async_citations_parity():
 
     resp = asyncio.run(run())
     assert resp.cited_by[0].celex_number == "32016R0679"
+
+
+# ── includeNational (citation graph + national ids, API 2.5.0) ──
+
+
+def test_cites_cited_by_send_include_national_and_keep_it_in_the_response():
+    body = {
+        "success": True,
+        "sourceDocument": "AT-NOR-10001597",
+        "cites": [],
+        "includeNational": True,
+    }
+    client, seen = capture_client(body)
+    with client:
+        resp = client.citations.cites("AT-NOR-10001597", include_national=True)
+    assert seen["params"]["includeNational"] == "true"
+    assert resp.include_national is True
+
+    body2 = {
+        "success": True,
+        "targetDocument": "AT-NOR-10001597",
+        "citedBy": [],
+        "includeNational": True,
+    }
+    client2, seen2 = capture_client(body2)
+    with client2:
+        resp2 = client2.citations.cited_by("AT-NOR-10001597", include_national=True)
+    assert seen2["params"]["includeNational"] == "true"
+    assert resp2.include_national is True
+
+
+def test_network_path_related_stats_send_include_national():
+    network_body = {
+        "success": True,
+        "document": "32016R0679",
+        "network": {
+            "celexNumber": "32016R0679",
+            "citesCount": 0,
+            "citedByCount": 0,
+            "cites": [],
+            "citedBy": [],
+        },
+        "paging": {"limit": 100, "offset": 0, "citesTotal": 0, "citedByTotal": 0},
+        "includeNational": True,
+    }
+    client, seen = capture_client(network_body)
+    with client:
+        resp = client.citations.network("32016R0679", include_national=True)
+    assert seen["params"]["includeNational"] == "true"
+    assert resp.include_national is True
+
+    path_body = {
+        "success": True,
+        "from": "32016R0679",
+        "to": "AT-NOR-10001597",
+        "found": False,
+        "path": [],
+        "includeNational": True,
+    }
+    client2, seen2 = capture_client(path_body)
+    with client2:
+        resp2 = client2.citations.path("32016R0679", "AT-NOR-10001597", include_national=True)
+    assert seen2["params"]["includeNational"] == "true"
+    assert resp2.include_national is True
+
+    related_body = {
+        "success": True,
+        "celexNumber": "32016R0679",
+        "method": "bibliographic-coupling",
+        "count": 0,
+        "related": [],
+        "includeNational": True,
+    }
+    client3, seen3 = capture_client(related_body)
+    with client3:
+        resp3 = client3.citations.related("32016R0679", include_national=True)
+    assert seen3["params"]["includeNational"] == "true"
+    assert resp3.include_national is True
+
+    stats_body = {
+        "success": True,
+        "stats": {
+            "totalCitations": 0,
+            "uniqueSourceDocuments": 0,
+            "uniqueTargetDocuments": 0,
+            "mostCited": [],
+            "mostCiting": [],
+        },
+        "includeNational": True,
+    }
+    client4, seen4 = capture_client(stats_body)
+    with client4:
+        resp4 = client4.citations.stats(include_national=True)
+    assert seen4["params"]["includeNational"] == "true"
+    assert resp4.include_national is True
+
+
+def test_stats_still_works_with_no_arguments_back_compat():
+    body = {
+        "success": True,
+        "stats": {
+            "totalCitations": 1,
+            "uniqueSourceDocuments": 1,
+            "uniqueTargetDocuments": 1,
+            "mostCited": [],
+            "mostCiting": [],
+        },
+    }
+    client, seen = capture_client(body)
+    with client:
+        resp = client.citations.stats()
+    assert "includeNational" not in seen["params"]
+    assert resp.include_national is None
+
+
+def test_include_national_below_business_is_tier_forbidden():
+    body = {
+        "success": False,
+        "code": "TIER_FORBIDDEN",
+        "error": "National-law access requires a BUSINESS plan or higher",
+        "message": (
+            "National documents in citation results are available on the BUSINESS, "
+            "SCALE and ENTERPRISE plans. Your current plan: STARTER."
+        ),
+        "upgradeUrl": "/pricing",
+    }
+    client, _ = capture_client(body, status=403)
+    with client, pytest.raises(TierForbiddenError) as exc_info:
+        client.citations.cited_by("32016R0679", include_national=True)
+    assert exc_info.value.upgrade_url == "/pricing"
+
+
+def test_national_id_of_an_unlaunched_jurisdiction_is_not_found():
+    body = {"error": "Document not found: XX-NOR-99999999"}
+    client, _ = capture_client(body, status=404)
+    with client, pytest.raises(NotFoundError) as exc_info:
+        client.citations.cites("XX-NOR-99999999")
+    assert "Document not found: XX-NOR-99999999" in str(exc_info.value)
+
+
+def test_async_include_national_parity():
+    body = {
+        "success": True,
+        "sourceDocument": "AT-NOR-10001597",
+        "cites": [],
+        "includeNational": True,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    async def run():
+        async with AsyncLexAPI(
+            api_key="lex_test_key", transport=httpx.MockTransport(handler)
+        ) as client:
+            return await client.citations.cites("AT-NOR-10001597", include_national=True)
+
+    resp = asyncio.run(run())
+    assert resp.include_national is True

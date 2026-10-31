@@ -243,3 +243,21 @@ class APIResponse(Mapping[str, Any]):
     def rate_limit_reset(self) -> int | None:
         """Seconds until the rate-limit window resets (``RateLimit-Reset``)."""
         return _header_int(header(self.headers, "ratelimit-reset"))
+
+    @property
+    def national_allowance_limit(self) -> int | None:
+        """Monthly national-law call allowance for FREE/STARTER/PROFESSIONAL
+        accounts (``X-National-Limit``). Absent for BUSINESS and above, and
+        on every non-national response."""
+        return _header_int(header(self.headers, "x-national-limit"))
+
+    @property
+    def national_allowance_remaining(self) -> int | None:
+        """National calls left this UTC month (``X-National-Remaining``)."""
+        return _header_int(header(self.headers, "x-national-remaining"))
+
+    @property
+    def national_allowance_resets_at(self) -> str | None:
+        """When the national allowance resets — start of next UTC month
+        (``X-National-Reset``, ISO-8601)."""
+        return header(self.headers, "x-national-reset")

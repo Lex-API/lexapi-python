@@ -251,6 +251,95 @@ class CreditsExhaustedError(LexAPIError):
         return self._detail_int("used")
 
 
+class NationalAllowanceExhaustedError(LexAPIError):
+    """402 ``NATIONAL_ALLOWANCE_EXHAUSTED`` — the monthly national-law call
+    allowance of a plan below BUSINESS (FREE 30, STARTER 500, PROFESSIONAL
+    2,000 calls per UTC month) is used up.
+
+    Raised only by the national documents and national semantic-search
+    endpoints (``client.national.*``); BUSINESS and above have no separate
+    limit and never see this error. ``details`` carries ``jurisdiction``,
+    ``limit``, ``remaining`` (always 0 here), ``resetsAt`` and
+    ``upgradeUrl`` — each exposed as a typed attribute. Not retried: wait
+    for ``resets_at`` or upgrade.
+    """
+
+    default_code = "NATIONAL_ALLOWANCE_EXHAUSTED"
+
+    def __init__(self, message: str, *, resets_at: str | None = None, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.resets_at = resets_at
+
+    def _detail_str(self, key: str) -> str | None:
+        if not isinstance(self.details, dict):
+            return None
+        value = self.details.get(key)
+        return value if isinstance(value, str) else None
+
+    def _detail_int(self, key: str) -> int | None:
+        if not isinstance(self.details, dict):
+            return None
+        value = self.details.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
+
+    @property
+    def jurisdiction(self) -> str | None:
+        """The jurisdiction code (e.g. ``AT``) the refused call targeted."""
+        return self._detail_str("jurisdiction")
+
+    @property
+    def limit(self) -> int | None:
+        """The plan's monthly allowance."""
+        return self._detail_int("limit")
+
+    @property
+    def remaining(self) -> int | None:
+        """Calls left this month (always 0 on this error)."""
+        return self._detail_int("remaining")
+
+    @property
+    def upgrade_url(self) -> str | None:
+        """``details.upgradeUrl`` (e.g. ``/pricing``) — overrides the base
+        class's property, which reads the top-level body instead of
+        ``details``, where this endpoint puts it."""
+        return self._detail_str("upgradeUrl")
+
+
+def _body_jurisdiction(err: LexAPIError) -> str | None:
+    if isinstance(err.body, dict) and isinstance(err.body.get("jurisdiction"), str):
+        return str(err.body["jurisdiction"])
+    return None
+
+
+def _field(err: LexAPIError, key: str) -> Any:
+    """``error.details[key]`` (typed envelope) falling back to the raw
+    ``body[key]`` (legacy envelope, where the same context is a top-level
+    sibling of ``code``/``error`` instead of nested) — correct for either
+    shape without the caller needing to know which one answered."""
+    if isinstance(err.details, dict) and key in err.details:
+        return err.details[key]
+    if isinstance(err.body, dict):
+        return err.body.get(key)
+    return None
+
+
+class NationalSemanticNotEnabledError(LexAPIError):
+    """409 ``NATIONAL_SEMANTIC_NOT_ENABLED`` — the national semantic index
+    does not search this jurisdiction (yet). Legacy-shape body with a
+    top-level ``jurisdiction`` (not nested in ``details``). Not retryable;
+    nothing was charged.
+    """
+
+    default_code = "NATIONAL_SEMANTIC_NOT_ENABLED"
+
+    @property
+    def jurisdiction(self) -> str | None:
+        """The jurisdiction code (e.g. ``AT``) from the top-level body."""
+        return _body_jurisdiction(self)
+
+
 class UpstreamError(LexAPIError):
     """502 ``UPSTREAM_ERROR`` — EUR-Lex (or the semantic service) returned an error."""
 
@@ -264,6 +353,60 @@ class ServiceUnavailableError(UpstreamError):
     (where 503 mapped to ``UPSTREAM_ERROR``) keeps catching it."""
 
     default_code = "SERVICE_UNAVAILABLE"
+
+
+class NationalSemanticUnavailableError(ServiceUnavailableError):
+    """503 ``NATIONAL_SEMANTIC_UNAVAILABLE`` — the national semantic index
+    for this jurisdiction is temporarily down. A subclass of
+    :class:`ServiceUnavailableError` (itself a :class:`UpstreamError`), so
+    ``except ServiceUnavailableError`` still catches it. Legacy-shape body
+    with a top-level ``jurisdiction``. Retryable later; nothing was charged.
+    """
+
+    default_code = "NATIONAL_SEMANTIC_UNAVAILABLE"
+
+    @property
+    def jurisdiction(self) -> str | None:
+        """The jurisdiction code (e.g. ``AT``) from the top-level body."""
+        return _body_jurisdiction(self)
+
+
+class DocumentWithdrawnError(LexAPIError):
+    """410 ``DOCUMENT_WITHDRAWN`` — a national document its
+    source withdrew (a takedown, a pseudonymisation fix, a robots.txt
+    listing). LexAPI serves nothing of it: no title, no metadata, no text.
+
+    Two envelope shapes carry this code: the TYPED envelope on a direct
+    document read (``get_document``, ``error.details: {id, jurisdiction,
+    withdrawnAt}``), and the LEGACY shape with those same three fields as
+    top-level siblings of ``code``/``error`` on the citation methods (a
+    withdrawn id queried directly, or reached via ``include_national``).
+    :attr:`id` / :attr:`jurisdiction` / :attr:`withdrawn_at` read ``details``
+    first, then fall back to the raw ``body`` — correct for either shape.
+
+    Not retryable (the document is gone, not temporarily failing); nothing
+    is ever charged for it. If you hold a cached copy, drop it — the
+    withdrawal may be a legal takedown or a pseudonymisation fix (Terms §7:
+    no re-identification of anonymised or pseudonymised people).
+    """
+
+    default_code = "DOCUMENT_WITHDRAWN"
+
+    @property
+    def id(self) -> str | None:  # noqa: A003 - mirrors the wire field name
+        value = _field(self, "id")
+        return value if isinstance(value, str) else None
+
+    @property
+    def jurisdiction(self) -> str | None:
+        value = _field(self, "jurisdiction")
+        return value if isinstance(value, str) else None
+
+    @property
+    def withdrawn_at(self) -> str | None:
+        """ISO date-time the source withdrew the document; ``None`` when unknown."""
+        value = _field(self, "withdrawnAt")
+        return value if isinstance(value, str) else None
 
 
 class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
@@ -322,8 +465,12 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "QUOTA_EXHAUSTED": RateLimitedError,
     "TIER_FORBIDDEN": TierForbiddenError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
+    "NATIONAL_ALLOWANCE_EXHAUSTED": NationalAllowanceExhaustedError,
+    "NATIONAL_SEMANTIC_NOT_ENABLED": NationalSemanticNotEnabledError,
     "UPSTREAM_ERROR": UpstreamError,
     "SERVICE_UNAVAILABLE": ServiceUnavailableError,
+    "NATIONAL_SEMANTIC_UNAVAILABLE": NationalSemanticUnavailableError,
+    "DOCUMENT_WITHDRAWN": DocumentWithdrawnError,
     "TIMEOUT": TimeoutError,
     "INTERNAL": InternalServerError,
 }
@@ -397,6 +544,6 @@ def error_from_response(status: int, body: Any, retry_after: float | None = None
         "body": body,
         "retry_after": retry_after,
     }
-    if error_cls is CreditsExhaustedError:
+    if error_cls is CreditsExhaustedError or error_cls is NationalAllowanceExhaustedError:
         kwargs["resets_at"] = _extract_resets_at(details, body)
     return error_cls(message, **kwargs)

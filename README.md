@@ -183,7 +183,19 @@ if path.found:
 related = client.citations.related("32016R0679", limit=10)  # bibliographic coupling
 stats = client.citations.stats()
 print(stats.most_cited[0].celex_number)
+
+# National documents in the graph (BUSINESS, SCALE, ENTERPRISE only — TierForbiddenError below that):
+with_national = client.citations.cited_by("32016R0679", include_national=True)
+print(with_national.include_national)  # present once honoured; None while no jurisdiction is live
+national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
 ```
+
+`cited_by`, `cites`, `network`, `path`, `related` and `stats` all accept
+`include_national=True` to also return/follow national documents of live
+jurisdictions (BUSINESS, SCALE and ENTERPRISE only). `celex` (and `path`'s
+`from_celex`/`to_celex`) may be a national document id directly, with or
+without the flag; such an id whose jurisdiction isn't live raises
+`NotFoundError`.
 
 ### Webhooks
 
@@ -231,6 +243,126 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
             print(change["watchedCelex"], change["relation"], change["document"]["celex"])
     # dedupe side effects on event["delivery"]["id"] — stable across retries
     return 200
+```
+
+### National law
+
+National jurisdictions (member states, and non-EU legal orders such as the UK) live under `client.national`. Call `coverage()`
+first — a jurisdiction that has not launched yet answers every other national
+method with `NotFoundError`, exactly like one that does not exist:
+
+```python
+coverage = client.national.coverage()  # public, free
+for j in coverage.jurisdictions:
+    if j.live:
+        print(j.code, j.name, j.legislation.documents, j.case_law.courts)
+        for source in j.sources:
+            print(source.name, source.licence, source.attribution)  # show this to users
+
+doc = client.national.get_document("AT", "AT-NOR-10001597").document
+print(doc.title, doc.attribution)  # always show attribution
+for article in doc.content.articles if doc.content else []:
+    print(article.number, article.title, article.text or "(no text)")
+
+page = client.national.list_documents(
+    "AT", q="Datenschutz", limit=20
+)  # document_type is the source's own label (German for RIS), not an EU-style enum
+print(page.total, page.total_exact, [d.title for d in page.results])
+for p in client.national.iter_documents(
+    "AT", q="Datenschutz", limit=100
+):  # cursor paging past page's 1,000-row ceiling
+    print(p.has_more, p.next_cursor)
+
+hits = client.national.semantic_search("AT", "data breach notification duty")
+for r in hits.results:
+    print(r.document_id, r.score, r.attribution, r.document.ecli, r.document.date_of_document)
+
+legislation_hits = client.national.legislation_semantic_search("AT", "right to erasure")
+```
+
+**One shape for every country (requires LexAPI API 2.8.0).** National
+documents have the same fields, types and formats in every jurisdiction, so
+code written for one country works for all of them. Every field is always
+present — one the source does not provide is `None` (or `[]`):
+
+- `document_kind` (`"act"` | `"decision"`; `is_act` / `is_decision`) tells
+  legislation from case law everywhere; `document_type` is the source's own
+  label, in its language.
+- `decision` (`NationalDecision`) — on a decision, `court`, `chamber`,
+  `case_numbers` and `cited_norms` (`NationalCitedNorm`: `text`,
+  `document_id`), read server-side from whichever fields the source uses (also
+  when the decision has no text); `None` for acts.
+- `content` (`NationalDocumentContent`, or `None` when there is no text — see
+  `text_availability`): `full_text`, `articles` (`NationalArticle`: `number`,
+  `title`, `section`, `text` — `None` when the source publishes no text for
+  that unit — `in_force_from`, `in_force_to`, `details`), `text_languages`,
+  `text_language`, `embedded_foreign_text`, `repeal`, `source` and `details`.
+  What a source adds beyond these fields is under `content.details` /
+  `article.details` — source-specific, keys differ by country.
+- Semantic hits carry `document` (the listing's summary of the matched
+  document); legislation hits always carry `law_title`, `article_ref`,
+  `section`, `language`, `in_force`, `valid_from`, `valid_to` and `law_type`,
+  `None` when the index has nothing.
+
+```python
+d = client.national.get_document("DE", "DE-JUD-BFH-KBRE202550123").document
+if d.is_decision and d.decision:
+    print(d.decision.court, ", ".join(d.decision.case_numbers))  # BFH 3. Senat III R 27/24
+    for norm in d.decision.cited_norms:
+        print(norm.text, norm.document_id or "(not identified)")
+```
+
+**Pricing below BUSINESS** (FREE, STARTER, PROFESSIONAL): each call to the four
+non-coverage methods above also draws from a monthly allowance of national
+calls (FREE 30, STARTER 500, PROFESSIONAL 2,000 per UTC month). A used-up
+allowance raises `NationalAllowanceExhaustedError` (402) with `jurisdiction`,
+`limit`, `remaining`, `resets_at` and `upgrade_url`, before any credit is
+charged; BUSINESS and above have no separate limit. Every response from
+these methods exposes `response.national_allowance_limit` /
+`national_allowance_remaining` / `national_allowance_resets_at` (present
+only for FREE/STARTER/PROFESSIONAL).
+
+```python
+from lexapi import NationalAllowanceExhaustedError
+
+try:
+    client.national.get_document("AT", "AT-NOR-12345")
+except NationalAllowanceExhaustedError as err:
+    print(err.limit, err.remaining, err.resets_at, err.upgrade_url)
+```
+
+The two `semantic_search` / `legislation_semantic_search` methods also raise
+`NationalSemanticNotEnabledError` (409 — this jurisdiction's index doesn't
+search yet) and `NationalSemanticUnavailableError` (503 — temporarily down,
+a `ServiceUnavailableError`); both expose `.jurisdiction` and charge nothing:
+
+```python
+from lexapi import NationalSemanticNotEnabledError, NationalSemanticUnavailableError
+
+try:
+    client.national.semantic_search("AT", "Datenschutz")
+except NationalSemanticNotEnabledError as err:
+    print(f"{err.jurisdiction} semantic search isn't enabled yet")
+except NationalSemanticUnavailableError as err:
+    # Catch this specific subclass, not the broader ServiceUnavailableError
+    # it extends — a plain EU 503 has no .jurisdiction attribute.
+    print(f"{err.jurisdiction} semantic index is temporarily down, retry later")
+```
+
+`include_national` on the citation-graph methods and national ids on
+`/citations/*` are implemented — see [Citations](#citations) above.
+
+`get_document` (and the citation methods, for a withdrawn national id)
+raise `DocumentWithdrawnError` (410) for a document its source withdrew —
+nothing of it is served, not even the title; drop any copy you hold:
+
+```python
+from lexapi import DocumentWithdrawnError
+
+try:
+    client.national.get_document("AT", "AT-NOR-5")
+except DocumentWithdrawnError as err:
+    print(err.id, err.jurisdiction, err.withdrawn_at)
 ```
 
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)

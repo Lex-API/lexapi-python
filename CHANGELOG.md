@@ -4,6 +4,138 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (0.x: minors may break, documented here).
 
+## [0.3.0] — 2026-10-28
+
+Adds support for LexAPI's national-law surface. **Requires LexAPI API 2.8.0.**
+
+### National document shape (API 2.8.0)
+
+The national models follow the normalized cross-jurisdiction contract — a
+client written for one country now works for every other:
+
+- `NationalDocument` (listing rows, full documents, and every semantic hit's
+  new `document`) gains `document_kind` (`"act"` | `"decision"`, type
+  `NationalDocumentKind`) with `is_act` / `is_decision`; every summary field
+  (`title`, `document_type`, `ecli`, `eli`, `date_of_document` `YYYY-MM-DD`,
+  `valid_to`, `in_force`) is always sent, `None` when the source has nothing.
+- **`decision`** (`NationalDecision`: `court`, `chamber`, `case_numbers`,
+  `cited_norms` of `NationalCitedNorm(text, document_id)`) on a decision,
+  `None` for acts — served also when the decision has no text.
+- `content` is now `NationalDocumentContent` (`full_text`, `articles` of
+  `NationalArticle(number, title, section, text, in_force_from, in_force_to,
+  details)`, `text_languages`, `text_language`, `embedded_foreign_text`,
+  `repeal` (`NationalRepeal`), `source`, `details`) instead of the EU
+  `DocumentContent`. Source-specific keys (Austria's `gericht`, Germany's
+  `aktenzeichen`, unit ids, …) live only under `content.details` /
+  `article.details` — read `decision` instead. `text_basis` is `None` for
+  every source that does not label its text.
+- `NationalSemanticCaseLawResult.document` / `NationalSemanticLegislationResult.document`
+  (the matched document's summary); legislation hits add `jurisdiction`,
+  `valid_from` and `law_type`, and the index fields are always sent (`None`
+  when the index has nothing).
+
+### Added
+
+- **`client.national` / `client.national` (async)** — new resource
+  namespace (`NationalResource` / `AsyncNationalResource`):
+  - `coverage()` — `GET /national/coverage` (public, free). Which
+    jurisdictions are live, their legislation / case-law coverage
+    (`documents`, `from`, `courts`), semantic-search availability, and the
+    `sources` to attribute (`NationalCoverageResponse`,
+    `NationalJurisdictionCoverage`, `NationalCoverageAvailability`,
+    `NationalCaseLawCoverageAvailability`, `NationalSemanticSearchAvailability`,
+    `NationalSource`). Call this before any other national method — an
+    unlaunched or unknown jurisdiction code answers every other national
+    endpoint with a plain 404.
+  - `get_document(jurisdiction, id, language=None)` — `GET /{jurisdiction}/documents/{id}`
+    (`NationalDocumentResponse`, `NationalDocument`, `NationalTextBasis`).
+    5 credits upfront, settled to 1 — national reads are always served from
+    the corpus, never a live fetch.
+  - `list_documents(jurisdiction, page=, cursor=, limit=, q=, document_type=, include_repealed=)`
+    / `iter_documents(...)` (a ready-made cursor walk, sync + async) —
+    `GET /{jurisdiction}/documents` (`NationalDocumentListResponse`). 3
+    credits flat per call (not per page). `page` only reaches the first
+    1,000 rows (a 400 past that — `InvalidParamsError`); `cursor` (from
+    `next_cursor`) works at any depth. New response fields `total_exact`,
+    `has_more`, `next_cursor`; `page` is `None` in cursor mode. Newest-first
+    by the document's own date. A slow page raises `TimeoutError` (504,
+    refunded, retry-safe).
+  - `semantic_search(jurisdiction, query, hyde=, min_score=, limit=, language=, include_text=, filters=)`
+    — `POST /{jurisdiction}/search/semantic` (`NationalSemanticSearchResponse`,
+    `NationalSemanticCaseLawResult`). `hyde` is accepted for parity but never
+    bills the 15-credit EU premium — the national index never rewrites.
+  - `legislation_semantic_search(jurisdiction, query, min_score=, limit=, language=, include_text=, filters=)`
+    — `POST /{jurisdiction}/legislation/semantic`
+    (`NationalSemanticLegislationResponse`, `NationalSemanticLegislationResult`).
+    No `hyde`, no `as_of` (both EU-only).
+  - Every national result carries `attribution` — always show it to the end
+    user next to the content.
+- **`NationalAllowanceExhaustedError`** (402 `NATIONAL_ALLOWANCE_EXHAUSTED`) —
+  the monthly national-call allowance of a plan below BUSINESS (FREE 30,
+  STARTER 500, PROFESSIONAL 2,000 calls/UTC month) is used up. Typed
+  `jurisdiction`, `limit`, `remaining`, `resets_at`, `upgrade_url`. Not
+  retried.
+- **`NationalSemanticNotEnabledError`** (409 `NATIONAL_SEMANTIC_NOT_ENABLED`)
+  and **`NationalSemanticUnavailableError`** (503
+  `NATIONAL_SEMANTIC_UNAVAILABLE`, a `ServiceUnavailableError` subclass) —
+  the national semantic index does not search a jurisdiction, or is
+  temporarily down. Legacy-shape bodies with a top-level `jurisdiction`
+  (not nested in `details`); both are typed as that attribute. Neither
+  charges anything.
+- **`DocumentWithdrawnError`** (410 `DOCUMENT_WITHDRAWN`) —
+  a national document its source withdrew (a takedown, a pseudonymisation
+  fix) is served nowhere: no title, no metadata, no text. Raised by
+  `get_document` (typed envelope, `details: {id, jurisdiction, withdrawnAt}`)
+  and by the citation methods for a withdrawn national id (legacy shape, the
+  same three fields as top-level siblings instead). `.id`/`.jurisdiction`/
+  `.withdrawn_at` read whichever shape answered. Not retryable; nothing is
+  ever charged for it.
+- `APIResponse.national_allowance_limit` / `national_allowance_remaining` /
+  `national_allowance_resets_at`, reading the `X-National-Limit` /
+  `X-National-Remaining` / `X-National-Reset` headers (present only for
+  FREE/STARTER/PROFESSIONAL accounts on the four non-coverage national
+  endpoints).
+- **`include_national`** on all six citation-graph methods (`cited_by`,
+  `cites`, `network`, `path`, `related`, `stats`, sync and async): also
+  returns/follows national documents of live jurisdictions — BUSINESS,
+  SCALE and ENTERPRISE only (`TierForbiddenError` below that; no code
+  change needed, it already raises the existing error). `celex` (and
+  `path`'s `from_celex`/`to_celex`) accept a national document id directly
+  (e.g. `"AT-NOR-10001597"`); such an id whose jurisdiction isn't live
+  raises a plain `NotFoundError`. `stats()` gained an optional
+  `include_national` keyword (back-compatible — `stats()` with no
+  arguments still works). Every response class gained an
+  `include_national: bool | None` property, set once the flag was
+  honoured.
+
+### Fixed
+
+- `NationalCoverageAvailability.from_` / `NationalCaseLawCoverageAvailability.from_`
+  were parsed with the string helper (`_s()`), so they were always `None`
+  on a real response — the contract sends an int year or `null`. Now
+  `_i()`, typed `int | None`.
+- The national document 404 is the typed envelope
+  (`{success: false, error: {code, message, details: {id, jurisdiction}}}`),
+  not the legacy bare shape it used to be.
+- `NationalSemanticLegislationResult`'s docstring overstated how narrow
+  `in_force` is: it comes from the semantic index on every hit (`True` or
+  `False`); only `valid_to` (and forcing `in_force` to `False`) is limited
+  to LexAPI's own confirmed-repeal override.
+- `semantic_search()` / `legislation_semantic_search()` docstrings now note
+  `filters["jurisdiction"]` (must match the path, or be omitted) and that
+  `language` must be one the jurisdiction is indexed in.
+- Typed national citation 404 already carries a top-level `code: NOT_FOUND`;
+  added a regression test.
+
+### Notes
+
+- `NationalSemanticLegislationResult.in_force` / `.valid_to` mirror the
+  server's own inconsistent wire field names for this one endpoint
+  (`in_force` / `valid_to`, snake_case) — unlike every other camelCase field
+  in this SDK. Intentional; do not "fix" it, it would stop matching the API.
+- National semantic responses carry a `credits` body block, like the other
+  credit-metered routes.
+
 ## [0.2.0] — 2026-10-26
 
 Synced with the LexAPI API as of `openapi.yaml` on lex-api `main` at
