@@ -247,7 +247,7 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
 
 ### National law (launching 2026-11-03)
 
-National (non-EU) jurisdictions live under `client.national`. Call `coverage()`
+National jurisdictions (member states, and non-EU legal orders such as the UK) live under `client.national`. Call `coverage()`
 first — a jurisdiction that has not launched yet answers every other national
 method with `NotFoundError`, exactly like one that does not exist:
 

@@ -859,3 +859,170 @@ def test_async_national_semantic_search():
 
     resp = asyncio.run(run())
     assert resp.results[0].document_id == "AT-JUD-OGH-1"
+
+
+# ── Full-field round trip (review of #13): every key of lex-api #335's
+# NationalDocument / NationalDecision / NationalCitedNorm /
+# NationalDocumentContent / NationalArticle / textBasis / repeal populated
+# with a non-default value, and each must land on its snake_case attribute.
+
+_SPEC_DOCUMENT_KEYS = {
+    "id": "id",
+    "jurisdiction": "jurisdiction",
+    "language": "language",
+    "documentKind": "document_kind",
+    "title": "title",
+    "documentType": "document_type",
+    "ecli": "ecli",
+    "eli": "eli",
+    "dateOfDocument": "date_of_document",
+    "version": "version",
+    "fetchedAt": "fetched_at",
+    "validTo": "valid_to",
+    "inForce": "in_force",
+    "decision": "decision",
+    "content": "content",
+    "textAvailability": "text_availability",
+    "attribution": "attribution",
+    "textBasis": "text_basis",
+}
+
+
+def test_national_document_full_field_round_trip() -> None:
+    from lexapi import NationalDocumentResponse
+
+    payload = {
+        "document": {
+            "id": "PL-DU-2020-1",
+            "jurisdiction": "PL",
+            "language": "pl",
+            "documentKind": "decision",
+            "title": "T",
+            "documentType": "Wyrok",
+            "ecli": "ECLI:PL:X",
+            "eli": "https://eli/1",
+            "dateOfDocument": "2025-06-12",
+            "version": 4,
+            "fetchedAt": "2026-11-02T22:10:00.000Z",
+            "validTo": "2027-01-01",
+            "inForce": True,
+            "decision": {
+                "court": "Sąd Najwyższy",
+                "chamber": "Izba Cywilna",
+                "caseNumbers": ["III CZP 1/25", "III CZP 2/25"],
+                "citedNorms": [
+                    {"text": "art. 415 k.c.", "documentId": "PL-DU-1964-93"},
+                    {"text": "art. 5 k.c.", "documentId": None},
+                ],
+            },
+            "content": {
+                "fullText": "ft",
+                "articles": [
+                    {
+                        "number": "Art. 1",
+                        "title": "t",
+                        "section": "Dział I",
+                        "text": None,
+                        "inForceFrom": "2018-05-25",
+                        "inForceTo": "2020-01-01",
+                        "details": {"unitId": "u1"},
+                    }
+                ],
+                "textLanguages": ["en", "pl"],
+                "textLanguage": "en",
+                "embeddedForeignText": True,
+                "repeal": {
+                    "validTo": "2027-01-01",
+                    "basis": "uchylony",
+                    "detectedAt": "2026-10-01T00:00:00Z",
+                },
+                "source": {"system": "ISAP"},
+                "details": {"sygnatura": "III CZP 1/25"},
+            },
+            "textAvailability": {"available": True},
+            "attribution": "Source: ISAP.",
+            "textBasis": {
+                "basis": "official_consolidated",
+                "asOf": "2024-01-01",
+                "newerConsolidationExists": True,
+                "newestPdfOnlyDate": "2025-01-01",
+                "newerPdfOnly": ["2025-01-01"],
+                "amendedSince": False,
+                "textFrom": "PL-DU-2024-5",
+            },
+        }
+    }
+    doc = NationalDocumentResponse(payload).document
+    for wire, attr in _SPEC_DOCUMENT_KEYS.items():
+        assert hasattr(doc, attr), f"{wire} -> {attr} missing"
+    assert (doc.id, doc.jurisdiction, doc.language, doc.document_kind, doc.title) == (
+        "PL-DU-2020-1",
+        "PL",
+        "pl",
+        "decision",
+        "T",
+    )
+    assert (doc.document_type, doc.ecli, doc.eli, doc.date_of_document, doc.version) == (
+        "Wyrok",
+        "ECLI:PL:X",
+        "https://eli/1",
+        "2025-06-12",
+        4,
+    )
+    assert (doc.fetched_at, doc.valid_to, doc.in_force) == (
+        "2026-11-02T22:10:00.000Z",
+        "2027-01-01",
+        True,
+    )
+    assert doc.is_decision and not doc.is_act
+    d = doc.decision
+    assert d is not None
+    assert (d.court, d.chamber, d.case_numbers) == (
+        "Sąd Najwyższy",
+        "Izba Cywilna",
+        ["III CZP 1/25", "III CZP 2/25"],
+    )
+    assert [(n.text, n.document_id) for n in d.cited_norms] == [
+        ("art. 415 k.c.", "PL-DU-1964-93"),
+        ("art. 5 k.c.", None),
+    ]
+    c = doc.content
+    assert c is not None
+    a = c.articles[0]
+    assert (a.number, a.title, a.section, a.text, a.in_force_from, a.in_force_to, a.details) == (
+        "Art. 1",
+        "t",
+        "Dział I",
+        None,
+        "2018-05-25",
+        "2020-01-01",
+        {"unitId": "u1"},
+    )
+    assert (c.full_text, c.text_languages, c.text_language, c.embedded_foreign_text) == (
+        "ft",
+        ["en", "pl"],
+        "en",
+        True,
+    )
+    assert c.repeal is not None
+    assert (c.repeal.valid_to, c.repeal.basis, c.repeal.detected_at) == (
+        "2027-01-01",
+        "uchylony",
+        "2026-10-01T00:00:00Z",
+    )
+    assert c.source == {"system": "ISAP"} and c.details == {"sygnatura": "III CZP 1/25"}
+    assert doc.text_availability is not None and doc.text_availability.available is True
+    assert doc.attribution == "Source: ISAP."
+    tb = doc.text_basis
+    assert tb is not None
+    assert (tb.basis, tb.as_of, tb.newer_consolidation_exists, tb.newest_pdf_only_date) == (
+        "official_consolidated",
+        "2024-01-01",
+        True,
+        "2025-01-01",
+    )
+    assert (tb.newer_pdf_only, tb.amended_since, tb.text_from) == (
+        ["2025-01-01"],
+        False,
+        "PL-DU-2024-5",
+    )
