@@ -6,21 +6,9 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ## [0.3.0] — 2026-10-28
 
-Adds support for LexAPI's national-law surface, ahead of its launch
-(2026-11-03). **Requires LexAPI API 2.8.0** (lex-api PRs #306, #314 and #320
-— the allowance, the documented contract and the pre-launch hardening pass —
-plus #335, the one national document shape for every jurisdiction; see
-"National document shape" below).
-This round was verified against lex-api **PR #320** (`fix/national-api-hardening`
-@ `e49881b`: `openapi.yaml` 2.5.0, `docs.md`, the national controllers,
-`nationalWithdrawn.js`, `jurisdiction.js`, `utils/errors.js`,
-`operationWeights.js`), stacked on PR #314 (the documented contract) and PR
-#306 (the allowance), plus `nationalAllowance.js` on `feat/national-allowance`
-and `nationalCoverageController.js` on `feat/national-launch-switch`. **None
-of the three had merged to `main` when this was written** — re-verify
-against the live API once all three deploy.
+Adds support for LexAPI's national-law surface. **Requires LexAPI API 2.8.0.**
 
-### National document shape (lex-api PR #335, API 2.8.0)
+### National document shape (API 2.8.0)
 
 The national models follow the normalized cross-jurisdiction contract — a
 client written for one country now works for every other:
@@ -94,7 +82,7 @@ client written for one country now works for every other:
   temporarily down. Legacy-shape bodies with a top-level `jurisdiction`
   (not nested in `details`); both are typed as that attribute. Neither
   charges anything.
-- **`DocumentWithdrawnError`** (410 `DOCUMENT_WITHDRAWN` — lex-api PR #320) —
+- **`DocumentWithdrawnError`** (410 `DOCUMENT_WITHDRAWN`) —
   a national document its source withdrew (a takedown, a pseudonymisation
   fix) is served nowhere: no title, no metadata, no text. Raised by
   `get_document` (typed envelope, `details: {id, jurisdiction, withdrawnAt}`)
@@ -120,7 +108,7 @@ client written for one country now works for every other:
   `include_national: bool | None` property, set once the flag was
   honoured.
 
-### Fixed (post-review)
+### Fixed
 
 - `NationalCoverageAvailability.from_` / `NationalCaseLawCoverageAvailability.from_`
   were parsed with the string helper (`_s()`), so they were always `None`
@@ -128,7 +116,7 @@ client written for one country now works for every other:
   `_i()`, typed `int | None`.
 - The national document 404 is the typed envelope
   (`{success: false, error: {code, message, details: {id, jurisdiction}}}`),
-  not the legacy bare shape it used to be — matches lex-api commit `6ec7440`.
+  not the legacy bare shape it used to be.
 - `NationalSemanticLegislationResult`'s docstring overstated how narrow
   `in_force` is: it comes from the semantic index on every hit (`True` or
   `False`); only `valid_to` (and forcing `in_force` to `False`) is limited
@@ -136,6 +124,8 @@ client written for one country now works for every other:
 - `semantic_search()` / `legislation_semantic_search()` docstrings now note
   `filters["jurisdiction"]` (must match the path, or be omitted) and that
   `language` must be one the jurisdiction is indexed in.
+- Typed national citation 404 already carries a top-level `code: NOT_FOUND`;
+  added a regression test.
 
 ### Notes
 
@@ -143,27 +133,8 @@ client written for one country now works for every other:
   server's own inconsistent wire field names for this one endpoint
   (`in_force` / `valid_to`, snake_case) — unlike every other camelCase field
   in this SDK. Intentional; do not "fix" it, it would stop matching the API.
-- National semantic responses DO carry a `credits` body block, like the
-  other credit-metered routes — lex-api PR #314 round 2 (`7b5619f`) restored
-  the envelope on the semantic routes generally (`api.js`'s router-level
-  `attachCreditsEnvelope` wraps `res.json` before the semantic router
-  charges). An earlier note here claimed the opposite; that was wrong.
-
-### lex-api PR #320 (hardening, API 2.5.0) — implemented
-
-Verified against PR #320's actual `openapi.yaml`/`docs.md`/controller diff
-(`fix/national-api-hardening`, stacked on #314):
-
-- `DocumentWithdrawnError` (410 `DOCUMENT_WITHDRAWN`) — see above.
-- Listing cursor pagination, `total_exact`/`has_more`/`next_cursor`,
-  `iter_documents()` — see above.
-- Typed national citation 404 already carries a top-level `code: NOT_FOUND`
-  — no parser change was needed (the existing legacy-shape top-level-`code`
-  fallback already handles it); added a regression test.
-- `hyde` validation on legislation semantic: no change needed —
-  `legislation_semantic_search` never had a `hyde` kwarg to begin with (no
-  `**kwargs` catch-all either), so there was nothing to strip; the existing
-  test already asserts the request body has no `hyde` key.
+- National semantic responses carry a `credits` body block, like the other
+  credit-metered routes.
 
 ## [0.2.0] — 2026-10-26
 

@@ -1987,17 +1987,7 @@ class InfoResponse(APIResponse):
         return _str_list(self._map, "supportedLanguages")
 
 
-# ── National law (launch 2026-11-03) ────────────────────────────────────
-#
-# Validated against lex-api's server code directly (server/routes/api.js,
-# server/routes/semantic.js, server/middleware/jurisdiction.js,
-# server/controllers/nationalController.js,
-# server/controllers/nationalSemanticController.js,
-# server/utils/jurisdictions.js) and the diff of lex-api PR #306 (the
-# monthly allowance for FREE/STARTER/PROFESSIONAL). The public
-# ``GET /national/coverage`` endpoint and PR #306 were not yet deployed at
-# the time this was written — re-validate against the live API once both
-# ship.
+# ── National law ──────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -2589,12 +2579,9 @@ class NationalSemanticSearchResponse(_NationalSemanticResponseBase):
     5 credits flat. ``hyde`` is accepted for API compatibility but the
     national index never rewrites: a request with ``hyde=True`` gets
     ``hyde=False`` back, never a 15-credit charge. This response carries a
-    ``credits`` block like the other routes (lex-api PR #314 round 2
-    restored the envelope on the semantic routes generally — ``api.js``'s
-    router-level ``attachCreditsEnvelope`` wraps ``res.json`` before the
-    semantic router charges); below BUSINESS it also carries the
-    ``X-National-*`` headers (``national_allowance_limit`` / ``_remaining``
-    / ``_resets_at``).
+    ``credits`` block like the other credit-metered routes; below BUSINESS
+    it also carries the ``X-National-*`` headers
+    (``national_allowance_limit`` / ``_remaining`` / ``_resets_at``).
     """
 
     @property

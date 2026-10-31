@@ -303,7 +303,7 @@ def test_async_citations_parity():
     assert resp.cited_by[0].celex_number == "32016R0679"
 
 
-# ── includeNational (citation graph + national ids, lex-api PR #314, API 2.5.0) ──
+# ── includeNational (citation graph + national ids, API 2.5.0) ──
 
 
 def test_cites_cited_by_send_include_national_and_keep_it_in_the_response():

@@ -1,23 +1,19 @@
 """National-law resource namespace: ``client.national.*``.
 
-National law launches 2026-11-03 (lex-api). Call :meth:`NationalResource.coverage`
-first: a jurisdiction that is not (yet) launched answers every other national
-endpoint with a plain 404, exactly like a path that does not exist — it never
-advertises unreleased coverage.
+Call :meth:`NationalResource.coverage` first: a jurisdiction that is not
+(yet) launched answers every other national endpoint with a plain 404,
+exactly like a path that does not exist — it never advertises unreleased
+coverage.
 
 Pricing below BUSINESS: the four non-coverage endpoints below draw from a
 monthly allowance of national calls (FREE 30, STARTER 500, PROFESSIONAL
-2,000 per UTC month; lex-api PR #306) on top of the ordinary credit cost. A
+2,000 per UTC month) on top of the ordinary credit cost. A
 used-up allowance raises :class:`~lexapi.errors.NationalAllowanceExhaustedError`
 (402) before anything is charged. BUSINESS and above have no separate limit.
 Every response from these four endpoints carries ``X-National-Limit`` /
 ``X-National-Remaining`` / ``X-National-Reset`` for FREE/STARTER/PROFESSIONAL
 accounts, read via :attr:`~lexapi._response.APIResponse.national_allowance_limit`
 / ``national_allowance_remaining`` / ``national_allowance_resets_at``.
-
-At the time this module was written, the public coverage endpoint and the
-PR #306 allowance had not yet been deployed — re-verify against the live API
-once both ship.
 """
 
 from __future__ import annotations
@@ -94,8 +90,9 @@ def _semantic_case_law_body(
         }
     )
     # hyde is accepted but never changes billing or behaviour here — the
-    # national index never rewrites (clausly answers hyde: false). Sent only
-    # when True so older deployments never see a param they don't know.
+    # national index never rewrites (the response always answers
+    # hyde: false). Sent only when True so older deployments never see a
+    # param they don't know.
     if hyde:
         body["hyde"] = True
     if include_text:

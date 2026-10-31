@@ -32,9 +32,9 @@ def capture_client(response_json, status=200, headers=None):
     return client, seen
 
 
-# ── API 2.8.0 fixtures (lex-api PR #335: one national shape for every
+# ── API 2.8.0 fixtures (one national shape for every
 # jurisdiction — every documented field present, null / [] when the source
-# has nothing; lane extras only under content.details / articles[].details).
+# has nothing; source extras only under content.details / articles[].details).
 
 
 def summary(**overrides):
@@ -339,9 +339,8 @@ def test_repeal_and_validity():
 
 
 def test_get_document_404():
-    # Typed envelope since lex-api commit 6ec7440 (part of #314's stack):
-    # the national 404 used to be the legacy bare shape, now it matches the
-    # EU document routes.
+    # The national 404 is the typed envelope, matching the EU document
+    # routes (not the legacy bare shape).
     client, _ = capture_client(
         {
             "success": False,
@@ -861,7 +860,7 @@ def test_async_national_semantic_search():
     assert resp.results[0].document_id == "AT-JUD-OGH-1"
 
 
-# ── Full-field round trip (review of #13): every key of lex-api #335's
+# ── Full-field round trip: every key of the API 2.8.0 shape's
 # NationalDocument / NationalDecision / NationalCitedNorm /
 # NationalDocumentContent / NationalArticle / textBasis / repeal populated
 # with a non-default value, and each must land on its snake_case attribute.

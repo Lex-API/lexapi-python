@@ -245,7 +245,7 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
     return 200
 ```
 
-### National law (launching 2026-11-03)
+### National law
 
 National jurisdictions (member states, and non-EU legal orders such as the UK) live under `client.national`. Call `coverage()`
 first — a jurisdiction that has not launched yet answers every other national

@@ -254,7 +254,7 @@ class CreditsExhaustedError(LexAPIError):
 class NationalAllowanceExhaustedError(LexAPIError):
     """402 ``NATIONAL_ALLOWANCE_EXHAUSTED`` — the monthly national-law call
     allowance of a plan below BUSINESS (FREE 30, STARTER 500, PROFESSIONAL
-    2,000 calls per UTC month; lex-api PR #306) is used up.
+    2,000 calls per UTC month) is used up.
 
     Raised only by the national documents and national semantic-search
     endpoints (``client.national.*``); BUSINESS and above have no separate
@@ -372,7 +372,7 @@ class NationalSemanticUnavailableError(ServiceUnavailableError):
 
 
 class DocumentWithdrawnError(LexAPIError):
-    """410 ``DOCUMENT_WITHDRAWN`` (lex-api PR #320) — a national document its
+    """410 ``DOCUMENT_WITHDRAWN`` — a national document its
     source withdrew (a takedown, a pseudonymisation fix, a robots.txt
     listing). LexAPI serves nothing of it: no title, no metadata, no text.
 

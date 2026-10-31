@@ -247,8 +247,8 @@ class APIResponse(Mapping[str, Any]):
     @property
     def national_allowance_limit(self) -> int | None:
         """Monthly national-law call allowance for FREE/STARTER/PROFESSIONAL
-        accounts (``X-National-Limit``). Absent for BUSINESS and above, for
-        preview accounts, and on every non-national response."""
+        accounts (``X-National-Limit``). Absent for BUSINESS and above, and
+        on every non-national response."""
         return _header_int(header(self.headers, "x-national-limit"))
 
     @property
