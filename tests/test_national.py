@@ -32,6 +32,46 @@ def capture_client(response_json, status=200, headers=None):
     return client, seen
 
 
+# ── API 2.8.0 fixtures (lex-api PR #335: one national shape for every
+# jurisdiction — every documented field present, null / [] when the source
+# has nothing; lane extras only under content.details / articles[].details).
+
+
+def summary(**overrides):
+    row = {
+        "id": "AT-NOR-12345",
+        "jurisdiction": "AT",
+        "language": "de",
+        "documentKind": "act",
+        "title": "Datenschutzgesetz",
+        "documentType": "Bundesgesetz (konsolidiert)",
+        "ecli": None,
+        "eli": "https://www.ris.bka.gv.at/eli/bgbl/i/1999/165",
+        "dateOfDocument": None,
+        "version": 3,
+        "fetchedAt": "2026-10-20T00:00:00.000Z",
+        "validTo": None,
+        "inForce": None,
+    }
+    row.update(overrides)
+    return row
+
+
+SUMMARY_KEYS = sorted(summary())
+CONTENT_KEYS = sorted(
+    [
+        "fullText",
+        "articles",
+        "textLanguages",
+        "textLanguage",
+        "embeddedForeignText",
+        "repeal",
+        "source",
+        "details",
+    ]
+)
+
+
 COVERAGE_BODY = {
     "updatedAt": "2026-10-28T00:00:00.000Z",
     "jurisdictions": [
@@ -119,27 +159,76 @@ def test_coverage():
 
 DOCUMENT_BODY = {
     "document": {
-        "id": "AT-NOR-12345",
-        "jurisdiction": "AT",
-        "language": "de",
-        "title": "Datenschutzgesetz",
-        "documentType": "Federal Act",
-        "ecli": None,
-        "eli": None,
-        "dateOfDocument": "2000-08-17",
-        "version": 3,
-        "fetchedAt": "2026-10-20T00:00:00.000Z",
+        **summary(),
+        "decision": None,
         "content": {
             "fullText": "§ 1 ...",
-            "articles": [],
-            "recitals": [],
-            "paragraphs": [],
-            "sections": [],
-            "tables": [],
-            "annexes": [],
+            "articles": [
+                {
+                    "number": "§ 1",
+                    "title": "Grundrecht auf Datenschutz",
+                    "section": None,
+                    "text": "(1) Jedermann hat ...",
+                    "inForceFrom": "2018-05-25",
+                    "inForceTo": None,
+                    "details": {"norId": "NOR40198753"},
+                },
+                {
+                    "number": "Anl. 1",
+                    "title": None,
+                    "section": None,
+                    "text": None,
+                    "inForceFrom": None,
+                    "inForceTo": None,
+                    "details": {"noHtmlRendition": True},
+                },
+            ],
+            "textLanguages": ["de"],
+            "textLanguage": None,
+            "embeddedForeignText": False,
+            "repeal": None,
+            "source": {"system": "RIS", "gesetzesnummer": "10001597"},
+            "details": {"kundmachungsorgan": "BGBl. I Nr. 165/1999"},
         },
         "textAvailability": {"available": True},
         "attribution": "Data source: RIS, Bundeskanzleramt Österreich (data.bka.gv.at), CC BY 4.0.",
+        "textBasis": None,
+    }
+}
+
+DECISION_BODY = {
+    "document": {
+        **summary(
+            id="DE-JUD-BFH-KBRE202550123",
+            jurisdiction="DE",
+            documentKind="decision",
+            title="Kindergeld: Berücksichtigung eines volljährigen Kindes",
+            documentType="Urteil",
+            ecli="ECLI:DE:BFH:2025:U.120625.IIIR27.24.0",
+            eli=None,
+            dateOfDocument="2025-06-12",
+            version=1,
+        ),
+        "decision": {
+            "court": "BFH 3. Senat",
+            "chamber": None,
+            "caseNumbers": ["III R 27/24"],
+            "citedNorms": [{"text": "§ 62 Abs 1a S 3 EStG 2009", "documentId": None}],
+        },
+        "content": {
+            "fullText": "Tenor ... Tatbestand ... Entscheidungsgründe ...",
+            "articles": [],
+            "textLanguages": ["de"],
+            "textLanguage": None,
+            "embeddedForeignText": False,
+            "repeal": None,
+            "source": {"system": "rechtsprechung-im-internet.de"},
+            # The source's own field names stay here, unchanged.
+            "details": {"gericht": "BFH 3. Senat", "aktenzeichen": "III R 27/24"},
+        },
+        "textAvailability": {"available": True},
+        "attribution": "Source: rechtsprechung-im-internet.de (BMJ).",
+        "textBasis": None,
     }
 }
 
@@ -157,6 +246,96 @@ def test_get_document():
     assert doc.jurisdiction == "AT"
     assert doc.content.full_text == "§ 1 ..."
     assert doc.attribution.startswith("Data source: RIS")
+    assert sorted(seen_keys(DOCUMENT_BODY)) == sorted(SUMMARY_KEYS)
+
+
+def seen_keys(body):
+    """The summary keys of a document body (fixture sanity: every summary field present)."""
+    return [k for k in body["document"] if k in SUMMARY_KEYS]
+
+
+def test_get_document_act_shape():
+    client, _ = capture_client(DOCUMENT_BODY)
+    with client:
+        doc = client.national.get_document("AT", "AT-NOR-12345").document
+
+    assert doc.document_kind == "act"
+    assert doc.is_act and not doc.is_decision
+    assert doc.decision is None
+    assert doc.text_basis is None
+    assert doc.ecli is None and doc.in_force is None and doc.valid_to is None
+    assert sorted(doc.content.raw) == CONTENT_KEYS
+    first, annex = doc.content.articles
+    assert first.number == "§ 1"
+    assert first.title == "Grundrecht auf Datenschutz"
+    assert first.in_force_from == "2018-05-25"
+    assert first.details == {"norId": "NOR40198753"}
+    # A unit the source publishes no text for: None, never "".
+    assert annex.text is None and annex.number == "Anl. 1"
+    assert doc.content.text_languages == ["de"]
+    assert doc.content.text_language is None
+    assert doc.content.embedded_foreign_text is False
+    assert doc.content.repeal is None
+    assert doc.content.source["system"] == "RIS"
+    assert doc.content.details == {"kundmachungsorgan": "BGBl. I Nr. 165/1999"}
+
+
+def test_get_document_decision_shape():
+    client, _ = capture_client(DECISION_BODY)
+    with client:
+        doc = client.national.get_document("DE", "DE-JUD-BFH-KBRE202550123").document
+
+    assert doc.is_decision
+    assert doc.decision.court == "BFH 3. Senat"
+    assert doc.decision.chamber is None
+    assert doc.decision.case_numbers == ["III R 27/24"]
+    assert doc.decision.cited_norms[0].text == "§ 62 Abs 1a S 3 EStG 2009"
+    assert doc.decision.cited_norms[0].document_id is None
+    assert doc.content.articles == []
+    assert doc.date_of_document == "2025-06-12"
+
+
+def test_decision_without_text_keeps_decision_block():
+    body = {
+        "document": {
+            **DECISION_BODY["document"],
+            "content": None,
+            "textAvailability": {"available": False, "reason": "unknown"},
+        }
+    }
+    client, _ = capture_client(body)
+    with client:
+        doc = client.national.get_document("DE", "DE-JUD-BFH-KBRE202550123").document
+
+    assert doc.content is None
+    assert doc.text_availability.available is False
+    assert doc.decision.case_numbers == ["III R 27/24"]
+
+
+def test_repeal_and_validity():
+    body = {
+        "document": {
+            **DOCUMENT_BODY["document"],
+            "validTo": "2024-12-31",
+            "inForce": False,
+            "content": {
+                **DOCUMENT_BODY["document"]["content"],
+                "repeal": {
+                    "validTo": "2024-12-31",
+                    "basis": "aufgehoben durch BGBl. I Nr. 1/2025",
+                    "detectedAt": "2025-01-03T00:00:00.000Z",
+                },
+            },
+        }
+    }
+    client, _ = capture_client(body)
+    with client:
+        doc = client.national.get_document("AT", "AT-NOR-12345").document
+
+    assert doc.valid_to == "2024-12-31"
+    assert doc.in_force is False
+    assert doc.content.repeal.valid_to == "2024-12-31"
+    assert doc.content.repeal.basis.startswith("aufgehoben")
 
 
 def test_get_document_404():
@@ -194,15 +373,17 @@ LIST_BODY = {
     "hasMore": False,
     "nextCursor": None,
     "results": [
-        {
-            "id": "AT-NOR-12345",
-            "jurisdiction": "AT",
-            "language": "de",
-            "title": "Datenschutzgesetz",
-            "documentType": "Federal Act",
-            "version": 3,
-            "fetchedAt": "2026-10-20T00:00:00.000Z",
-        }
+        summary(),
+        summary(
+            id="AT-JUD-JJT_20250115_OGH0002_0060OB00123_24X0000_000",
+            documentKind="decision",
+            title=None,
+            documentType="Entscheidungstext (Justiz)",
+            ecli="ECLI:AT:OGH0002:2025:0060OB00123.24X.0115.000",
+            eli=None,
+            dateOfDocument="2025-01-15",
+            version=1,
+        ),
     ],
 }
 
@@ -227,6 +408,12 @@ def test_list_documents():
     assert resp.next_cursor is None
     assert resp.results[0].id == "AT-NOR-12345"
     assert resp.results[0].content is None  # summary rows carry no content
+    assert resp.results[0].decision is None
+    assert resp.results[0].document_kind == "act"
+    assert resp.results[1].is_decision
+    assert resp.results[1].title is None
+    assert resp.results[1].date_of_document == "2025-01-15"
+    assert all(sorted(row) == SUMMARY_KEYS for row in LIST_BODY["results"])
 
 
 def test_list_documents_cursor_paging():
@@ -238,15 +425,7 @@ def test_list_documents_cursor_paging():
         "includeRepealed": False,
         "hasMore": True,
         "nextCursor": "c1",
-        "results": [
-            {
-                "id": "AT-NOR-1",
-                "jurisdiction": "AT",
-                "language": "de",
-                "version": 1,
-                "fetchedAt": "2026-10-01T00:00:00.000Z",
-            }
-        ],
+        "results": [summary(id="AT-NOR-1", version=1)],
     }
     page2 = {
         "jurisdiction": "AT",
@@ -256,15 +435,7 @@ def test_list_documents_cursor_paging():
         "includeRepealed": False,
         "hasMore": False,
         "nextCursor": None,
-        "results": [
-            {
-                "id": "AT-NOR-2",
-                "jurisdiction": "AT",
-                "language": "de",
-                "version": 1,
-                "fetchedAt": "2026-10-02T00:00:00.000Z",
-            }
-        ],
+        "results": [summary(id="AT-NOR-2", version=1)],
     }
     calls = {"n": 0, "params": []}
 
@@ -292,15 +463,7 @@ def test_async_iter_documents_cursor_paging():
         "includeRepealed": False,
         "hasMore": True,
         "nextCursor": "c1",
-        "results": [
-            {
-                "id": "AT-NOR-1",
-                "jurisdiction": "AT",
-                "language": "de",
-                "version": 1,
-                "fetchedAt": "2026-10-01T00:00:00.000Z",
-            }
-        ],
+        "results": [summary(id="AT-NOR-1", version=1)],
     }
     page2 = {
         "jurisdiction": "AT",
@@ -310,15 +473,7 @@ def test_async_iter_documents_cursor_paging():
         "includeRepealed": False,
         "hasMore": False,
         "nextCursor": None,
-        "results": [
-            {
-                "id": "AT-NOR-2",
-                "jurisdiction": "AT",
-                "language": "de",
-                "version": 1,
-                "fetchedAt": "2026-10-02T00:00:00.000Z",
-            }
-        ],
+        "results": [summary(id="AT-NOR-2", version=1)],
     }
     calls = {"n": 0, "params": []}
 
@@ -461,6 +616,17 @@ SEMANTIC_CASE_LAW_BODY = {
             "metadata": {"celex_id": "AT-JUD-OGH-1"},
             "validTo": "2024-01-01",
             "inForce": False,
+            "document": summary(
+                id="AT-JUD-OGH-1",
+                documentKind="decision",
+                title=None,
+                documentType="Entscheidungstext (Justiz)",
+                ecli="ECLI:AT:OGH:2020:RS0123",
+                eli=None,
+                dateOfDocument="2020-03-04",
+                validTo="2024-01-01",
+                inForce=False,
+            ),
             "attribution": "Data source: RIS",
         }
     ],
@@ -493,6 +659,11 @@ def test_national_semantic_search():
     assert r.valid_to == "2024-01-01"
     assert r.in_force is False
     assert r.attribution == "Data source: RIS"
+    # API 2.8.0: the listing-shaped `document` summary on every hit.
+    assert r.document.id == "AT-JUD-OGH-1"
+    assert r.document.is_decision
+    assert r.document.ecli == "ECLI:AT:OGH:2020:RS0123"
+    assert r.document.date_of_document == "2020-03-04"
     assert resp.national_allowance_limit == 2000
     assert resp.national_allowance_remaining == 1999
     assert resp.national_allowance_resets_at == "2026-12-01T00:00:00.000Z"
@@ -511,11 +682,17 @@ SEMANTIC_LEGISLATION_BODY = {
             "article_ref": "§ 1",
             "law_id": "AT-NOR-12345",
             "law_title": "Datenschutzgesetz",
+            # API 2.8.0: always present, null when the index has nothing.
+            "section": None,
+            "language": "de",
+            "in_force": False,
+            "valid_from": None,
+            "valid_to": "2023-05-01",
+            "law_type": None,
             "documentId": "AT-NOR-12345",
             "jurisdiction": "AT",
             "metadata": {},
-            "in_force": False,
-            "valid_to": "2023-05-01",
+            "document": summary(validTo="2023-05-01", inForce=False),
             "attribution": "Data source: RIS",
         }
     ],
@@ -536,6 +713,11 @@ def test_national_legislation_semantic_search():
     assert r.in_force is False
     assert r.valid_to == "2023-05-01"
     assert r.attribution == "Data source: RIS"
+    assert r.jurisdiction == "AT"
+    assert r.section is None and r.valid_from is None and r.law_type is None
+    assert r.language == "de"
+    assert r.document.document_kind == "act"
+    assert r.document.valid_to == "2023-05-01"
 
 
 def test_national_allowance_exhausted_error():

@@ -259,8 +259,10 @@ for j in coverage.jurisdictions:
         for source in j.sources:
             print(source.name, source.licence, source.attribution)  # show this to users
 
-doc = client.national.get_document("AT", "AT-NOR-12345")
-print(doc.document.title, doc.document.attribution)  # always show attribution
+doc = client.national.get_document("AT", "AT-NOR-10001597").document
+print(doc.title, doc.attribution)  # always show attribution
+for article in doc.content.articles if doc.content else []:
+    print(article.number, article.title, article.text or "(no text)")
 
 page = client.national.list_documents(
     "AT", q="Datenschutz", limit=20
@@ -273,9 +275,41 @@ for p in client.national.iter_documents(
 
 hits = client.national.semantic_search("AT", "data breach notification duty")
 for r in hits.results:
-    print(r.document_id, r.score, r.attribution)
+    print(r.document_id, r.score, r.attribution, r.document.ecli, r.document.date_of_document)
 
 legislation_hits = client.national.legislation_semantic_search("AT", "right to erasure")
+```
+
+**One shape for every country (requires LexAPI API 2.8.0).** National
+documents have the same fields, types and formats in every jurisdiction, so
+code written for one country works for all of them. Every field is always
+present — one the source does not provide is `None` (or `[]`):
+
+- `document_kind` (`"act"` | `"decision"`; `is_act` / `is_decision`) tells
+  legislation from case law everywhere; `document_type` is the source's own
+  label, in its language.
+- `decision` (`NationalDecision`) — on a decision, `court`, `chamber`,
+  `case_numbers` and `cited_norms` (`NationalCitedNorm`: `text`,
+  `document_id`), read server-side from whichever fields the source uses (also
+  when the decision has no text); `None` for acts.
+- `content` (`NationalDocumentContent`, or `None` when there is no text — see
+  `text_availability`): `full_text`, `articles` (`NationalArticle`: `number`,
+  `title`, `section`, `text` — `None` when the source publishes no text for
+  that unit — `in_force_from`, `in_force_to`, `details`), `text_languages`,
+  `text_language`, `embedded_foreign_text`, `repeal`, `source` and `details`.
+  What a source adds beyond these fields is under `content.details` /
+  `article.details` — source-specific, keys differ by country.
+- Semantic hits carry `document` (the listing's summary of the matched
+  document); legislation hits always carry `law_title`, `article_ref`,
+  `section`, `language`, `in_force`, `valid_from`, `valid_to` and `law_type`,
+  `None` when the index has nothing.
+
+```python
+d = client.national.get_document("DE", "DE-JUD-BFH-KBRE202550123").document
+if d.is_decision and d.decision:
+    print(d.decision.court, ", ".join(d.decision.case_numbers))  # BFH 3. Senat III R 27/24
+    for norm in d.decision.cited_norms:
+        print(norm.text, norm.document_id or "(not identified)")
 ```
 
 **Pricing below BUSINESS** (FREE, STARTER, PROFESSIONAL): each call to the four

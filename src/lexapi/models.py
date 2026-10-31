@@ -2149,8 +2149,10 @@ class NationalCoverageResponse(APIResponse):
 
 @dataclass(frozen=True)
 class NationalTextBasis:
-    """``textBasis`` — present only for lanes that label what their text is
-    (e.g. PL: the act as announced vs. an official consolidated text)."""
+    """``textBasis`` — only from sources that say which text they publish
+    (e.g. PL: the act as announced vs. an official consolidated text). The
+    API sends ``textBasis: null`` for every other source (API 2.8.0), which
+    parses to ``NationalDocument.text_basis is None``."""
 
     basis: str | None
     as_of: str | None
@@ -2175,9 +2177,177 @@ class NationalTextBasis:
         )
 
 
+NationalDocumentKind = Literal["act", "decision"]
+"""``documentKind`` — what a national document is, in one vocabulary for
+every jurisdiction (API 2.8.0): ``"act"`` (legislation) or ``"decision"``
+(case law). Use it, not ``document_type`` (the source's own label)."""
+
+_DOCUMENT_KINDS = ("act", "decision")
+
+
+@dataclass(frozen=True)
+class NationalCitedNorm:
+    """One entry of :attr:`NationalDecision.cited_norms`.
+
+    ``text`` is the source's citation string (``"§ 62 Abs 1a S 3 EStG 2009"``);
+    ``document_id`` the LexAPI id of the cited act when the source identifies
+    it (CZ, SI, PL, SE) — whether or not LexAPI holds that act — else ``None``.
+    """
+
+    text: str | None
+    document_id: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCitedNorm:
+        return cls(text=_s(data, "text"), document_id=_s(data, "documentId"))
+
+
+@dataclass(frozen=True)
+class NationalDecision:
+    """``decision`` — a national decision's case-law metadata (API 2.8.0).
+
+    The same fields in every jurisdiction; values are the source's own (local
+    language and spelling). The server reads them from whichever field the
+    source uses (Austria's ``gericht``, Germany's ``aktenzeichen``, …) — read
+    these, never the raw source keys under ``content.details``.
+
+    - ``court`` — the deciding court as the source names it (``"OGH"``,
+      ``"BFH 3. Senat"``, ``"Gerechtshof Amsterdam"``), or ``None``.
+    - ``chamber`` — chamber / section / department where the source names it
+      apart from the court (``"Sección Cuarta"``); ``None`` otherwise.
+    - ``case_numbers`` — docket numbers as written (``["III R 27/24"]``); ``[]``
+      when the source gives none.
+    - ``cited_norms`` — legislation the decision cites, where the source lists
+      it; ``[]`` otherwise.
+    """
+
+    court: str | None
+    chamber: str | None
+    case_numbers: list[str]
+    cited_norms: list[NationalCitedNorm]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalDecision:
+        return cls(
+            court=_s(data, "court"),
+            chamber=_s(data, "chamber"),
+            case_numbers=_str_list(data, "caseNumbers"),
+            cited_norms=_parse_items(data, "citedNorms", NationalCitedNorm),
+        )
+
+
+@dataclass(frozen=True)
+class NationalArticle:
+    """One unit of a national act (article, section, annex) — the same fields
+    in every jurisdiction (API 2.8.0).
+
+    ``number`` is the source's own label (``"§ 1"``, ``"Art. 1"``,
+    ``"1 kap. 1 §"``; ``None`` for an unnumbered unit); ``section`` the part
+    or chapter it sits in; ``text`` is ``None`` when the source publishes no
+    text for the unit — never an empty provision; ``in_force_from`` /
+    ``in_force_to`` (``YYYY-MM-DD``) where the source dates units (AT, ES,
+    FR). ``details`` holds the source's other unit fields (unit ids, kinds,
+    notes) — source-specific.
+    """
+
+    number: str | None
+    title: str | None
+    section: str | None
+    text: str | None
+    in_force_from: str | None
+    in_force_to: str | None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalArticle:
+        return cls(
+            number=_s(data, "number"),
+            title=_s(data, "title"),
+            section=_s(data, "section"),
+            text=_s(data, "text"),
+            in_force_from=_s(data, "inForceFrom"),
+            in_force_to=_s(data, "inForceTo"),
+            details=_dict(data, "details"),
+        )
+
+
+@dataclass(frozen=True)
+class NationalRepeal:
+    """``content.repeal`` — the source's confirmation behind ``valid_to``."""
+
+    valid_to: str | None
+    basis: str | None
+    detected_at: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalRepeal:
+        return cls(
+            valid_to=_s(data, "validTo"),
+            basis=_s(data, "basis"),
+            detected_at=_s(data, "detectedAt"),
+        )
+
+
+@dataclass(frozen=True)
+class NationalDocumentContent:
+    """``content`` of a national document — a closed key set, the same in
+    every jurisdiction (API 2.8.0).
+
+    - ``full_text``; ``articles`` (:class:`NationalArticle`, in order; ``[]``
+      for decisions and for acts the source publishes without units).
+    - ``text_languages`` — the languages the text is in (Dutch treaties: as
+      BWB publishes them, e.g. ``["en", "nl"]``; otherwise the one language).
+      ``text_language`` — set when the whole text is in one language other
+      than the document's ``language``. ``embedded_foreign_text`` — the text
+      includes text in another language.
+    - ``repeal`` (:class:`NationalRepeal`, or ``None``).
+    - ``source`` (provenance) and ``details`` (everything else the source
+      provides, under its own field names) — source-specific, keys differ by
+      jurisdiction.
+    """
+
+    full_text: str
+    articles: list[NationalArticle]
+    text_languages: list[str]
+    text_language: str | None
+    embedded_foreign_text: bool
+    repeal: NationalRepeal | None
+    source: dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalDocumentContent:
+        repeal = _opt_dict(data, "repeal")
+        return cls(
+            full_text=_s(data, "fullText") or "",
+            articles=_parse_items(data, "articles", NationalArticle),
+            text_languages=_str_list(data, "textLanguages"),
+            text_language=_s(data, "textLanguage"),
+            embedded_foreign_text=_b(data, "embeddedForeignText") is True,
+            repeal=NationalRepeal.from_dict(repeal) if repeal is not None else None,
+            source=_dict(data, "source"),
+            details=_dict(data, "details"),
+            raw=data,
+        )
+
+
 @dataclass(frozen=True)
 class NationalDocument:
-    """A document from a national-law jurisdiction (not EUR-Lex).
+    """A document from a national-law jurisdiction (not EUR-Lex) — one shape
+    for every jurisdiction (API 2.8.0).
+
+    Listing rows (:attr:`NationalDocumentListResponse.results`) and every
+    semantic hit's ``document`` are the summary: ``id``, ``jurisdiction``,
+    ``language``, ``document_kind`` (``"act"`` | ``"decision"``), ``title``,
+    ``document_type`` (the source's own label), ``ecli``, ``eli``,
+    ``date_of_document`` (``YYYY-MM-DD``), ``version``, ``fetched_at``,
+    ``valid_to`` and ``in_force`` — always sent, ``None`` when the source has
+    nothing. A full read (:meth:`~lexapi.national.NationalResource.get_document`)
+    adds ``decision`` (:class:`NationalDecision` on a decision, ``None`` for
+    acts — also when the decision has no text), ``content``
+    (:class:`NationalDocumentContent`), ``text_availability``,
+    ``attribution`` and ``text_basis``.
 
     National reads are always served from the LexAPI corpus — there is no
     live-fetch fallback, so ``content is None`` means the source publishes
@@ -2193,6 +2363,7 @@ class NationalDocument:
     id: str | None
     jurisdiction: str | None
     language: str | None
+    document_kind: NationalDocumentKind | None
     title: str | None
     document_type: str | None
     ecli: str | None
@@ -2202,21 +2373,37 @@ class NationalDocument:
     fetched_at: str | None
     valid_to: str | None
     in_force: bool | None
-    content: DocumentContent | None
+    decision: NationalDecision | None
+    content: NationalDocumentContent | None
     text_availability: TextAvailability | None
     attribution: str | None
     text_basis: NationalTextBasis | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
+    @property
+    def is_decision(self) -> bool:
+        """``True`` for case law (``document_kind == "decision"``), in every
+        jurisdiction. On a full read, ``decision`` then carries the court,
+        chamber, case numbers and cited norms."""
+        return self.document_kind == "decision"
+
+    @property
+    def is_act(self) -> bool:
+        """``True`` for legislation (``document_kind == "act"``)."""
+        return self.document_kind == "act"
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NationalDocument:
-        content = data.get("content")
-        availability = data.get("textAvailability")
+        content = _opt_dict(data, "content")
+        availability = _opt_dict(data, "textAvailability")
         text_basis = _opt_dict(data, "textBasis")
+        decision = _opt_dict(data, "decision")
+        kind = _s(data, "documentKind")
         return cls(
             id=_s(data, "id"),
             jurisdiction=_s(data, "jurisdiction"),
             language=_s(data, "language"),
+            document_kind=kind if kind in _DOCUMENT_KINDS else None,  # type: ignore[arg-type]
             title=_s(data, "title"),
             document_type=_s(data, "documentType"),
             ecli=_s(data, "ecli"),
@@ -2226,9 +2413,10 @@ class NationalDocument:
             fetched_at=_s(data, "fetchedAt"),
             valid_to=_s(data, "validTo"),
             in_force=_b(data, "inForce"),
-            content=DocumentContent.from_dict(content) if isinstance(content, dict) else None,
+            decision=NationalDecision.from_dict(decision) if decision is not None else None,
+            content=NationalDocumentContent.from_dict(content) if content is not None else None,
             text_availability=(
-                TextAvailability.from_dict(availability) if isinstance(availability, dict) else None
+                TextAvailability.from_dict(availability) if availability is not None else None
             ),
             attribution=_s(data, "attribution"),
             text_basis=NationalTextBasis.from_dict(text_basis) if text_basis is not None else None,
@@ -2295,7 +2483,9 @@ class NationalDocumentListResponse(APIResponse):
 
     @property
     def results(self) -> list[NationalDocument]:
-        """Summaries only: no ``content`` / ``textAvailability`` / ``attribution``."""
+        """Summaries only (every summary field present, ``None`` when the
+        source has nothing): no ``decision`` / ``content`` /
+        ``text_availability`` / ``attribution`` — those are ``None``."""
         return _parse_items(self._map, "results", NationalDocument)
 
 
@@ -2303,11 +2493,16 @@ class NationalDocumentListResponse(APIResponse):
 class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     """A :class:`SemanticCaseLawResult` plus the national extras the
     controller adds: ``document_id`` / ``jurisdiction`` (also mirrored into
-    ``metadata.celex_id``), ``valid_to`` / ``in_force`` (only present when a
-    confirmed repeal overrides the hit toward *not* in force) and
-    ``attribution`` (always show it next to the content)."""
+    ``metadata.celex_id``), ``document`` (the matched decision as the
+    listing returns it — a :class:`NationalDocument` summary with the same
+    fields in every jurisdiction, whatever metadata the index carries;
+    API 2.8.0), ``valid_to`` / ``in_force`` (only present when the source
+    recorded an end of validity) and ``attribution`` (always show it next to
+    the content). Which index fields (``court``, ``case_number``, …) are
+    filled depends on the national source — prefer ``document``."""
 
     document_id: str | None = None
+    document: NationalDocument | None = None
     valid_to: str | None = None
     in_force: bool | None = None
     attribution: str | None = None
@@ -2315,9 +2510,11 @@ class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NationalSemanticCaseLawResult:
         base = SemanticCaseLawResult.from_dict(data)
+        document = _opt_dict(data, "document")
         return cls(
             **{f.name: getattr(base, f.name) for f in base.__dataclass_fields__.values()},
             document_id=_s(data, "documentId"),
+            document=NationalDocument.from_dict(document) if document is not None else None,
             valid_to=_s(data, "validTo"),
             in_force=_b(data, "inForce"),
             attribution=_s(data, "attribution"),
@@ -2328,34 +2525,49 @@ class NationalSemanticCaseLawResult(SemanticCaseLawResult):
 class NationalSemanticLegislationResult(SemanticLegislationResult):
     """A :class:`SemanticLegislationResult` plus the national extras.
 
-    ``law_id`` / ``document_id`` are the national id (e.g. ``AT-NOR-...``).
-    Quirk straight from the server: unlike every camelCase field elsewhere
-    in this SDK, ``in_force`` / ``valid_to`` here are the server's own
-    snake_case wire names (``in_force`` / ``valid_to``, not ``inForce`` /
-    ``validTo``) — do not "fix" this, it would stop matching the API.
+    ``law_id`` / ``document_id`` are the national id (e.g. ``AT-NOR-...``);
+    ``document`` is the matched act as the listing returns it (a
+    :class:`NationalDocument` summary; API 2.8.0). Unlike the EU hit, the
+    API always sends ``law_title``, ``article_ref`` (the unit's label, as in
+    ``content.articles[].number``), ``section``, ``language``, ``in_force``,
+    ``valid_from``, ``valid_to`` and ``law_type`` — ``None`` when the index
+    has nothing for the unit (which of them it has differs by jurisdiction).
 
-    ``in_force`` comes from the semantic index on every hit (``True`` or
-    ``False``) — it is not limited to the override case. ``valid_to`` is
-    narrower: LexAPI's own corpus row only ever adds it (and forces
-    ``in_force`` to ``False``) when it independently confirms a repeal the
-    index has not caught up with yet; it never asserts an act IS in force.
+    Quirk straight from the server: unlike every camelCase field elsewhere
+    in this SDK, these index fields are the server's own snake_case wire
+    names (``in_force`` / ``valid_from`` / ``valid_to`` / ``law_type``) —
+    do not "fix" this, it would stop matching the API.
+
+    ``in_force`` comes from the semantic index, as of today (``None`` when
+    unknown). LexAPI's own corpus row only ever forces it to ``False`` (and
+    sets ``valid_to``) when it independently confirms a repeal the index has
+    not caught up with yet; it never asserts an act IS in force.
     """
 
     document_id: str | None = None
+    jurisdiction: str | None = None
+    document: NationalDocument | None = None
     in_force: bool | None = None
+    valid_from: str | None = None
     valid_to: str | None = None
+    law_type: str | None = None
     attribution: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NationalSemanticLegislationResult:
         base = SemanticLegislationResult.from_dict(data)
+        document = _opt_dict(data, "document")
         return cls(
             **{f.name: getattr(base, f.name) for f in base.__dataclass_fields__.values()},
             document_id=_s(data, "documentId"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document=NationalDocument.from_dict(document) if document is not None else None,
             # Server wire names are snake_case here (in_force / valid_to,
             # not inForce / validTo) — see the class docstring.
             in_force=_b(data, "in_force"),
+            valid_from=_s(data, "valid_from"),
             valid_to=_s(data, "valid_to"),
+            law_type=_s(data, "law_type"),
             attribution=_s(data, "attribution"),
         )
 

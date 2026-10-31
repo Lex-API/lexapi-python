@@ -7,8 +7,10 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 ## [0.3.0] — 2026-10-28
 
 Adds support for LexAPI's national-law surface, ahead of its launch
-(2026-11-03). **Requires LexAPI API 2.5.0** (lex-api PRs #306, #314 and #320
-— the allowance, the documented contract and the pre-launch hardening pass).
+(2026-11-03). **Requires LexAPI API 2.8.0** (lex-api PRs #306, #314 and #320
+— the allowance, the documented contract and the pre-launch hardening pass —
+plus #335, the one national document shape for every jurisdiction; see
+"National document shape" below).
 This round was verified against lex-api **PR #320** (`fix/national-api-hardening`
 @ `e49881b`: `openapi.yaml` 2.5.0, `docs.md`, the national controllers,
 `nationalWithdrawn.js`, `jurisdiction.js`, `utils/errors.js`,
@@ -17,6 +19,32 @@ This round was verified against lex-api **PR #320** (`fix/national-api-hardening
 and `nationalCoverageController.js` on `feat/national-launch-switch`. **None
 of the three had merged to `main` when this was written** — re-verify
 against the live API once all three deploy.
+
+### National document shape (lex-api PR #335, API 2.8.0)
+
+The national models follow the normalized cross-jurisdiction contract — a
+client written for one country now works for every other:
+
+- `NationalDocument` (listing rows, full documents, and every semantic hit's
+  new `document`) gains `document_kind` (`"act"` | `"decision"`, type
+  `NationalDocumentKind`) with `is_act` / `is_decision`; every summary field
+  (`title`, `document_type`, `ecli`, `eli`, `date_of_document` `YYYY-MM-DD`,
+  `valid_to`, `in_force`) is always sent, `None` when the source has nothing.
+- **`decision`** (`NationalDecision`: `court`, `chamber`, `case_numbers`,
+  `cited_norms` of `NationalCitedNorm(text, document_id)`) on a decision,
+  `None` for acts — served also when the decision has no text.
+- `content` is now `NationalDocumentContent` (`full_text`, `articles` of
+  `NationalArticle(number, title, section, text, in_force_from, in_force_to,
+  details)`, `text_languages`, `text_language`, `embedded_foreign_text`,
+  `repeal` (`NationalRepeal`), `source`, `details`) instead of the EU
+  `DocumentContent`. Source-specific keys (Austria's `gericht`, Germany's
+  `aktenzeichen`, unit ids, …) live only under `content.details` /
+  `article.details` — read `decision` instead. `text_basis` is `None` for
+  every source that does not label its text.
+- `NationalSemanticCaseLawResult.document` / `NationalSemanticLegislationResult.document`
+  (the matched document's summary); legislation hits add `jurisdiction`,
+  `valid_from` and `law_type`, and the index fields are always sent (`None`
+  when the index has nothing).
 
 ### Added
 

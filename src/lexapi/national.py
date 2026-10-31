@@ -160,6 +160,11 @@ class NationalResource:
         hold. Below BUSINESS, counts against the monthly national-call
         allowance (:class:`~lexapi.errors.NationalAllowanceExhaustedError`
         on 402).
+
+        The document has one shape for every jurisdiction (API 2.8.0):
+        ``document_kind`` (``"act"`` | ``"decision"``), ``decision`` (court,
+        chamber, case numbers, cited norms — ``None`` for acts) and the
+        closed :class:`~lexapi.models.NationalDocumentContent`.
         """
         return self._client._request(
             "GET",
