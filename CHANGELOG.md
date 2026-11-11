@@ -4,6 +4,87 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (0.x: minors may break, documented here).
 
+## [0.4.0] — 2026-11-11
+
+Syncs the citation graph with LexAPI API 2.10.0–2.13.0. **Requires LexAPI
+API 2.13.0** for every field below; older servers simply leave the new
+fields `None`. No breaking changes: every new parameter is keyword-only and
+optional, every new model field has a default.
+
+### Added
+
+- **`client.citations.transposition(celex, *, jurisdictions=None, resolved_only=None, language=None)`**
+  (sync + async) — `GET /citations/transposition/{celex}` (5 credits, every
+  plan): the measures the member states notified to the Commission for an
+  EU act (CELEX sector 3), grouped by country (`TranspositionResponse`:
+  `document`, `source_cellar` (`TranspositionCellarSource`), `source_lanes`,
+  `note`, `jurisdictions` of `TranspositionCountry` (`jurisdiction`, `live`,
+  `counts`, `measures`), `truncated`, `include_national`,
+  `terms_required`; `TranspositionMeasure`: `id`, `resolved`,
+  `resolution`, `resolution_basis` (`TranspositionResolutionBasis`),
+  `provenance`, `citation_type`, `title`, `type_act`, `official_journal`
+  (`TranspositionOfficialJournal`), `reference`, `eli`, `link`, `cellar`
+  (`TranspositionCellarRecord`)). The holdings fields (`id`, `resolved`,
+  `resolution`, `resolution_basis`, `counts.resolved`, `source_lanes`) are
+  filled on BUSINESS, SCALE and ENTERPRISE for live jurisdictions and
+  `None` otherwise; `resolved_only=True` keeps only the held measures. A
+  CELEX that is not an EU act raises `NotFoundError`.
+- **`client.citations.counterparts(id, *, jurisdictions=None, language=None)`**
+  (sync + async) — `GET /citations/counterparts/{id}` (20 credits,
+  BUSINESS and above): a national document's counterparts in the other
+  live jurisdictions, through the EU acts it transposes or implements
+  (`CounterpartsResponse`: `document`, `via` of `CounterpartVia` (`eu_act`
+  (`CounterpartEuAct`, with `notified_measures`), `edge`, `counterparts`
+  of `Counterpart` (`jurisdiction`, `id`, `resolved`, `title`,
+  `citation_type`, `provenance`, `rank`), `truncated`), `truncated`). A
+  lookup past its server-side budget raises `TimeoutError` (503,
+  `partial`, refunded).
+- **Filters on `cited_by`, `cites`, `network`, `path`, `related`** (and the
+  `iter_cited_by` / `iter_cites` walks): `provenance`, `jurisdictions` and
+  `resolution`, and `citation_type` now also takes a list — each one value
+  or a list/tuple, sent comma-separated. `language` (the language of the
+  titles filled in from the corpus) on every citation read. `unresolved`
+  on `cites` and `network`.
+- **Provenance and resolution on every edge:** `CitationEdge.provenance`
+  / `.resolution`; `CitationNeighbour.edge_details` (list of
+  `CitationEdgeKind`: `citation_type`, `provenance`, `resolution`).
+- **Node identity:** `id`, `jurisdiction`, `document_kind` on
+  `CitationDocumentGroup`, `CitationNeighbour`, `CitationPathNode` and
+  `RelatedDocument` (`CitationNode` for the new endpoints' documents);
+  `title_source` on groups and neighbours; `has_resume` / `has_summary`
+  on inbound groups.
+- **Paging totals:** `total_edges` and `counts_source` on `CitedByResponse`
+  / `CitesResponse`; `cites_edge_total`, `cited_by_edge_total` and
+  `counts_source` on `CitationNetworkResponse` (`None` when partial).
+- **Unresolved references:** `unresolved` (list of `UnresolvedReference`:
+  `kind`, `text`, `parsed_key`, `status`, `target_id`) and
+  `unresolved_truncated` on `CitesResponse` / `CitationNetworkResponse`.
+- **`CitationStatsResponse`:** `cached_at`, `cache_ttl_seconds`, and with
+  `include_national=True` `by_jurisdiction` (`CitationJurisdictionCount`),
+  `by_provenance` and `transposition` (`CitationStatsTransposition`).
+- **National coverage:** `NationalJurisdictionCoverage.citation_graph`
+  (`NationalCitationGraph`: `methods` (`NationalCitationGraphMethods`,
+  with `unmeasured`), `edges`, `decision_resolution_rate`, `act_eu_rate`,
+  `text_pattern_rate`, `transposition`, `precision`
+  (`NationalCitationGraphPrecision`), `measured_at`, `nim_resolved_rate`,
+  `nim_measured_at`, `floors` (`NationalCitationGraphFloors`)).
+- **Errors:** `InvalidParamsError.param` / `.allowed` (an unknown citation
+  filter value names the parameter and its allowed values, in either
+  envelope); `TimeoutError.partial` / `.partial_reason` / `.timeout_ms`;
+  new `NationalTermsNotAcceptedError` (403 `NATIONAL_TERMS_NOT_ACCEPTED`,
+  `.terms_version`, `.accept_url`, `.terms_url`).
+- **Type aliases:** `CitationType`, `CitationProvenance`,
+  `CitationResolution`, `CountsSource`, `GraphDocumentKind`,
+  `UnmeasuredReason`, with the tuples `CITATION_TYPES` (now including
+  `transposition`), `CITATION_PROVENANCES`, `CITATION_RESOLUTIONS`. Values
+  are not validated client-side; the server answers an unknown one with
+  `InvalidParamsError`.
+
+### Changed
+
+- `iter_cited_by` / `iter_cites` stop once `offset` reaches `total_edges`
+  when the server sends it, saving the final empty page.
+
 ## [0.3.0] — 2026-10-28
 
 Adds support for LexAPI's national-law surface. **Requires LexAPI API 2.8.0.**

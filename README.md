@@ -165,7 +165,8 @@ The typed citation graph lives under `client.citations`:
 client.citations.extract("32016R0679")  # crawl + persist edges (5 credits, 1 if already done)
 
 inbound = client.citations.cited_by("32008R1272", citation_type="corrigendum", limit=50)
-print(inbound.total_citations, "edges;", inbound.unique_documents, "documents in this page")
+print(inbound.total_edges, "edge rows;", inbound.total_citations, "document pairs")
+print(inbound.counts_source)  # "stats" or "counted" — both exact for the request
 print(inbound.relation_sync.status)  # Cellar refresh state of amendment/corrigendum/repeal edges
 
 for group in client.citations.iter_cited_by("32008R1272"):  # walks every edge page (1 credit each)
@@ -188,6 +189,71 @@ print(stats.most_cited[0].celex_number)
 with_national = client.citations.cited_by("32016R0679", include_national=True)
 print(with_national.include_national)  # present once honoured; None while no jurisdiction is live
 national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
+```
+
+Every edge says where it comes from (`provenance`) and how its target was
+identified (`resolution`, national edges only); every node carries `id`,
+`jurisdiction` and `document_kind`. The edge reads (`cited_by`, `cites`,
+`network`, `path`, `related`) filter on `citation_type`, `provenance`,
+`jurisdictions` and `resolution` — each one value or a list, sent
+comma-separated. An unknown value raises `InvalidParamsError` with `.param`
+and `.allowed` (refunded):
+
+```python
+amendments = client.citations.cited_by(
+    "32016R0679",
+    citation_type=["amendment", "repeal"],
+    provenance=["cellar", "notice+cellar"],
+)
+for group in amendments.cited_by:
+    for edge in group.citations:
+        print(group.id, group.jurisdiction, edge.citation_type, edge.provenance)
+
+network = client.citations.network("32016R0679")
+for neighbour in network.cites:
+    print(neighbour.id, [(d.citation_type, d.provenance) for d in neighbour.edge_details])
+
+# National edges (BUSINESS+): only id/key matches, from Austria and the EU,
+# plus the references that could not be resolved.
+outbound = client.citations.cites(
+    "AT-NOR-10001597", jurisdictions=["eu", "at"], resolution=["id", "key"], unresolved=True
+)
+for ref in outbound.unresolved or []:
+    print(ref.kind, ref.text, ref.status)
+```
+
+**Notified measures (`transposition`, 5 credits, every plan).** The
+measures the member states notified to the Commission for an EU act, by
+country. A notification is not a finding that the measure transposes the
+act, or transposes it completely — show `note` with the measures and keep
+`source_cellar.attribution` with anything you republish. On BUSINESS,
+SCALE and ENTERPRISE the live jurisdictions also say which measures LexAPI
+holds (`id`, `resolved`, `resolution`); below that those fields are `None`.
+
+```python
+measures = client.citations.transposition("32016L0680", jurisdictions=["es", "cz"])
+print(measures.note)
+for country in measures.jurisdictions:
+    for m in country.measures:
+        print(
+            country.jurisdiction, m.title, m.official_journal.date if m.official_journal else None
+        )
+held = client.citations.transposition("32016L0680", resolved_only=True)  # BUSINESS+
+```
+
+**Counterparts (`counterparts`, 20 credits, BUSINESS and above).** A
+national document's counterparts in the other live jurisdictions, through
+the EU acts it transposes or implements, ranked 1 (the national source
+records the relation), 2 (a notified measure LexAPI holds) or 3 (a notified
+measure LexAPI does not hold). A lookup past its server-side budget raises
+`TimeoutError` (`.partial`, refunded):
+
+```python
+result = client.citations.counterparts("AT-NOR-10001597", jurisdictions=["si", "cz"])
+for via in result.via:
+    print(via.eu_act.id, via.eu_act.notified_measures)
+    for c in via.counterparts:
+        print(" ", c.rank, c.jurisdiction, c.id, c.title)
 ```
 
 `cited_by`, `cites`, `network`, `path`, `related` and `stats` all accept
@@ -351,6 +417,14 @@ except NationalSemanticUnavailableError as err:
 
 `include_national` on the citation-graph methods and national ids on
 `/citations/*` are implemented — see [Citations](#citations) above.
+`coverage()` also reports each live jurisdiction's measured citation graph
+(`citation_graph`: extraction `methods`, `edges`, resolution rates,
+`precision`, `floors`; a rate that is not measured is `None` and its reason
+is in `methods.unmeasured`).
+
+Until the national-source terms are accepted once in the dashboard, national
+data answers `NationalTermsNotAcceptedError` (403; `.accept_url`,
+`.terms_url`, `.terms_version`).
 
 `get_document` (and the citation methods, for a withdrawn national id)
 raise `DocumentWithdrawnError` (410) for a document its source withdrew —
