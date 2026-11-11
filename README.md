@@ -246,7 +246,8 @@ national document's counterparts in the other live jurisdictions, through
 the EU acts it transposes or implements, ranked 1 (the national source
 records the relation), 2 (a notified measure LexAPI holds) or 3 (a notified
 measure LexAPI does not hold). A lookup past its server-side budget raises
-`TimeoutError` (`.partial`, refunded):
+`TimeoutError` (`.partial`, refunded). The SDK does not retry it, because
+re-running waits the full budget again; narrow it with `jurisdictions`:
 
 ```python
 result = client.citations.counterparts("AT-NOR-10001597", jurisdictions=["si", "cz"])
@@ -422,9 +423,10 @@ except NationalSemanticUnavailableError as err:
 `precision`, `floors`; a rate that is not measured is `None` and its reason
 is in `methods.unmeasured`).
 
-Until the national-source terms are accepted once in the dashboard, national
-data answers `NationalTermsNotAcceptedError` (403; `.accept_url`,
-`.terms_url`, `.terms_version`).
+Until 2026-11-12, an account created before 2026-10-16T18:43:20Z that has
+not yet accepted the national-source terms in the dashboard gets
+`NationalTermsNotAcceptedError` (403; `.accept_url`, `.terms_url`,
+`.terms_version`) from the national citation routes.
 
 `get_document` (and the citation methods, for a withdrawn national id)
 raise `DocumentWithdrawnError` (410) for a document its source withdrew —

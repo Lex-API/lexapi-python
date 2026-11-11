@@ -32,7 +32,8 @@ _EDGE_PAGE_SIZE = 100
 
 def _csv(name: str, value: StrOrMany | None) -> str | None:
     """One value, or a list/tuple joined with commas (the API's multi-value
-    form). An empty list is omitted."""
+    form). An empty list sends no filter at all, i.e. the server default
+    (every value), not "match nothing"."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -100,7 +101,8 @@ class CitationsResource:
     - ``resolution`` — :data:`~lexapi.CITATION_RESOLUTIONS` (national edges
       only; e.g. ``["id", "key"]`` leaves out abbreviation matches).
 
-    An unknown value raises :class:`~lexapi.InvalidParamsError` (refunded)
+    An empty list sends no filter (the server default). An unknown value
+    raises :class:`~lexapi.InvalidParamsError` (refunded)
     with ``param`` and ``allowed``. ``language`` picks the language of the
     titles filled in from the corpus; it does not filter edges.
     """
@@ -264,7 +266,8 @@ class CitationsResource:
         page_size: int = _EDGE_PAGE_SIZE,
     ) -> Iterator[CitationDocumentGroup]:
         """Walk every outbound edge page of :meth:`cites` (see
-        :meth:`iter_cited_by` for the paging caveat). 1 credit per page."""
+        :meth:`iter_cited_by` for the paging caveat). 1 credit per page.
+        Does not take ``unresolved``; call :meth:`cites` for that."""
         offset = 0
         while True:
             page = self.cites(
@@ -468,8 +471,9 @@ class CitationsResource:
         20 credits; BUSINESS, SCALE and ENTERPRISE only
         (:class:`~lexapi.TierForbiddenError` below that, refunded). A lookup
         past its 20-second server-side budget raises
-        :class:`~lexapi.TimeoutError` (503, ``partial=True``, refunded) —
-        retry, or narrow it with ``jurisdictions``.
+        :class:`~lexapi.TimeoutError` (503, ``partial=True``, refunded). The
+        SDK does not retry it: re-running waits the full budget again —
+        narrow it with ``jurisdictions`` instead.
         """
         return self._client._request(
             "GET",

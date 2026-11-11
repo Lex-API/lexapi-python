@@ -454,7 +454,8 @@ class DocumentWithdrawnError(LexAPIError):
 class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
     """``TIMEOUT`` — the request ran past its server-side budget (504, or a
     503 with ``partial: true`` from ``citations.counterparts``). Refunded in
-    full; retry-safe."""
+    full. The SDK does not retry the 503 form: re-running waits the full
+    budget again — narrow the request (e.g. ``jurisdictions``) instead."""
 
     default_code = "TIMEOUT"
 

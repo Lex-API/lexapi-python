@@ -873,12 +873,55 @@ def test_counterparts_timeout_is_a_typed_timeout_error():
     assert len(seen["requests"]) == 1
 
 
-def test_counterparts_app_timeout_is_retried_on_get():
+BUDGET_TIMEOUT_BODY = {
+    "success": False,
+    "code": "TIMEOUT",
+    "error": "Counterpart lookup timed out",
+    "partial": True,
+    "partialReason": "TIMEOUT",
+    "timeoutMs": 20000,
+}
+
+
+def test_budget_timeout_503_is_never_retried():
+    responses = iter(
+        [
+            httpx.Response(503, json=BUDGET_TIMEOUT_BODY, headers=APP_HEADERS),
+            httpx.Response(200, json=COUNTERPARTS_BODY, headers=APP_HEADERS),
+        ]
+    )
+    client, seen = capture_client(lambda r: next(responses))
+    with client:
+        with pytest.raises(TimeoutError) as info:
+            client.citations.counterparts("AT-NOR-10001597")
+    assert info.value.partial_reason == "TIMEOUT"
+    assert len(seen["requests"]) == 1
+
+
+def test_async_budget_timeout_503_is_never_retried():
+    async def run():
+        responses = iter(
+            [
+                httpx.Response(503, json=BUDGET_TIMEOUT_BODY, headers=APP_HEADERS),
+                httpx.Response(200, json=COUNTERPARTS_BODY, headers=APP_HEADERS),
+            ]
+        )
+        client, seen = capture_client(lambda r: next(responses), client_cls=AsyncLexAPI)
+        async with client:
+            with pytest.raises(TimeoutError):
+                await client.citations.counterparts("AT-NOR-10001597")
+        return seen
+
+    seen = asyncio.run(run())
+    assert len(seen["requests"]) == 1
+
+
+def test_other_app_503_is_still_retried_on_get():
     responses = iter(
         [
             httpx.Response(
                 503,
-                json={"success": False, "code": "TIMEOUT", "error": "t", "partial": True},
+                json={"success": False, "code": "SERVICE_UNAVAILABLE", "error": "draining"},
                 headers=APP_HEADERS,
             ),
             httpx.Response(200, json=COUNTERPARTS_BODY, headers=APP_HEADERS),

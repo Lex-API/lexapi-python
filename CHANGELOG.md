@@ -7,8 +7,7 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 ## [0.4.0] — 2026-11-11
 
 Syncs the citation graph with LexAPI API 2.10.0–2.13.0. **Requires LexAPI
-API 2.13.0** for every field below; older servers simply leave the new
-fields `None`. No breaking changes: every new parameter is keyword-only and
+API 2.13.0 for the new fields**; older servers simply leave them `None`. No breaking changes: every new parameter is keyword-only and
 optional, every new model field has a default.
 
 ### Added
@@ -38,11 +37,13 @@ optional, every new model field has a default.
   of `Counterpart` (`jurisdiction`, `id`, `resolved`, `title`,
   `citation_type`, `provenance`, `rank`), `truncated`), `truncated`). A
   lookup past its server-side budget raises `TimeoutError` (503,
-  `partial`, refunded).
+  `partial`, refunded); the SDK does not retry it, since re-running waits
+  the full budget again — narrow it with `jurisdictions`.
 - **Filters on `cited_by`, `cites`, `network`, `path`, `related`** (and the
   `iter_cited_by` / `iter_cites` walks): `provenance`, `jurisdictions` and
   `resolution`, and `citation_type` now also takes a list — each one value
-  or a list/tuple, sent comma-separated. `language` (the language of the
+  or a list/tuple, sent comma-separated (an empty list sends no filter,
+  i.e. the server default). `language` (the language of the
   titles filled in from the corpus) on every citation read. `unresolved`
   on `cites` and `network`.
 - **Provenance and resolution on every edge:** `CitationEdge.provenance`
@@ -82,6 +83,9 @@ optional, every new model field has a default.
 
 ### Changed
 
+- A 503 whose body carries `partialReason: "TIMEOUT"` (a fixed
+  server-side budget ran out) is no longer retried automatically. Other
+  503s keep the existing retry policy.
 - `iter_cited_by` / `iter_cites` stop once `offset` reaches `total_edges`
   when the server sends it, saving the final empty page.
 
