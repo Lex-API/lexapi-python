@@ -80,12 +80,35 @@ optional, every new model field has a default.
   `transposition`), `CITATION_PROVENANCES`, `CITATION_RESOLUTIONS`. Values
   are not validated client-side; the server answers an unknown one with
   `InvalidParamsError`.
+- **Incomplete national semantic searches:** `partial` / `partial_reason`
+  (`"SEARCH_INCOMPLETE"`) on `NationalSemanticSearchResponse` and
+  `NationalSemanticLegislationResponse` — the national index could not
+  complete the search and the results may be missing better matches;
+  `hint` says whether a retry or a rephrased query / changed filters may
+  complete it. With nothing left to return the call raises instead:
+  `NationalSemanticUnavailableError` (503) gains `.partial_reason`, and
+  its `retry_after` falls back to the body's `retryAfter` when the
+  header is missing.
+- **`NationalSemanticFilterUnreachableError`** (a subclass of
+  `InvalidParamsError`; 422 `NATIONAL_SEMANTIC_FILTER_UNREACHABLE`,
+  `.jurisdiction`, `.partial_reason`): the national index cannot search
+  this slice (jurisdiction, document kind, filters) completely and there
+  is nothing left to return. Not retryable as is — rephrase the query or
+  change the filters. Refunded.
+- **`ResolveResponse.verified`** (`None` on servers that do not send it)
+  and the `resolved_via` value `eli-cellar`.
 
 ### Changed
 
 - A 503 whose body carries `partialReason: "TIMEOUT"` (a fixed
   server-side budget ran out) is no longer retried automatically. Other
   503s keep the existing retry policy.
+- An incomplete national semantic search 503 (`partialReason:
+  "SEARCH_INCOMPLETE"`) with no retry wait (the same search has repeatedly
+  come back incomplete) is not retried automatically, even with
+  `retry_read_only_posts`. With a wait it keeps the existing 503 policy.
+  A 503 is never a `RateLimitedError`, whatever `Retry-After` /
+  `retryAfter` it carries — only a 429 is.
 - `iter_cited_by` / `iter_cites` stop once `offset` reaches `total_edges`
   when the server sends it, saving the final empty page.
 

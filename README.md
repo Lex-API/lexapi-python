@@ -96,6 +96,8 @@ by_url = client.get_document_by_url(
 )
 meta = client.get_document_metadata("32016R0679").metadata  # no body parse
 celex = client.resolve("ECLI:EU:C:2020:559").celex  # CELEX/URL/ELI/ECLI → CELEX
+# .resolved_via: celex / url / ecli-corpus / eli-corpus / eli-cellar / eli;
+# .verified False = not confirmed by a lookup (None on older servers)
 ```
 
 Typed responses stay mapping-compatible (`results["totalResults"]` works) and
@@ -414,6 +416,29 @@ except NationalSemanticUnavailableError as err:
     # Catch this specific subclass, not the broader ServiceUnavailableError
     # it extends — a plain EU 503 has no .jurisdiction attribute.
     print(f"{err.jurisdiction} semantic index is temporarily down, retry later")
+```
+
+**Incomplete national searches.** When the national index could not complete
+a semantic search, results may be incomplete. With hits left, the response
+has `partial` (True), `partial_reason` (`"SEARCH_INCOMPLETE"`) and a `hint`
+(retry, or rephrase / change the filters). With nothing left to return the
+call raises instead: `NationalSemanticUnavailableError` (503,
+`partial_reason == "SEARCH_INCOMPLETE"`, `retry_after` when a retry may help;
+without it the same search has repeatedly come back incomplete and is not
+retried automatically) or `NationalSemanticFilterUnreachableError` (422,
+an `InvalidParamsError` with `.jurisdiction` / `.partial_reason` — not
+retryable as is: rephrase the query or change the filters). Both are
+refunded; an empty answer would not have meant "no matches".
+
+```python
+from lexapi import NationalSemanticFilterUnreachableError
+
+try:
+    hits = client.national.legislation_semantic_search("DE", "Haftung")
+    if hits.partial:
+        print(hits.hint)  # results may be missing better matches
+except NationalSemanticFilterUnreachableError:
+    ...  # rephrase the query or change the filters
 ```
 
 `include_national` on the citation-graph methods and national ids on

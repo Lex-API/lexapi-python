@@ -36,7 +36,8 @@ Wait resolution (server-directed wins, clamped to ``backoff_cap``):
    ``RateLimit-*`` on every response, so outside a 429 it describes the rate
    window, not a retry time). ``X-RateLimit-*`` is not sent (legacy headers
    are disabled server-side) and is ignored,
-3. on a 429 only: the JSON ``retryAfter`` body field,
+3. on a 429 (and a 503 ``NATIONAL_SEMANTIC_UNAVAILABLE``): the JSON
+   ``retryAfter`` body field,
 4. exponential backoff with full jitter.
 
 Numeric hints are delta-seconds; a value above 1e12 is read as epoch
@@ -165,12 +166,21 @@ def _body_retry_after(body: Any) -> float | None:
     return _delta_from_number(float(raw))
 
 
+def _is_national_semantic_unavailable(status: int, body: Any) -> bool:
+    return (
+        status == 503
+        and isinstance(body, dict)
+        and body.get("code") == "NATIONAL_SEMANTIC_UNAVAILABLE"
+    )
+
+
 def server_wait_hint(headers: httpx.Headers, body: Any, status: int | None = None) -> float | None:
     """Resolve the server-directed wait for a failed response, if any.
 
-    ``Retry-After`` applies to any status. ``RateLimit-Reset`` and the JSON
-    ``retryAfter`` apply to a 429 only. ``status=None`` (unknown) consults
-    every source.
+    ``Retry-After`` applies to any status. ``RateLimit-Reset`` applies to a
+    429 only; the JSON ``retryAfter`` to a 429 and to a 503
+    ``NATIONAL_SEMANTIC_UNAVAILABLE`` (an incomplete national search).
+    ``status=None`` (unknown) consults every source.
     """
     header = headers.get("retry-after")
     if header is not None:
@@ -178,7 +188,7 @@ def server_wait_hint(headers: httpx.Headers, body: Any, status: int | None = Non
         if parsed is not None:
             return parsed
     if status is not None and status != 429:
-        return None
+        return _body_retry_after(body) if _is_national_semantic_unavailable(status, body) else None
     reset = headers.get("ratelimit-reset")
     if reset is not None:
         try:
@@ -261,6 +271,19 @@ def is_budget_timeout(status: int, body: Any) -> bool:
     return status == 503 and isinstance(body, dict) and body.get("partialReason") == "TIMEOUT"
 
 
+def is_repeated_incomplete_search(status: int, headers: httpx.Headers, body: Any) -> bool:
+    """A 503 ``partialReason: "SEARCH_INCOMPLETE"`` with no wait (neither
+    ``Retry-After`` nor ``retryAfter``): the same national semantic search
+    has repeatedly come back incomplete, so a retry would too. Never
+    retried automatically."""
+    return (
+        status == 503
+        and isinstance(body, dict)
+        and body.get("partialReason") == "SEARCH_INCOMPLETE"
+        and server_wait_hint(headers, body, status) is None
+    )
+
+
 def retry_allowed(
     method: str,
     response: httpx.Response,
@@ -276,6 +299,8 @@ def retry_allowed(
     if is_quota_exhausted(status, response.headers, body):
         return False
     if is_budget_timeout(status, body):
+        return False
+    if is_repeated_incomplete_search(status, response.headers, body):
         return False
     if not idempotent and status in config.retry_statuses_non_idempotent:
         return True  # 429 by default; anything else is an explicit caller opt-in

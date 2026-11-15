@@ -133,6 +133,31 @@ class InvalidParamsError(LexAPIError):
         return [item for item in value if isinstance(item, str)]
 
 
+class NationalSemanticFilterUnreachableError(InvalidParamsError):
+    """422 ``NATIONAL_SEMANTIC_FILTER_UNREACHABLE`` — the national semantic
+    index cannot search this slice (jurisdiction, document kind and filters)
+    completely and there is nothing left to return, so an empty answer would
+    not have meant "no matches". Not temporary: the same request gets the
+    same answer, so it is never retried — rephrase the query or change the
+    filters. A subclass of :class:`InvalidParamsError` (the request has to
+    change). Legacy-shape body with top-level ``jurisdiction`` and
+    ``partialReason`` (``SEARCH_INCOMPLETE``). Refunded in full.
+    """
+
+    default_code = "NATIONAL_SEMANTIC_FILTER_UNREACHABLE"
+
+    @property
+    def jurisdiction(self) -> str | None:
+        """The jurisdiction code (e.g. ``DE``) from the top-level body."""
+        return _body_jurisdiction(self)
+
+    @property
+    def partial_reason(self) -> str | None:
+        """``SEARCH_INCOMPLETE``."""
+        value = _field(self, "partialReason")
+        return value if isinstance(value, str) else None
+
+
 class InvalidCelexError(LexAPIError):
     """400 ``INVALID_CELEX`` — CELEX identifier failed validation."""
 
@@ -399,10 +424,16 @@ class ServiceUnavailableError(UpstreamError):
 
 class NationalSemanticUnavailableError(ServiceUnavailableError):
     """503 ``NATIONAL_SEMANTIC_UNAVAILABLE`` — the national semantic index
-    for this jurisdiction is temporarily down. A subclass of
-    :class:`ServiceUnavailableError` (itself a :class:`UpstreamError`), so
-    ``except ServiceUnavailableError`` still catches it. Legacy-shape body
-    with a top-level ``jurisdiction``. Retryable later; nothing was charged.
+    for this jurisdiction is temporarily down, or it could not complete this
+    search for a temporary reason and there is nothing left to return
+    (:attr:`partial_reason` ``SEARCH_INCOMPLETE``; an empty answer would not
+    have meant "no matches"). A subclass of :class:`ServiceUnavailableError`
+    (itself a :class:`UpstreamError`), so ``except ServiceUnavailableError``
+    still catches it. Legacy-shape body with a top-level ``jurisdiction``.
+    Retryable later; nothing was charged. ``retry_after`` is the wait the
+    server asked for; an incomplete search without one has repeatedly come
+    back incomplete and is not retried automatically (try again later, or
+    rephrase or narrow it).
     """
 
     default_code = "NATIONAL_SEMANTIC_UNAVAILABLE"
@@ -411,6 +442,13 @@ class NationalSemanticUnavailableError(ServiceUnavailableError):
     def jurisdiction(self) -> str | None:
         """The jurisdiction code (e.g. ``AT``) from the top-level body."""
         return _body_jurisdiction(self)
+
+    @property
+    def partial_reason(self) -> str | None:
+        """``SEARCH_INCOMPLETE`` for an incomplete search; ``None`` on the
+        plain "index unavailable" 503."""
+        value = _field(self, "partialReason")
+        return value if isinstance(value, str) else None
 
 
 class DocumentWithdrawnError(LexAPIError):
@@ -530,6 +568,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "NATIONAL_ALLOWANCE_EXHAUSTED": NationalAllowanceExhaustedError,
     "NATIONAL_SEMANTIC_NOT_ENABLED": NationalSemanticNotEnabledError,
+    "NATIONAL_SEMANTIC_FILTER_UNREACHABLE": NationalSemanticFilterUnreachableError,
     "NATIONAL_TERMS_NOT_ACCEPTED": NationalTermsNotAcceptedError,
     "UPSTREAM_ERROR": UpstreamError,
     "SERVICE_UNAVAILABLE": ServiceUnavailableError,
