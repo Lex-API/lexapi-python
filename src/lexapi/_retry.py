@@ -157,22 +157,32 @@ def parse_retry_after(value: str) -> float | None:
     return _delta_from_number(seconds)
 
 
+def _typed_error(body: Any) -> dict[str, Any]:
+    """The typed envelope's ``error`` object, or ``{}``."""
+    err = body.get("error") if isinstance(body, dict) else None
+    return err if isinstance(err, dict) else {}
+
+
 def _body_retry_after(body: Any) -> float | None:
-    """JSON ``retryAfter`` field (delta-seconds; epoch values converted)."""
+    """JSON ``retryAfter`` field (delta-seconds; epoch values converted):
+    top-level (legacy shape), else ``error.details.retryAfter`` (typed
+    envelope)."""
     if not isinstance(body, dict):
         return None
     raw = body.get("retryAfter")
+    if raw is None:
+        details = _typed_error(body).get("details")
+        raw = details.get("retryAfter") if isinstance(details, dict) else None
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
     return _delta_from_number(float(raw))
 
 
 def _is_national_semantic_unavailable(status: int, body: Any) -> bool:
-    return (
-        status == 503
-        and isinstance(body, dict)
-        and body.get("code") == "NATIONAL_SEMANTIC_UNAVAILABLE"
-    )
+    if status != 503 or not isinstance(body, dict):
+        return False
+    code = body.get("code") or _typed_error(body).get("code")
+    return code == "NATIONAL_SEMANTIC_UNAVAILABLE"
 
 
 def server_wait_hint(headers: httpx.Headers, body: Any, status: int | None = None) -> float | None:

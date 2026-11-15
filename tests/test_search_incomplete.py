@@ -255,6 +255,32 @@ def test_typed_envelope_details_partial_reason_without_wait_is_not_retried():
     assert len(seen) == 1
 
 
+def test_typed_envelope_wait_only_in_details_is_retried_once():
+    body = {
+        "success": False,
+        "error": {
+            "code": "NATIONAL_SEMANTIC_UNAVAILABLE",
+            "message": "National semantic search incomplete",
+            "details": {
+                "jurisdiction": "CZ",
+                "partialReason": "SEARCH_INCOMPLETE",
+                "retryAfter": 0,
+            },
+        },
+    }
+    client, seen = sequence_client(
+        httpx.Response(503, json=body, headers=APP_HEADERS),
+        httpx.Response(503, json=body, headers=APP_HEADERS),
+        httpx.Response(200, json=EMPTY_OK),
+        retry_config=RetryConfig(max_retries=3, retry_read_only_posts=True),
+    )
+    with client:
+        with pytest.raises(NationalSemanticUnavailableError) as info:
+            client.national.semantic_search("CZ", "liability for damage")
+    assert info.value.retry_after == 0
+    assert len(seen) == 2
+
+
 def test_async_repeated_incomplete_503_without_wait_is_never_retried():
     async def run():
         client, seen = sequence_client(
