@@ -140,7 +140,9 @@ class NationalSemanticFilterUnreachableError(InvalidParamsError):
     not have meant "no matches". Not temporary: the same request gets the
     same answer, so it is never retried — rephrase the query or change the
     filters. A subclass of :class:`InvalidParamsError` (the request has to
-    change). Legacy-shape body with top-level ``jurisdiction`` and
+    change) — but the request may be perfectly valid: this is a coverage
+    limit of the index, not a malformed request, and :attr:`param` is
+    ``None``. Legacy-shape body with top-level ``jurisdiction`` and
     ``partialReason`` (``SEARCH_INCOMPLETE``). Refunded in full.
     """
 

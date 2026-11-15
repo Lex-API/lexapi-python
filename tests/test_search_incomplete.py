@@ -49,6 +49,35 @@ UNREACHABLE_422 = {
 
 EMPTY_OK = {"success": True, "jurisdiction": "CZ", "resultCount": 0, "results": []}
 
+CASE_LAW_HIT = {
+    "documentId": "AT-JUD-OGH-1",
+    "jurisdiction": "AT",
+    "score": 0.81,
+    "court": "OGH",
+    "snippet": "Der Oberste Gerichtshof …",
+    "metadata": {"celex_id": "AT-JUD-OGH-1"},
+    "document": {"id": "AT-JUD-OGH-1", "jurisdiction": "AT", "documentKind": "decision"},
+    "attribution": "Source: RIS.",
+}
+
+LEGISLATION_HIT = {
+    "law_id": "DE-1",
+    "documentId": "DE-1",
+    "jurisdiction": "DE",
+    "score": 0.7,
+    "snippet": "s",
+    "law_title": "Bundesdatenschutzgesetz",
+    "article_ref": "§ 1",
+    "section": None,
+    "language": "de",
+    "in_force": True,
+    "valid_from": None,
+    "valid_to": None,
+    "law_type": None,
+    "document": {"id": "DE-1", "jurisdiction": "DE", "documentKind": "act"},
+    "attribution": "Source: gesetze-im-internet.de.",
+}
+
 
 def sequence_client(*responses, client_cls=LexAPI, **kwargs):
     seen = []
@@ -70,8 +99,8 @@ def test_case_law_partial_fields():
         "success": True,
         "searchType": "semantic-case-law",
         "jurisdiction": "AT",
-        "resultCount": 0,
-        "results": [],
+        "resultCount": 1,
+        "results": [CASE_LAW_HIT],
         "partial": True,
         "partialReason": "SEARCH_INCOMPLETE",
         "hint": "The national index did not finish this search. A retry may help.",
@@ -82,6 +111,7 @@ def test_case_law_partial_fields():
     assert resp.partial is True
     assert resp.partial_reason == "SEARCH_INCOMPLETE"
     assert "retry" in (resp.hint or "")
+    assert len(resp.results) == 1
 
 
 def test_legislation_partial_fields_and_complete_default():
@@ -89,7 +119,8 @@ def test_legislation_partial_fields_and_complete_default():
         "success": True,
         "searchType": "semantic-legislation",
         "jurisdiction": "DE",
-        "results": [],
+        "resultCount": 1,
+        "results": [LEGISLATION_HIT],
         "partial": True,
         "partialReason": "SEARCH_INCOMPLETE",
     }
@@ -101,6 +132,7 @@ def test_legislation_partial_fields_and_complete_default():
         second = client.national.legislation_semantic_search("DE", "Haftung")
     assert first.partial is True
     assert first.partial_reason == "SEARCH_INCOMPLETE"
+    assert len(first.results) == 1
     assert second.partial is False
     assert second.partial_reason is None
 
@@ -114,7 +146,7 @@ def test_incomplete_503_is_not_a_rate_limit():
     )
     with client:
         with pytest.raises(NationalSemanticUnavailableError) as info:
-            client.national.semantic_search("CZ", "náhrada škody")
+            client.national.semantic_search("CZ", "liability for damage")
     err = info.value
     assert not isinstance(err, RateLimitedError)
     assert isinstance(err, ServiceUnavailableError)
@@ -130,7 +162,7 @@ def test_incomplete_503_body_retry_after_without_header():
     client, _ = sequence_client(httpx.Response(503, json=INCOMPLETE_503, headers=APP_HEADERS))
     with client:
         with pytest.raises(NationalSemanticUnavailableError) as info:
-            client.national.semantic_search("CZ", "náhrada škody")
+            client.national.semantic_search("CZ", "liability for damage")
     assert info.value.retry_after == 10
 
 
@@ -145,7 +177,7 @@ def test_incomplete_503_with_wait_is_retried_when_read_only_posts_opt_in():
         retry_config=RetryConfig(retry_read_only_posts=True),
     )
     with client:
-        resp = client.national.semantic_search("CZ", "náhrada škody")
+        resp = client.national.semantic_search("CZ", "liability for damage")
     assert resp.jurisdiction == "CZ"
     assert len(seen) == 2
 
@@ -158,8 +190,67 @@ def test_repeated_incomplete_503_without_wait_is_never_retried():
     )
     with client:
         with pytest.raises(NationalSemanticUnavailableError) as info:
-            client.national.semantic_search("CZ", "náhrada škody")
+            client.national.semantic_search("CZ", "liability for damage")
     assert info.value.retry_after is None
+    assert info.value.partial_reason == "SEARCH_INCOMPLETE"
+    assert len(seen) == 1
+
+
+def test_incomplete_503_is_retried_at_most_once_per_call():
+    retryable = httpx.Response(
+        503, json={**INCOMPLETE_503, "retryAfter": 0}, headers={**APP_HEADERS, "retry-after": "0"}
+    )
+    client, seen = sequence_client(
+        retryable,
+        retryable,
+        httpx.Response(200, json=EMPTY_OK),
+        retry_config=RetryConfig(max_retries=3, retry_read_only_posts=True),
+    )
+    with client:
+        with pytest.raises(NationalSemanticUnavailableError):
+            client.national.semantic_search("CZ", "liability for damage")
+    assert len(seen) == 2
+
+
+def test_async_incomplete_503_is_retried_at_most_once_per_call():
+    async def run():
+        retryable = httpx.Response(
+            503,
+            json={**INCOMPLETE_503, "retryAfter": 0},
+            headers={**APP_HEADERS, "retry-after": "0"},
+        )
+        client, seen = sequence_client(
+            retryable,
+            retryable,
+            httpx.Response(200, json=EMPTY_OK),
+            client_cls=AsyncLexAPI,
+            retry_config=RetryConfig(max_retries=3, retry_read_only_posts=True),
+        )
+        async with client:
+            with pytest.raises(NationalSemanticUnavailableError):
+                await client.national.semantic_search("CZ", "liability for damage")
+        return seen
+
+    assert len(asyncio.run(run())) == 2
+
+
+def test_typed_envelope_details_partial_reason_without_wait_is_not_retried():
+    body = {
+        "success": False,
+        "error": {
+            "code": "NATIONAL_SEMANTIC_UNAVAILABLE",
+            "message": "National semantic search incomplete",
+            "details": {"jurisdiction": "CZ", "partialReason": "SEARCH_INCOMPLETE"},
+        },
+    }
+    client, seen = sequence_client(
+        httpx.Response(503, json=body, headers=APP_HEADERS),
+        httpx.Response(200, json=EMPTY_OK),
+        retry_config=RetryConfig(retry_read_only_posts=True),
+    )
+    with client:
+        with pytest.raises(NationalSemanticUnavailableError) as info:
+            client.national.semantic_search("CZ", "liability for damage")
     assert info.value.partial_reason == "SEARCH_INCOMPLETE"
     assert len(seen) == 1
 
@@ -174,7 +265,7 @@ def test_async_repeated_incomplete_503_without_wait_is_never_retried():
         )
         async with client:
             with pytest.raises(NationalSemanticUnavailableError):
-                await client.national.semantic_search("CZ", "náhrada škody")
+                await client.national.semantic_search("CZ", "liability for damage")
         return seen
 
     assert len(asyncio.run(run())) == 1
@@ -256,6 +347,7 @@ def test_filter_unreachable_422():
     assert err.jurisdiction == "DE"
     assert err.partial_reason == "SEARCH_INCOMPLETE"
     assert err.retry_after is None
+    assert err.param is None
     assert len(seen) == 1
 
 

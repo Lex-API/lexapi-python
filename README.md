@@ -423,11 +423,13 @@ a semantic search, results may be incomplete. With hits left, the response
 has `partial` (True), `partial_reason` (`"SEARCH_INCOMPLETE"`) and a `hint`
 (retry, or rephrase / change the filters). With nothing left to return the
 call raises instead: `NationalSemanticUnavailableError` (503,
-`partial_reason == "SEARCH_INCOMPLETE"`, `retry_after` when a retry may help;
-without it the same search has repeatedly come back incomplete and is not
-retried automatically) or `NationalSemanticFilterUnreachableError` (422,
-an `InvalidParamsError` with `.jurisdiction` / `.partial_reason` — not
-retryable as is: rephrase the query or change the filters). Both are
+`partial_reason == "SEARCH_INCOMPLETE"`, `retry_after` when a retry may help —
+retried at most once per call, only with `retry_read_only_posts`; without a
+wait the same search has repeatedly come back incomplete and is not retried
+automatically) or `NationalSemanticFilterUnreachableError` (422, an
+`InvalidParamsError` with `.jurisdiction` / `.partial_reason` — a coverage
+limit, not a malformed request: the request may be valid and `.param` is
+`None`; not retryable as is: rephrase the query or change the filters). Both are
 refunded; an empty answer would not have meant "no matches".
 
 ```python
@@ -623,6 +625,8 @@ default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
 read-only POSTs (search, document reads, resolve, semantic search) on an
 app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
+Every wait, server-directed ones included, is clamped to `backoff_cap`
+(default 30 s): a cap below the server's requested wait shortens it.
 
 ```python
 from lexapi import LexAPI, RetryConfig

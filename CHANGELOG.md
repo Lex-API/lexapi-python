@@ -103,10 +103,18 @@ optional, every new model field has a default.
 - A 503 whose body carries `partialReason: "TIMEOUT"` (a fixed
   server-side budget ran out) is no longer retried automatically. Other
   503s keep the existing retry policy.
+- A 422 `NATIONAL_SEMANTIC_FILTER_UNREACHABLE` is now a
+  `NationalSemanticFilterUnreachableError`, a subclass of
+  `InvalidParamsError` (previously the base `LexAPIError`): `except
+  InvalidParamsError` now also catches it. The request may be valid — it
+  is a coverage limit of the national index, not a malformed request, and
+  `.param` is `None`.
 - An incomplete national semantic search 503 (`partialReason:
-  "SEARCH_INCOMPLETE"`) with no retry wait (the same search has repeatedly
-  come back incomplete) is not retried automatically, even with
-  `retry_read_only_posts`. With a wait it keeps the existing 503 policy.
+  "SEARCH_INCOMPLETE"`, top-level or in `error.details`) with no retry wait
+  (the same search has repeatedly come back incomplete) is not retried
+  automatically, even with `retry_read_only_posts`. With a wait it keeps
+  the existing 503 policy, but is retried at most once per call. A
+  `backoff_cap` below the server's wait shortens that wait.
   A 503 is never a `RateLimitedError`, whatever `Retry-After` /
   `retryAfter` it carries — only a 429 is.
 - `iter_cited_by` / `iter_cites` stop once `offset` reaches `total_edges`
