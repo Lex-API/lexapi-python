@@ -1,5 +1,5 @@
-"""Regression tests for the PR #11 verification review (N1-N6). Each fails
-on 6c011ef."""
+"""Regression tests for transport retries, async flags, deprecations and
+export stream iteration."""
 
 import asyncio
 import copy
@@ -50,10 +50,10 @@ def first_raises(message, ok_body):
     return handler, calls
 
 
-# ── N1: only the pre-response disconnect is "never reached" ────────────
+# ── only the pre-response disconnect is "never reached" ────────────
 
 
-def test_n1_matcher_distinguishes_pre_response_from_mid_body():
+def test_matcher_distinguishes_pre_response_from_mid_body():
     request = httpx.Request("GET", "https://lex-api.com/api/v1/info")
     assert never_reached_app(httpx.RemoteProtocolError(PRE_RESPONSE, request=request))
     assert not never_reached_app(httpx.RemoteProtocolError(MID_BODY, request=request))
@@ -67,7 +67,7 @@ def test_n1_matcher_distinguishes_pre_response_from_mid_body():
         (lambda c: c.search("gdpr"), {"results": []}),  # read-only POST
     ],
 )
-def test_n1_mid_body_close_not_retried_on_billed_calls(call, body):
+def test_mid_body_close_not_retried_on_billed_calls(call, body):
     handler, calls = first_raises(MID_BODY, body)
     with make(handler, retry=FAST_RO) as client:
         with pytest.raises(LexAPIConnectionError):
@@ -82,24 +82,24 @@ def test_n1_mid_body_close_not_retried_on_billed_calls(call, body):
         (lambda c: c.search("gdpr"), {"results": []}),
     ],
 )
-def test_n1_pre_response_close_retried_on_billed_calls(call, body):
+def test_pre_response_close_retried_on_billed_calls(call, body):
     handler, calls = first_raises(PRE_RESPONSE, body)
     with make(handler) as client:
         call(client)
     assert calls["count"] == 2
 
 
-def test_n1_mid_body_close_still_retried_on_free_get():
+def test_mid_body_close_still_retried_on_free_get():
     handler, calls = first_raises(MID_BODY, {"service": "LexAPI"})
     with make(handler) as client:
         client.get_info()
     assert calls["count"] == 2
 
 
-# ── N5: app origin by header only ──────────────────────────────────────
+# ── app origin by header only ──────────────────────────────────────
 
 
-def test_n5_json_error_body_without_app_header_is_proxy_origin():
+def test_json_error_body_without_app_header_is_proxy_origin():
     calls = {"count": 0}
 
     def handler(request):
@@ -115,7 +115,7 @@ def test_n5_json_error_body_without_app_header_is_proxy_origin():
 
 
 @pytest.mark.parametrize("header", ["RateLimit-Limit", "X-LexAPI-Version"])
-def test_n5_app_headers_mark_app_origin(header):
+def test_app_headers_mark_app_origin(header):
     calls = {"count": 0}
 
     def handler(request):
@@ -129,14 +129,14 @@ def test_n5_app_headers_mark_app_origin(header):
     assert calls["count"] == 2
 
 
-# ── N2: async parity of the free / read_only flags ─────────────────────
+# ── async parity of the free / read_only flags ─────────────────────
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def test_n2_async_free_flag_on_get_info_and_webhook_reads():
+def test_async_free_flag_on_get_info_and_webhook_reads():
     async def one(call, body):
         calls = {"count": 0}
 
@@ -173,7 +173,7 @@ ASYNC_READ_ONLY = [
 
 
 @pytest.mark.parametrize("call", ASYNC_READ_ONLY)
-def test_n2_async_read_only_posts_opt_in(call):
+def test_async_read_only_posts_opt_in(call):
     async def run():
         calls = {"count": 0}
 
@@ -190,7 +190,7 @@ def test_n2_async_read_only_posts_opt_in(call):
     assert _run(run()) == 2
 
 
-def test_n2_async_webhook_writes_never_retried_under_opt_in():
+def test_async_webhook_writes_never_retried_under_opt_in():
     async def run():
         calls = {"count": 0}
 
@@ -211,10 +211,10 @@ def test_n2_async_webhook_writes_never_retried_under_opt_in():
     assert _run(run()) == 3
 
 
-# ── N3: deprecation only on explicit user access ───────────────────────
+# ── deprecation only on explicit user access ───────────────────────
 
 
-def test_n3_no_warning_from_dataclass_helpers_repr_eq_copy():
+def test_no_warning_from_dataclass_helpers_repr_eq_copy():
     hook = Webhook.from_dict({"id": "w", "maxRetries": 3})
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -233,10 +233,10 @@ def test_n3_no_warning_from_dataclass_helpers_repr_eq_copy():
     assert record[0].filename == __file__  # attributed to the caller
 
 
-# ── N4: parties_text ───────────────────────────────────────────────────
+# ── parties_text ───────────────────────────────────────────────────
 
 
-def test_n4_parties_text_for_three_parties():
+def test_parties_text_for_three_parties():
     hit = SemanticCaseLawResult.from_dict(
         {"parties": ["Land Hessen", "TR", "European Commission"], "metadata": {}}
     )
@@ -245,7 +245,7 @@ def test_n4_parties_text_for_three_parties():
     assert SemanticCaseLawResult.from_dict({"metadata": {}}).parties_text is None
 
 
-# ── N6: iterating after a caller close always raises ───────────────────
+# ── iterating after a caller close always raises ───────────────────
 
 
 def _stream_client():
@@ -257,7 +257,7 @@ def _stream_client():
     )
 
 
-def test_n6_close_before_iterating_raises():
+def test_close_before_iterating_raises():
     with _stream_client() as client:
         stream = client.export()
         stream.close()
@@ -266,7 +266,7 @@ def test_n6_close_before_iterating_raises():
         assert stream.complete is False
 
 
-def test_n6_break_then_iterate_raises():
+def test_break_then_iterate_raises():
     with _stream_client() as client:
         stream = client.export()
         for _ in stream:
@@ -275,7 +275,7 @@ def test_n6_break_then_iterate_raises():
             list(stream)
 
 
-def test_n6_with_block_exit_then_iterate_raises():
+def test_with_block_exit_then_iterate_raises():
     with _stream_client() as client:
         with client.export() as stream:
             pass
@@ -283,7 +283,7 @@ def test_n6_with_block_exit_then_iterate_raises():
             list(stream)
 
 
-def test_n6_fully_read_then_iterate_returns_empty():
+def test_fully_read_then_iterate_returns_empty():
     with _stream_client() as client:
         stream = client.export()
         assert [r["celex"] for r in stream] == ["A", "B"]
@@ -291,7 +291,7 @@ def test_n6_fully_read_then_iterate_returns_empty():
         assert stream.complete is True
 
 
-def test_n6_async_close_before_iterating_raises():
+def test_async_close_before_iterating_raises():
     async def run():
         async def handler(request):
             return httpx.Response(200, content=b'{"_meta": {}}\n{"_done": {}}\n')
