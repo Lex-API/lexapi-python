@@ -4,6 +4,12 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (0.x: minors may break, documented here).
 
+## [0.4.1] — unreleased
+
+### Changed
+
+- Shorter README. No API changes.
+
 ## [0.4.0] — 2026-11-11
 
 Syncs the citation graph with LexAPI API 2.10.0–2.13.0. **Requires LexAPI
