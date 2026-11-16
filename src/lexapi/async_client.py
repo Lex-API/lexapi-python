@@ -552,7 +552,7 @@ class AsyncLexAPI:
                     handle(row["celex"], row.get("parsedContent"))
                 print(stream.done, stream.truncated)
 
-        Filters (requires lex-api API 2.3.0; list values are sent
+        Filters (requires LexAPI API 2.3.0; list values are sent
         comma-separated and ORed):
 
         - ``document_type``: the stored label, matched exactly ignoring case

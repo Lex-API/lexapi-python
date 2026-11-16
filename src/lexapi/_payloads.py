@@ -227,8 +227,7 @@ def recent_documents_params(
 
     ``document_type`` and ``subdomain`` are single-valued: the endpoint builds
     one EUR-Lex query without the fan-out ``/search`` does, and EUR-Lex honours
-    only the first ``FM_CODED`` / ``DTS_SUBDOM`` (lex-api
-    ``server/utils/urlBuilder.js``). ``author`` lists are sent as repeated params.
+    only the first ``FM_CODED`` / ``DTS_SUBDOM``. ``author`` lists are sent as repeated params.
     """
     return drop_none(
         {

@@ -1,7 +1,7 @@
 """Top-level ``code`` on legacy-shape bodies and ``QUOTA_EXHAUSTED``
-(PLAN.md §1.2 / §1.3; lex-api PR #304).
+(PLAN.md §1.2 / §1.3).
 
-From #304 on, legacy-shape error bodies carry ``success: false`` and a
+Current servers send legacy-shape error bodies with ``success: false`` and a
 top-level ``code`` next to the human-text ``error``; a legacy quota 429 says
 ``"code": "QUOTA_EXHAUSTED"`` with a top-level ``resetsAt``. The code takes
 precedence over the status-derived one, a quota 429 is never retried and

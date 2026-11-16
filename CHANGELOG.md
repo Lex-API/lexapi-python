@@ -254,9 +254,9 @@ client written for one country now works for every other:
 
 ## [0.2.0] — 2026-10-26
 
-Synced with the LexAPI API as of `openapi.yaml` on lex-api `main` at
-`633eb67` (PR #298). No breaking changes to signatures; behaviour changes are
-listed under **Changed** — read those before upgrading.
+Synced with the LexAPI API (`openapi.yaml`) as of this release. No breaking
+changes to signatures; behaviour changes are listed under **Changed** — read
+those before upgrading.
 
 ### Added
 
@@ -431,30 +431,29 @@ refunded.
   as complete and an `_error` line was yielded as a document row. The error
   line's `code` / `message` are on the exception's `details` and on the new
   `stream.error`. Unknown `_done` fields (`truncatedBy`, `credits`) are kept
-  on `stream.done`. (PLAN.md §1.8; lex-api #303.)
+  on `stream.done`. (PLAN.md §1.8.)
 - **Top-level `code` on legacy-shape error bodies, and `QUOTA_EXHAUSTED`.**
-  When an error body carries a top-level string `code` (lex-api #304 adds it
-  next to the legacy text `error`), it is the error's `code`, ahead of the
+  When an error body carries a top-level string `code` (sent next to the
+  legacy text `error`), it is the error's `code`, ahead of the
   status-derived one. A 429 with `code: "QUOTA_EXHAUSTED"` (a legacy plan's
   used-up daily or monthly-semantic quota) raises `RateLimitedError` with
   `code == "QUOTA_EXHAUSTED"`, `quota_exhausted` true, `retry_after` `None`
   and `resets_at` from the body's `resetsAt`; it is never retried. Servers
   without the `code` are still recognised by the old shape check.
   (PLAN.md §1.2/§1.3.)
-- **Export parameters for API 2.3.0** (lex-api #303): `document_type_code`
+- **Export parameters for API 2.3.0**: `document_type_code`
   (a type family) and `changed_since` (rows whose text changed), on `export()`
   of both clients. A naive `datetime` for `fetched_since` / `changed_since`
   and a `limit` that is not a positive integer raise `ValueError` before the
   request (the API answers 400 to both). Docstrings and README describe the
-  per-row billing and the filter semantics of API 2.3.0. **Publish only after
-  lex-api #303 is deployed.**
+  per-row billing and the filter semantics of API 2.3.0.
 - **`stream.truncated` reads `_done.truncated` first once the trailer has
   been read.** From API 2.3.0 that flag is authoritative: it is set when
   matching rows remain unreached (`truncatedBy`: `limit`, `max_rows`, `recovered` or
   `credits`) and never derived from the row count. The `X-Export-Truncated`
   header and `_meta.truncated` come from an up-front count that may be a
   minute old and never caps the stream, so they are now only the fallback
-  before the trailer arrives. (PLAN.md §1.8; lex-api #303.)
+  before the trailer arrives. (PLAN.md §1.8.)
 
 ## [0.1.0] — 2026-07-02
 

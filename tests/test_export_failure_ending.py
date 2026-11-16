@@ -2,7 +2,7 @@
 ends with a ``_done`` trailer that does not say ``"complete": false``, and a
 line whose only key is ``_error`` is a failure signal, never a row.
 
-lex-api PR #303 briefly emitted ``{"_error": ...}`` then
+An earlier server emitted ``{"_error": ...}`` then
 ``{"_done": {"complete": false}}`` on a mid-stream failure; the server no
 longer does (it ends the body without a trailer), but a stream like that must
 never look complete or yield the error object as a document.

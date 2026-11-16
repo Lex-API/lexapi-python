@@ -1,5 +1,5 @@
 """Legislation semantic search: asOf, consolidated-text merge labels, and
-the new per-hit / response fields (API #284, lex-api PR #298)."""
+the new per-hit / response fields."""
 
 import asyncio
 import datetime as dt

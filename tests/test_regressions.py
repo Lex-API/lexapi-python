@@ -1,5 +1,5 @@
-"""Regression tests for the PR #11 review findings (R*, E*, W*, P1, M*, D1, K*)
-and the PLAN.md §1 contract decisions. Each test fails on the pre-fix code."""
+"""Regression tests for retries, error parsing, export streams, webhooks and
+docs, and the PLAN.md §1 contract decisions."""
 
 import asyncio
 import json
@@ -62,10 +62,10 @@ def fail_then_ok(first, ok_body=None):
     return responder
 
 
-# ── R1: non-JSON 2xx ───────────────────────────────────────────────────
+# ── non-JSON 2xx ───────────────────────────────────────────────────
 
 
-def test_r1_non_json_success_raises_instead_of_empty_result():
+def test_non_json_success_raises_instead_of_empty_result():
     client, _ = counting(lambda r, n: httpx.Response(200, html="<html>Just a moment...</html>"))
     with client:
         with pytest.raises(InvalidResponseError) as info:
@@ -75,7 +75,7 @@ def test_r1_non_json_success_raises_instead_of_empty_result():
     assert "Just a moment" in info.value.message
 
 
-def test_r1_empty_and_204_bodies_still_succeed():
+def test_empty_and_204_bodies_still_succeed():
     client, _ = counting(lambda r, n: httpx.Response(204))
     with client:
         assert client.webhooks.delete("w1") is None
@@ -84,7 +84,7 @@ def test_r1_empty_and_204_bodies_still_succeed():
         assert dict(client.get_info()) == {}
 
 
-# ── R2 + billing-safe transport retries (PLAN §1.2) ────────────────────
+# ── Billing-safe transport retries (PLAN §1.2) ────────────────────
 
 
 def _disconnect(request):
@@ -93,14 +93,14 @@ def _disconnect(request):
     )
 
 
-def test_r2_stale_keepalive_disconnect_retried_for_billed_get():
+def test_stale_keepalive_disconnect_retried_for_billed_get():
     client, calls = counting(fail_then_ok(_disconnect, {"success": True, "versions": []}))
     with client:
         client.list_document_versions("32016R0679")
     assert calls["count"] == 2
 
 
-def test_r2_stale_keepalive_disconnect_retried_even_for_post():
+def test_stale_keepalive_disconnect_retried_even_for_post():
     client, calls = counting(fail_then_ok(_disconnect, {"results": []}))
     with client:
         client.search("gdpr")
@@ -195,13 +195,13 @@ def test_cloudflare_522_never_reached_retried_for_any_method():
 def test_is_app_response():
     assert is_app_response(httpx.Headers({"X-LexAPI-Version": "2.1.0"}), None)
     assert is_app_response(httpx.Headers({"RateLimit-Limit": "120"}), None)
-    # N5: a JSON error body alone is NOT proof of app origin (an intermediary can send one)
+    # a JSON error body alone is NOT proof of app origin (an intermediary can send one)
     assert not is_app_response(httpx.Headers(), {"error": "x"})
     assert not is_app_response(httpx.Headers(), {"success": False, "error": {"code": "INTERNAL"}})
     assert not is_app_response(httpx.Headers(), None)
 
 
-# ── R7: retry_read_only_posts ──────────────────────────────────────────
+# ── retry_read_only_posts ──────────────────────────────────────────
 
 
 APP_502 = lambda r: httpx.Response(  # noqa: E731
@@ -209,7 +209,7 @@ APP_502 = lambda r: httpx.Response(  # noqa: E731
 )
 
 
-def test_r7_read_only_posts_not_retried_by_default():
+def test_read_only_posts_not_retried_by_default():
     client, calls = counting(fail_then_ok(APP_502, {"results": []}))
     with client:
         with pytest.raises(UpstreamError):
@@ -217,7 +217,7 @@ def test_r7_read_only_posts_not_retried_by_default():
     assert calls["count"] == 1
 
 
-def test_r7_opt_in_retries_app_origin_5xx_on_read_only_posts():
+def test_opt_in_retries_app_origin_5xx_on_read_only_posts():
     config = RetryConfig(
         max_retries=3, backoff_base=0.0001, backoff_cap=0.001, retry_read_only_posts=True
     )
@@ -237,7 +237,7 @@ def test_r7_opt_in_retries_app_origin_5xx_on_read_only_posts():
         assert calls["count"] == 2
 
 
-def test_r7_opt_in_never_retries_proxy_5xx_or_webhook_writes():
+def test_opt_in_never_retries_proxy_5xx_or_webhook_writes():
     config = RetryConfig(backoff_base=0.0001, backoff_cap=0.001, retry_read_only_posts=True)
     client, calls = counting(
         lambda r, n: httpx.Response(502, text="Bad Gateway"), retry_config=config
@@ -258,10 +258,10 @@ def test_r7_opt_in_never_retries_proxy_5xx_or_webhook_writes():
         assert calls["count"] == 1
 
 
-# ── R3: quota 429 retry_after ──────────────────────────────────────────
+# ── quota 429 retry_after ──────────────────────────────────────────
 
 
-def test_r3_quota_429_has_no_rate_window_retry_after():
+def test_quota_429_has_no_rate_window_retry_after():
     body = {
         "error": "Daily quota exceeded",
         "message": "Resets at midnight UTC.",
@@ -325,7 +325,7 @@ def test_string_error_equal_to_a_slug_is_not_a_code():
     assert err.code == "INVALID_PARAMS"
 
 
-# ── E1 / E2: export stream ─────────────────────────────────────────────
+# ── Export stream ─────────────────────────────────────────────
 
 
 class _ChunkStream(httpx.SyncByteStream):
@@ -349,7 +349,7 @@ def line(obj):
     return (json.dumps(obj) + "\n").encode()
 
 
-def test_e1_mid_stream_transport_error_is_typed():
+def test_mid_stream_transport_error_is_typed():
     stream = _ChunkStream([line({"_meta": {}}), line({"celex": "A"})], httpx.ReadError("reset"))
     with export_client(stream) as client:
         rows = []
@@ -364,7 +364,7 @@ def test_e1_mid_stream_transport_error_is_typed():
             list(client.export())
 
 
-def test_e1_missing_done_trailer_raises_after_rows():
+def test_missing_done_trailer_raises_after_rows():
     stream = _ChunkStream([line({"_meta": {}}), line({"celex": "A"}), b'{"celex": "B", "tit'])
     with export_client(stream) as client:
         export = client.export()
@@ -379,7 +379,7 @@ def test_e1_missing_done_trailer_raises_after_rows():
     assert "1 row" in info.value.message
 
 
-def test_e1_complete_stream_is_complete():
+def test_complete_stream_is_complete():
     stream = _ChunkStream(
         [line({"_meta": {}}), line({"celex": "A"}), line({"_done": {"written": 1}})]
     )
@@ -390,7 +390,7 @@ def test_e1_complete_stream_is_complete():
     assert export.invalid_lines == 0
 
 
-def test_e1_async_missing_trailer():
+def test_async_missing_trailer():
     class _AsyncStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield line({"_meta": {}})
@@ -411,8 +411,8 @@ def test_e1_async_missing_trailer():
     assert asyncio.run(run()) == [{"celex": "A"}]
 
 
-def test_e2_done_truncated_is_authoritative_once_read():
-    # API 2.3.0 (lex-api #303 R4): `_done.truncated` is never derived from
+def test_done_truncated_is_authoritative_once_read():
+    # API 2.3.0: `_done.truncated` is never derived from
     # the count and does not count skipped stubs, so it wins over the
     # count-based header and _meta once the trailer has been read.
     not_reached = [
@@ -444,17 +444,17 @@ def test_e2_done_truncated_is_authoritative_once_read():
     assert export.truncated is True  # a trailer without the flag: _meta
 
 
-# ── W1 / W3 / P1 ───────────────────────────────────────────────────────
+# ── Webhooks and paths ───────────────────────────────────────────────────
 
 
-def test_w1_non_ascii_signature_is_rejected_not_typeerror():
+def test_non_ascii_signature_is_rejected_not_typeerror():
     raw = b'{"timestamp": "2026-10-05T11:35:50.493Z"}'
     assert verify_signature(raw, "é" * 64, "secret") is False
     with pytest.raises(WebhookSignatureError):
         verify_webhook(raw, "éè", "secret")
 
 
-def test_w3_iter_deliveries_dedupes_shifted_rows():
+def test_iter_deliveries_dedupes_shifted_rows():
     pages = {
         0: [{"id": "d3"}, {"id": "d2"}],
         2: [{"id": "d2"}, {"id": "d1"}],  # a new delivery arrived and shifted d2 down
@@ -472,7 +472,7 @@ def test_w3_iter_deliveries_dedupes_shifted_rows():
 
 
 @pytest.mark.parametrize("bad", ["", ".", ".."])
-def test_p1_dot_segments_rejected(bad):
+def test_dot_segments_rejected(bad):
     with pytest.raises(ValueError):
         seg(bad)
     client, calls = counting(lambda r, n: httpx.Response(200, json={}))
@@ -483,10 +483,10 @@ def test_p1_dot_segments_rejected(bad):
     assert seg("...") == "..."  # only the exact dot-segments are special
 
 
-# ── R5: with_options(connect_timeout=...) ──────────────────────────────
+# ── with_options(connect_timeout=...) ──────────────────────────────
 
 
-def test_r5_with_options_connect_timeout_alone_applies():
+def test_with_options_connect_timeout_alone_applies():
     client, calls = counting(lambda r, n: httpx.Response(200, json={}))
     with client:
         client.with_options(connect_timeout=1.5).get_info()
@@ -502,10 +502,10 @@ def test_pool_timeout_defaults_to_connect_budget():
     assert calls["requests"][0].extensions["timeout"]["pool"] == 10.0
 
 
-# ── W2: deprecation warning ────────────────────────────────────────────
+# ── deprecation warning ────────────────────────────────────────────
 
 
-def test_w2_max_retries_warns():
+def test_max_retries_warns():
     from lexapi import Webhook
 
     hook = Webhook.from_dict({"id": "w"})
@@ -517,17 +517,17 @@ def test_w2_max_retries_warns():
         assert hook == Webhook.from_dict({"id": "w"})
 
 
-# ── D1 / M4 / M5 / K: copy and packaging ───────────────────────────────
+# ── Copy and packaging ───────────────────────────────
 
 
-def test_d1_export_price_in_docs_is_the_api_23_model():
-    # PLAN.md §1.8: stated exactly as lex-api #303 (API 2.3.0) bills it.
+def test_export_price_in_docs_is_the_api_23_model():
+    # PLAN.md §1.8: stated exactly as API 2.3.0 bills it.
     for doc in (LexAPI.export.__doc__ or "", AsyncLexAPI.export.__doc__ or ""):
         assert "1 credit per row written, at least 1 per" in doc
         assert "CreditsExhaustedError" in doc
 
 
-def test_m4_m5_docstrings_name_real_limits():
+def test_docstrings_name_real_limits():
     assert "FREE 10" in (LexAPI.semantic_search.__doc__ or "")
     assert "ceil(limit / 10)" in (LexAPI.get_recent_documents.__doc__ or "")
     assert "1 for a live item" in (LexAPI.get_documents_batch.__doc__ or "")

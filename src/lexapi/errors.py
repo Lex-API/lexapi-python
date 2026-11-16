@@ -9,7 +9,7 @@ Some endpoint classes still answer in the legacy bare shape
 search/batch/webhook validation 400s, the ``/export`` and legacy semantic
 tier gates, semantic upstream 502/504s). The parser tolerates both shapes; on
 the legacy shape the code is the body's top-level string ``code`` when present
-(lex-api #304: ``RATE_LIMITED``, ``QUOTA_EXHAUSTED``, ...), else derived from
+(``RATE_LIMITED``, ``QUOTA_EXHAUSTED``, ...), else derived from
 the HTTP status, and a top-level ``details`` (validation errors) is preserved.
 Unknown ``error.code`` values never crash the parser — the raw code string
 is preserved on the generic :class:`LexAPIError` (forward compatibility).
@@ -198,7 +198,7 @@ class RateLimitedError(LexAPIError):
 
     Legacy daily-call plans (and the legacy monthly semantic quota) also
     answer 429 when the *quota* is used up: ``code`` is ``QUOTA_EXHAUSTED``
-    (servers before lex-api #304 sent no code; the quota is then recognised
+    (older servers sent no code; the quota is then recognised
     by its shape), :attr:`quota_exhausted` is True, :attr:`resets_at` says
     when it refills, and ``retry_after`` is ``None``. Those are not retried
     automatically.
@@ -217,7 +217,7 @@ class RateLimitedError(LexAPIError):
         """True when the 429 reports an exhausted quota, not a rate limit."""
         if self.code == "QUOTA_EXHAUSTED":
             return True
-        # Fallback for servers before lex-api #304 (no top-level code).
+        # Fallback for older servers (no top-level code).
         return (
             isinstance(self.body, dict)
             and "retryAfter" not in self.body
@@ -610,7 +610,7 @@ def error_from_response(status: int, body: Any, retry_after: float | None = None
       — ``code`` is authoritative;
     - legacy: ``{"error": "<text>", "message": "...", "details": [...]}`` —
       ``error`` is human text, never parsed as a code; the code is the
-      top-level string ``code`` when present (lex-api #304), else derived
+      top-level string ``code`` when present, else derived
       from the HTTP status. ``message`` / ``details`` at the top level are
       kept (also on bodies that carry no ``error`` at all).
 
