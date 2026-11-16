@@ -27,7 +27,9 @@ Keys come from the [LexAPI dashboard](https://lex-api.com/dashboard?ref=pypi-sdk
 ### Search and documents
 
 ```python
-results = client.search("cybersecurity", author=["court-of-justice"], year=2024, document_type="judgment")
+results = client.search(
+    "cybersecurity", author=["court-of-justice"], year=2024, document_type="judgment"
+)
 for hit in results.results:
     print(hit.celex, hit.document_type_code, hit.title)
 
@@ -159,7 +161,7 @@ client = LexAPI(
 )
 ```
 
-Retries are automatic only where a retry cannot charge you twice. Every response exposes `units_charged`, `credits_remaining` and `resets_at`.
+Retries are automatic only where a retry cannot charge you twice. Every typed response exposes `units_charged`, `credits_remaining` and `resets_at`.
 
 ## Development
 
