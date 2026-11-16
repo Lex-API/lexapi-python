@@ -2697,7 +2697,7 @@ class NationalCoverageAvailability:
     documents: int | None
     #: Earliest decision year LexAPI holds (an int year, or ``None``) —
     #: NOT a date string. ``legislation.from_`` is currently always
-    #: ``None`` server-side (the coverage controller hardcodes it); the
+    #: ``None`` server-side (the API fixes it); the
     #: field exists because ``caseLaw.from_`` (the subclass below) is the
     #: same field and IS populated.
     from_: int | None

@@ -84,8 +84,7 @@ COVERAGE_BODY = {
                 "available": True,
                 "description": "Federal law",
                 "documents": 12000,
-                # legislation.from is currently always null server-side —
-                # see nationalCoverageController.js liveJurisdiction().
+                # legislation.from is currently always null server-side.
                 "from": None,
             },
             "caseLaw": {

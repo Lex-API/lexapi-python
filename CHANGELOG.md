@@ -254,8 +254,9 @@ client written for one country now works for every other:
 
 ## [0.2.0] — 2026-10-26
 
-Synced with the LexAPI API (`openapi.yaml`) as of this release. No breaking changes to signatures; behaviour changes are
-listed under **Changed** — read those before upgrading.
+Synced with the LexAPI API (`openapi.yaml`) as of this release. No breaking
+changes to signatures; behaviour changes are listed under **Changed** — read
+those before upgrading.
 
 ### Added
 
