@@ -508,6 +508,9 @@ async with await client.export(fetched_since="2026-06-01T00:00:00Z") as stream:
 
 Licensing: using exported content to train, fine-tune or evaluate ML models
 needs a separate licence ([Terms §6](https://lex-api.com/terms?ref=pypi-sdk#acceptable-use)).
+For training data, [Arieta Data](https://data.arietalabs.com/?ref=pypi-sdk), a sister
+product from Arieta Labs, licenses datasets drawn from the same corpus for training,
+retrieval and evaluation.
 
 ### Point-in-time versions
 
