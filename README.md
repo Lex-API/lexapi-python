@@ -1,8 +1,8 @@
 # lexapi (Python)
 
-Official Python SDK for [LexAPI](https://lex-api.com/?ref=pypi-sdk) — European legal data, made queryable. EUR-Lex, CJEU case law, and the Official Journal behind one REST API.
+Official Python SDK for [LexAPI](https://lex-api.com/?ref=pypi-sdk) — European legal data, made queryable. EUR-Lex, CJEU case law, national law and the Official Journal behind one REST API.
 
-Covers every documented `/api/v1` endpoint (search, documents, point-in-time versions, semantic search incl. `asOf`, the citation graph, webhooks, bulk export), sync and async, with typed responses, typed errors, retries and credit visibility. Python 3.9+; `httpx` is the only dependency. See the [CHANGELOG](https://github.com/Lex-API/lexapi-python/blob/main/CHANGELOG.md).
+Covers every documented `/api/v1` endpoint, sync and async, with typed responses, typed errors and retries. Python 3.9+; `httpx` is the only dependency. Full API reference: [lex-api.com/docs](https://lex-api.com/docs?ref=pypi-sdk). See also the [CHANGELOG](https://github.com/Lex-API/lexapi-python/blob/main/CHANGELOG.md).
 
 ## Install
 
@@ -10,7 +10,7 @@ Covers every documented `/api/v1` endpoint (search, documents, point-in-time ver
 pip install lexapi-client
 ```
 
-> The PyPI distribution is `lexapi-client` (same name as npm’s `@lexapi/client`); the import is `lexapi` — `from lexapi import LexAPI`.
+The import is `lexapi`: `from lexapi import LexAPI`.
 
 ## Quickstart
 
@@ -22,522 +22,110 @@ info = client.get_info()  # free (0 credits)
 print(info.subscription_info.tier, info.credits_remaining)
 ```
 
-Keys come from the [LexAPI dashboard](https://lex-api.com/dashboard?ref=pypi-sdk) and are prefixed `lex_`. Keep them server-side — never ship them in client-side code.
+Keys come from the [LexAPI dashboard](https://lex-api.com/dashboard?ref=pypi-sdk) and are prefixed `lex_`. Keep them server-side.
 
-### Search
+### Search and documents
 
 ```python
 results = client.search(
-    "cybersecurity",
-    author=["court-of-justice"],
-    year=2024,
-    document_type="judgment",
-    max_pages=1,  # 3 credits per page, tier-clamped, unfetched pages refunded
+    "cybersecurity", author=["court-of-justice"], year=2024, document_type="judgment"
 )
 for hit in results.results:
     print(hit.celex, hit.document_type_code, hit.title)
 
-# Capping and fallbacks are surfaced, never hidden:
-if results.truncated:
-    print("tier-capped:", results.truncated_reason)
-if results.partial:
-    print("partial answer:", results.partial_reason)
-if results.post_filtered_by:
-    print("controller post-filter fired on:", results.post_filtered_by)
-print(results.source)  # "soap" | "cellar" | "corpus" | None (EUR-Lex result pages)
-print(results.cache)  # "hit" | "miss" | "bypass" — 60-minute result cache, same price
-
-client.search(
-    "*", date_from="2026-10-01", date_to="2026-10-25", fresh=True
-)  # filter-only, bypass cache
-```
-
-### Documents
-
-```python
 resp = client.get_document("32016R0679", language="fr")
 doc = resp.document
-print(
-    doc.title, doc.date_of_document_iso, resp.source
-)  # source: corpus | cellar | cellar-oj | live
 for article in doc.content.articles[:3]:
     print(article.number, article.title)
 
-# Notice published but no text: a 200 with content=None (billed 1 credit, not 5)
-if not resp.text_available:
-    ta = doc.text_availability
-    print(ta.reason, ta.retryable, ta.available_languages)  # None = unknown, [] = none
-    if ta.latest_consolidated:  # base acts: pointer to CONSLEG
-        print("try", ta.latest_consolidated.celex)
-
-# Title not in the requested language? titleLanguage says which language it is in
-print(doc.title_language)
-
-# Authentic text in another language in one call (most General Court decisions have no English)
-resp = client.get_document("62019TJ0001", accept_languages=["fr", "de"])  # or "any"
-print(resp.document.language, resp.document.language_fallback)
-
-# Trim the payload: only metadata + one article
+# Only metadata + one article
 resp = client.get_document("32016R0679", include=["metadata", "articles"], article_id="17")
 
-# Batch — per-CELEX failures don't abort the batch
 batch = client.get_documents_batch(["32016R0679", "62018CJ0311"])
-print(batch.successful, "ok /", batch.failed, "failed /", batch.text_unavailable, "without text")
-print(batch.corpus_hits, batch.cellar_served, batch.oj_recovered, batch.live_fetches)
-if batch.trimmed:  # tier ceiling hit — mirrored from X-Warning too
-    print(batch.trimmed_reason)
-
-recent = client.get_recent_documents(
-    days=3, document_type="regulation"
-)  # one type; author may be a list
-print(recent.source)  # "cellar" (unfiltered: 3 credits flat) or "live" (per page)
-by_url = client.get_document_by_url(
-    "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679"
-)
-meta = client.get_document_metadata("32016R0679").metadata  # no body parse
+meta = client.get_document_metadata("32016R0679").metadata
 celex = client.resolve("ECLI:EU:C:2020:559").celex  # CELEX/URL/ELI/ECLI → CELEX
-# .resolved_via: celex / url / ecli-corpus / eli-corpus / eli-cellar / eli;
-# .verified False = not confirmed by a lookup (None on older servers)
 ```
 
-Typed responses stay mapping-compatible (`results["totalResults"]` works) and
-every typed model keeps the raw payload on `.raw`.
+Typed responses stay mapping-compatible (`results["totalResults"]` works) and every typed model keeps the raw payload on `.raw`.
 
 ### Semantic search
 
 ```python
-# Case law (CJEU) — concept queries, similarity-ranked (5 credits)
-resp = client.semantic_search(
-    "transfer of personal data to third countries",
-    min_score=0.5,  # widen recall past the ~0.7 default relevance floor
-    limit=10,
-)
+resp = client.semantic_search("transfer of personal data to third countries", limit=10)
 for hit in resp.results:
-    print(f"{hit.score:.2f}", hit.celex, hit.case_number, hit.case_name, hit.snippet)
-if resp.hint:  # present only on low-confidence (best-effort) responses
-    print(resp.hint)
+    print(f"{hit.score:.2f}", hit.celex, hit.case_number, hit.case_name)
 
-# HyDE query rewriting for terse/keyword queries — 15 credits instead of 5
-resp = client.semantic_search("credit scoring article 22", hyde=True)
-print(resp.hyde)  # False means the LLM fell back — premium auto-refunded
-print(resp.units_charged)  # 15 when HyDE ran, 5 after a fallback
-print(resp.hypothetical_document)  # the LLM-drafted passage (when HyDE ran)
-
-# Legislation — article-level matches (HyDE is case-law only; limit capped at 50)
 laws = client.semantic_legislation_search("right to be forgotten", limit=5)
 for hit in laws.results:
     print(hit.law_id, hit.article_ref, hit.law_title)
-    if hit.consolidated:  # merged hit: consolidated text + the authentic act's own match
-        print("  consolidated as of", hit.consolidated_as_of, "— cite", hit.base_celex)
-        print("  ", hit.consolidated_note)
-```
+    if hit.consolidated:  # consolidated text: cite the authentic act
+        print("  cite", hit.base_celex)
 
-#### The text in force on a date (`as_of`)
-
-```python
-import datetime
-
+# The law as in force on a past date
 laws = client.semantic_legislation_search("own funds requirements", as_of="2019-06-01")
-# as_of also accepts a datetime.date
-print(laws.as_of, laws.as_of_summary.live_fetches, laws.as_of_summary.unresolved)
-for hit in laws.results:
-    if hit.as_of_resolved:
-        v = hit.as_of_version  # kind: "consolidated" | "as_published"
-        print(hit.law_id, hit.article_ref, v.kind, v.date)
-        if hit.matched_version:  # the text was swapped for the version in force
-            print("  index matched", hit.matched_version.law_id)
-    else:
-        print(hit.law_id, "kept its latest text:", hit.as_of_reason)  # see lexapi.AS_OF_REASONS
 ```
-
-Each hit is checked for being in force on that date and answered with the act
-as published before its first consolidation, otherwise the consolidated version
-in force. Cost: 5 credits for the search; each version the corpus doesn't hold
-is fetched live (at most 3 per request by default) and settles at 4 (Cellar),
-5 (browser), 1 (no text) or 0 (failed / timed out). A fetch the pool can't
-cover is skipped (`as_of_reason == "insufficient_credits"`) — only the search
-itself can raise `CreditsExhaustedError`. An invalid date is a 400
-(`InvalidParamsError`, refunded).
 
 ### Citations
 
-The typed citation graph lives under `client.citations`:
-
 ```python
-client.citations.extract("32016R0679")  # crawl + persist edges (5 credits, 1 if already done)
-
+client.citations.extract("32016R0679")
 inbound = client.citations.cited_by("32008R1272", citation_type="corrigendum", limit=50)
-print(inbound.total_edges, "edge rows;", inbound.total_citations, "document pairs")
-print(inbound.counts_source)  # "stats" or "counted" — both exact for the request
-print(inbound.relation_sync.status)  # Cellar refresh state of amendment/corrigendum/repeal edges
-
-for group in client.citations.iter_cited_by("32008R1272"):  # walks every edge page (1 credit each)
-    print(group.celex_number, group.citation_count)
-
 outbound = client.citations.cites("32016R0679")
-network = client.citations.network("32016R0679", limit=100)  # 20 credits
-if network.partial:  # server-side budget expired — 200, not an error
-    print(network.message)
-
+network = client.citations.network("32016R0679", limit=100)
 path = client.citations.path("32016R0679", "31995L0046", max_depth=4)
-if path.found:
-    print(" -> ".join(node.celex_number for node in path.path))
+related = client.citations.related("32016R0679", limit=10)
 
-related = client.citations.related("32016R0679", limit=10)  # bibliographic coupling
-stats = client.citations.stats()
-print(stats.most_cited[0].celex_number)
-
-# National documents in the graph (BUSINESS, SCALE, ENTERPRISE only — TierForbiddenError below that):
-with_national = client.citations.cited_by("32016R0679", include_national=True)
-print(with_national.include_national)  # present once honoured; None while no jurisdiction is live
-national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
-```
-
-Every edge says where it comes from (`provenance`) and how its target was
-identified (`resolution`, national edges only); every node carries `id`,
-`jurisdiction` and `document_kind`. The edge reads (`cited_by`, `cites`,
-`network`, `path`, `related`) filter on `citation_type`, `provenance`,
-`jurisdictions` and `resolution` — each one value or a list, sent
-comma-separated. An unknown value raises `InvalidParamsError` with `.param`
-and `.allowed` (refunded):
-
-```python
-amendments = client.citations.cited_by(
-    "32016R0679",
-    citation_type=["amendment", "repeal"],
-    provenance=["cellar", "notice+cellar"],
-)
-for group in amendments.cited_by:
-    for edge in group.citations:
-        print(group.id, group.jurisdiction, edge.citation_type, edge.provenance)
-
-network = client.citations.network("32016R0679")
-for neighbour in network.cites:
-    print(neighbour.id, [(d.citation_type, d.provenance) for d in neighbour.edge_details])
-
-# National edges (BUSINESS+): only id/key matches, from Austria and the EU,
-# plus the references that could not be resolved.
-outbound = client.citations.cites(
-    "AT-NOR-10001597", jurisdictions=["eu", "at"], resolution=["id", "key"], unresolved=True
-)
-for ref in outbound.unresolved or []:
-    print(ref.kind, ref.text, ref.status)
-```
-
-**Notified measures (`transposition`, 5 credits, every plan).** The
-measures the member states notified to the Commission for an EU act, by
-country. A notification is not a finding that the measure transposes the
-act, or transposes it completely — show `note` with the measures and keep
-`source_cellar.attribution` with anything you republish. On BUSINESS,
-SCALE and ENTERPRISE the live jurisdictions also say which measures LexAPI
-holds (`id`, `resolved`, `resolution`); below that those fields are `None`.
-
-```python
 measures = client.citations.transposition("32016L0680", jurisdictions=["es", "cz"])
 print(measures.note)
-for country in measures.jurisdictions:
-    for m in country.measures:
-        print(
-            country.jurisdiction, m.title, m.official_journal.date if m.official_journal else None
-        )
-held = client.citations.transposition("32016L0680", resolved_only=True)  # BUSINESS+
 ```
 
-**Counterparts (`counterparts`, 20 credits, BUSINESS and above).** A
-national document's counterparts in the other live jurisdictions, through
-the EU acts it transposes or implements, ranked 1 (the national source
-records the relation), 2 (a notified measure LexAPI holds) or 3 (a notified
-measure LexAPI does not hold). A lookup past its server-side budget raises
-`TimeoutError` (`.partial`, refunded). The SDK does not retry it, because
-re-running waits the full budget again; narrow it with `jurisdictions`:
+A notified measure (`transposition`) is not a finding that the measure transposes the act. Keep `source_cellar.attribution` with anything you republish.
+
+### National law
 
 ```python
-result = client.citations.counterparts("AT-NOR-10001597", jurisdictions=["si", "cz"])
-for via in result.via:
-    print(via.eu_act.id, via.eu_act.notified_measures)
-    for c in via.counterparts:
-        print(" ", c.rank, c.jurisdiction, c.id, c.title)
+coverage = client.national.coverage()  # free
+doc = client.national.get_document("AT", "AT-NOR-10001597").document
+print(doc.title, doc.attribution)
+hits = client.national.semantic_search("AT", "data breach notification duty")
 ```
 
-`cited_by`, `cites`, `network`, `path`, `related` and `stats` all accept
-`include_national=True` to also return/follow national documents of live
-jurisdictions (BUSINESS, SCALE and ENTERPRISE only). `celex` (and `path`'s
-`from_celex`/`to_celex`) may be a national document id directly, with or
-without the flag; such an id whose jurisdiction isn't live raises
-`NotFoundError`.
+Every national result carries `attribution` (the official source and its licence); LexAPI's Terms require it to be kept with republished content.
 
 ### Webhooks
 
 ```python
-# New documents matching criteria, a watch list of acts, or both.
-# The secret is returned ONLY on create — store it to verify X-Webhook-Signature.
 created = client.webhooks.create(
     "Chemicals compliance watch",
     "https://example.com/webhooks/lexapi",
-    {"documentType": "regulation", "query": "chemical"},  # documents.new (optional)
-    watch_celex=["32006R1907", "32008R1272"],  # watchlist.changes (optional)
+    {"documentType": "regulation", "query": "chemical"},
+    watch_celex=["32006R1907", "32008R1272"],
 )
-secret = created.webhook.secret
-
-hooks = client.webhooks.list()
-hook = client.webhooks.get(created.webhook.id)  # incl. 20 recent deliveries + retry_policy
-print(hook.webhook.criteria_errors)  # stored criteria a newer rule rejects
-resp = client.webhooks.update(hook.webhook.id, status="ACTIVE")  # resets failures, re-queues
-print(resp.requeued_deliveries)
-client.webhooks.update(hook.webhook.id, watch_celex=["32008R1272"], remove_search_criteria=True)
-
-result = client.webhooks.test(hook.webhook.id)  # synchronous test delivery
-if not result.ok:  # HTTP 200 either way
-    print(result.delivery.error_message)
-
-for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # all pages, deduped on id
-    print(delivery.status, delivery.response_status)
-
-client.webhooks.delete(hook.webhook.id)
+secret = created.webhook.secret  # returned only on create
 ```
 
-Verifying a delivery in your endpoint (pass the **raw** request body bytes):
+Verifying a delivery (pass the **raw** request body bytes):
 
 ```python
 from lexapi import WebhookSignatureError, verify_webhook
 
-
-def handle_delivery(raw_body: bytes, signature: str) -> int:
-    try:
-        event = verify_webhook(raw_body, signature, secret)  # 5-minute replay window
-    except WebhookSignatureError:
-        return 401
-    if event["event"] == "watchlist.changes":
-        for change in event["data"]["changes"]:
-            print(change["watchedCelex"], change["relation"], change["document"]["celex"])
-    # dedupe side effects on event["delivery"]["id"] — stable across retries
-    return 200
-```
-
-### National law
-
-National jurisdictions (member states, and non-EU legal orders such as the UK) live under `client.national`. Call `coverage()`
-first — a jurisdiction that has not launched yet answers every other national
-method with `NotFoundError`, exactly like one that does not exist:
-
-```python
-coverage = client.national.coverage()  # public, free
-for j in coverage.jurisdictions:
-    if j.live:
-        print(j.code, j.name, j.legislation.documents, j.case_law.courts)
-        for source in j.sources:
-            print(source.name, source.licence, source.attribution)  # show this to users
-
-doc = client.national.get_document("AT", "AT-NOR-10001597").document
-print(doc.title, doc.attribution)  # always show attribution
-for article in doc.content.articles if doc.content else []:
-    print(article.number, article.title, article.text or "(no text)")
-
-page = client.national.list_documents(
-    "AT", q="Datenschutz", limit=20
-)  # document_type is the source's own label (German for RIS), not an EU-style enum
-print(page.total, page.total_exact, [d.title for d in page.results])
-for p in client.national.iter_documents(
-    "AT", q="Datenschutz", limit=100
-):  # cursor paging past page's 1,000-row ceiling
-    print(p.has_more, p.next_cursor)
-
-hits = client.national.semantic_search("AT", "data breach notification duty")
-for r in hits.results:
-    print(r.document_id, r.score, r.attribution, r.document.ecli, r.document.date_of_document)
-
-legislation_hits = client.national.legislation_semantic_search("AT", "right to erasure")
-```
-
-**One shape for every country (requires LexAPI API 2.8.0).** National
-documents have the same fields, types and formats in every jurisdiction, so
-code written for one country works for all of them. Every field is always
-present — one the source does not provide is `None` (or `[]`):
-
-- `document_kind` (`"act"` | `"decision"`; `is_act` / `is_decision`) tells
-  legislation from case law everywhere; `document_type` is the source's own
-  label, in its language.
-- `decision` (`NationalDecision`) — on a decision, `court`, `chamber`,
-  `case_numbers` and `cited_norms` (`NationalCitedNorm`: `text`,
-  `document_id`), read server-side from whichever fields the source uses (also
-  when the decision has no text); `None` for acts.
-- `content` (`NationalDocumentContent`, or `None` when there is no text — see
-  `text_availability`): `full_text`, `articles` (`NationalArticle`: `number`,
-  `title`, `section`, `text` — `None` when the source publishes no text for
-  that unit — `in_force_from`, `in_force_to`, `details`), `text_languages`,
-  `text_language`, `embedded_foreign_text`, `repeal`, `source` and `details`.
-  What a source adds beyond these fields is under `content.details` /
-  `article.details` — source-specific, keys differ by country.
-- Semantic hits carry `document` (the listing's summary of the matched
-  document); legislation hits always carry `law_title`, `article_ref`,
-  `section`, `language`, `in_force`, `valid_from`, `valid_to` and `law_type`,
-  `None` when the index has nothing.
-
-```python
-d = client.national.get_document("DE", "DE-JUD-BFH-KBRE202550123").document
-if d.is_decision and d.decision:
-    print(d.decision.court, ", ".join(d.decision.case_numbers))  # BFH 3. Senat III R 27/24
-    for norm in d.decision.cited_norms:
-        print(norm.text, norm.document_id or "(not identified)")
-```
-
-**Pricing below BUSINESS** (FREE, STARTER, PROFESSIONAL): each call to the four
-non-coverage methods above also draws from a monthly allowance of national
-calls (FREE 30, STARTER 500, PROFESSIONAL 2,000 per UTC month). A used-up
-allowance raises `NationalAllowanceExhaustedError` (402) with `jurisdiction`,
-`limit`, `remaining`, `resets_at` and `upgrade_url`, before any credit is
-charged; BUSINESS and above have no separate limit. Every response from
-these methods exposes `response.national_allowance_limit` /
-`national_allowance_remaining` / `national_allowance_resets_at` (present
-only for FREE/STARTER/PROFESSIONAL).
-
-```python
-from lexapi import NationalAllowanceExhaustedError
-
 try:
-    client.national.get_document("AT", "AT-NOR-12345")
-except NationalAllowanceExhaustedError as err:
-    print(err.limit, err.remaining, err.resets_at, err.upgrade_url)
-```
-
-The two `semantic_search` / `legislation_semantic_search` methods also raise
-`NationalSemanticNotEnabledError` (409 — this jurisdiction's index doesn't
-search yet) and `NationalSemanticUnavailableError` (503 — temporarily down,
-a `ServiceUnavailableError`); both expose `.jurisdiction` and charge nothing:
-
-```python
-from lexapi import NationalSemanticNotEnabledError, NationalSemanticUnavailableError
-
-try:
-    client.national.semantic_search("AT", "Datenschutz")
-except NationalSemanticNotEnabledError as err:
-    print(f"{err.jurisdiction} semantic search isn't enabled yet")
-except NationalSemanticUnavailableError as err:
-    # Catch this specific subclass, not the broader ServiceUnavailableError
-    # it extends — a plain EU 503 has no .jurisdiction attribute.
-    print(f"{err.jurisdiction} semantic index is temporarily down, retry later")
-```
-
-**Incomplete national searches.** When the national index could not complete
-a semantic search, results may be incomplete. With hits left, the response
-has `partial` (True), `partial_reason` (`"SEARCH_INCOMPLETE"`) and a `hint`
-(retry, or rephrase / change the filters). With nothing left to return the
-call raises instead: `NationalSemanticUnavailableError` (503,
-`partial_reason == "SEARCH_INCOMPLETE"`, `retry_after` when a retry may help —
-retried at most once per call, only with `retry_read_only_posts`; without a
-wait the same search has repeatedly come back incomplete and is not retried
-automatically) or `NationalSemanticFilterUnreachableError` (422, an
-`InvalidParamsError` with `.jurisdiction` / `.partial_reason` — a coverage
-limit, not a malformed request: the request may be valid and `.param` is
-`None`; not retryable as is: rephrase the query or change the filters). Both are
-refunded; an empty answer would not have meant "no matches".
-
-```python
-from lexapi import NationalSemanticFilterUnreachableError
-
-try:
-    hits = client.national.legislation_semantic_search("DE", "Haftung")
-    if hits.partial:
-        print(hits.hint)  # results may be missing better matches
-except NationalSemanticFilterUnreachableError:
-    ...  # rephrase the query or change the filters
-```
-
-`include_national` on the citation-graph methods and national ids on
-`/citations/*` are implemented — see [Citations](#citations) above.
-`coverage()` also reports each live jurisdiction's measured citation graph
-(`citation_graph`: extraction `methods`, `edges`, resolution rates,
-`precision`, `floors`; a rate that is not measured is `None` and its reason
-is in `methods.unmeasured`).
-
-Until 2026-11-12, an account created before 2026-10-16T18:43:20Z that has
-not yet accepted the national-source terms in the dashboard gets
-`NationalTermsNotAcceptedError` (403; `.accept_url`, `.terms_url`,
-`.terms_version`) from the national citation routes.
-
-`get_document` (and the citation methods, for a withdrawn national id)
-raise `DocumentWithdrawnError` (410) for a document its source withdrew —
-nothing of it is served, not even the title; drop any copy you hold:
-
-```python
-from lexapi import DocumentWithdrawnError
-
-try:
-    client.national.get_document("AT", "AT-NOR-5")
-except DocumentWithdrawnError as err:
-    print(err.id, err.jurisdiction, err.withdrawn_at)
+    event = verify_webhook(raw_body, signature, secret)
+except WebhookSignatureError:
+    ...  # reject
 ```
 
 ### Corpus export (BUSINESS, SCALE, ENTERPRISE)
 
-`export()` streams NDJSON rows with constant memory; the `_meta` / `_done`
-envelopes and export headers are exposed on the stream.
-
-**Billing (credit plans, API 2.3.0):** 1 credit per row written, at least 1 per
-export. The call is admitted for 1 credit, the matching rows are counted, and
-the rest of 1 credit per row it can return is reserved; a pool that cannot
-cover it raises `CreditsExhaustedError` before anything streams. Unwritten
-rows are refunded when the stream ends: `stream.done["credits"]["charged"]`.
-
-**Filters:** `document_type` matches the stored label exactly, ignoring case;
-`document_type_code="regulation"` selects the family (incl. implementing and
-delegated regulations); `author` matches whole values; `date_from` / `date_to`
-are `YYYY-MM-DD`; `changed_since` returns rows whose text changed (the
-cheapest incremental sync) and `fetched_since` rows written to at all — both an
-ISO date or a timezone-aware date-time (a naive `datetime` raises
-`ValueError`); `limit` is a positive integer.
-
 ```python
 with client.export(document_type_code="regulation", date_from="2024-01-01", limit=10_000) as stream:
-    print(stream.total, stream.streaming)  # X-Export-Total / X-Export-Streaming
     for row in stream:  # one dict per corpus row
         ingest(row["celex"], row.get("parsedContent"))
-    print(stream.meta)  # leading _meta envelope
-    print(stream.written, stream.truncated, stream.skipped_stubs)  # _done trailer
-
-# Metadata-only rows (no text) are skipped unless include_stubs=True.
-# A connection drop mid-stream raises LexAPIConnectionError / RequestTimeoutError,
-# and a body that ends without its _done trailer raises IncompleteExportError
-# (after yielding the rows that arrived) — a cut-short export never looks complete.
-
-# Async
-async with await client.export(fetched_since="2026-06-01T00:00:00Z") as stream:
-    async for row in stream:
-        ingest(row)
 ```
 
-Licensing: using exported content to train, fine-tune or evaluate ML models
-needs a separate licence ([Terms §6](https://lex-api.com/terms?ref=pypi-sdk#acceptable-use)).
-For training data, [Arieta Data](https://data.arietalabs.com/?ref=pypi-sdk), a sister
-product from Arieta Labs, licenses datasets drawn from the same corpus for training,
-retrieval and evaluation.
-
-### Point-in-time versions
-
-Versions are LexAPI *observation snapshots* — the document as fetched — not
-legal in-force reconstructions; history begins at first ingestion. (For the
-text *in force* on a date, use `semantic_legislation_search(as_of=...)` or a
-consolidated CELEX such as `02016R0679-20180524`.)
-
-```python
-history = client.list_document_versions("32016R0679")
-print(history.current_version, history.tracked_since)
-for v in history.versions:
-    print(v.version, v.fetched_at, v.content_hash, "(current)" if v.is_current else "")
-
-snapshot = client.get_document_version("32016R0679", 2)
-print(snapshot.document.parsed_content)
-
-as_of = client.get_document_at_date("32016R0679", "2026-03-20")  # or a datetime.date
-print(as_of.as_of, as_of.document.version)
-```
-
-Each call costs 1 credit. Dates before the document entered the corpus raise
-`NotFoundError` with the tracking start date in the message.
+Using LexAPI content to train, fine-tune or evaluate ML models needs a separate licence ([Terms §6](https://lex-api.com/terms?ref=pypi-sdk#acceptable-use)). [Arieta Data](https://data.arietalabs.com/?ref=pypi-sdk), a sister product from Arieta Labs, licenses datasets drawn from the same corpus.
 
 ### Async
-
-Every operation is also available on the async client:
 
 ```python
 import asyncio
@@ -547,56 +135,15 @@ from lexapi import AsyncLexAPI
 async def main():
     async with AsyncLexAPI() as client:  # LEXAPI_API_KEY from the env
         info = await client.get_info()
-        laws = await client.semantic_legislation_search("own funds", as_of="2019-06-01")
-        async for group in client.citations.iter_cited_by("32008R1272"):
-            print(group.celex_number)
 
 
 asyncio.run(main())
 ```
 
-### Credit visibility
-
-Every response wrapper exposes the credit envelope without losing access to
-the raw body:
+### Errors, retries and configuration
 
 ```python
-resp = client.get_document("32016R0679")
-resp["credits"]  # raw body access still works (Mapping)
-resp.units_charged  # credits this request cost after settlement (1 from the corpus)
-resp.credits_remaining  # credits.remaining, falling back to usage.remaining
-resp.resets_at  # ISO-8601 timestamp of the next monthly reset
-resp.credits  # full typed CreditsInfo (None on legacy daily-call accounts)
-resp.subscription_info  # typed subscription block (tier, max_pages, max_results, ...)
-resp.rate_limit_remaining  # RateLimit-Remaining (also rate_limit_limit / rate_limit_reset)
-```
-
-Refunds for *failed* requests (4xx in full, 404 down to 1, 5xx in full) are
-applied just after the response is sent, so the next call reflects them.
-
-### Typed errors
-
-All non-2xx responses raise a typed exception mirroring the API's stable
-error-code enum (both the typed envelope and the legacy bare `{"error": ...}`
-shape are handled; a legacy body's `details` list is kept on `err.details`):
-
-```python
-from lexapi import (
-    LexAPIError,  # base — code / message / status / details / body / retry_after
-    NotFoundError,  # 404 NOT_FOUND
-    InvalidCelexError,  # 400 INVALID_CELEX
-    InvalidParamsError,  # 400 INVALID_PARAMS (e.g. an invalid as_of)
-    RateLimitedError,  # 429 — .retry_after; code QUOTA_EXHAUSTED / .quota_exhausted / .resets_at on legacy quotas
-    CreditsExhaustedError,  # 402 CREDITS_EXHAUSTED — .resets_at, .operation, .weight, .available
-    TierForbiddenError,  # 403 TIER_FORBIDDEN — .upgrade_url on legacy tier gates
-    UpstreamError,  # 502 UPSTREAM_ERROR
-    TimeoutError,  # 504 TIMEOUT (server-side upstream timeout, retry-safe)
-    AuthenticationError,  # 401 — missing/invalid/deactivated key
-    RequestTimeoutError,  # the SDK's own timeout elapsed
-    ServiceUnavailableError,  # 503 (SDK code SERVICE_UNAVAILABLE; subclass of UpstreamError)
-    InvalidResponseError,  # a 2xx whose body is not JSON (e.g. a proxy's HTML page)
-    IncompleteExportError,  # export stream ended without a complete _done trailer
-)
+from lexapi import LexAPI, LexAPIError, CreditsExhaustedError, RateLimitedError, RetryConfig
 
 try:
     client.semantic_search("credit scoring")
@@ -606,71 +153,15 @@ except RateLimitedError as err:
     print(f"rate limited, retry in {err.retry_after}s")
 except LexAPIError as err:
     print(err.code, err.status, err.message)
-```
 
-### Retries
-
-Retries are automatic (default: up to 3, exponential backoff + full jitter,
-honouring `Retry-After`) **only when a retry cannot charge you twice**. LexAPI
-refunds a failed request only when its own app finishes the error response, so
-the SDK retries:
-
-- a **429** — any call (the rate limiter runs before any charge);
-- a 502/503/504 **from the LexAPI app** — GET calls (refunded in full);
-- requests that **never reached the app** — connect errors, a stale
-  keep-alive connection closed before any response, Cloudflare 521/522/523 —
-  any call;
-- anything else (proxy 502/504, Cloudflare 520/524, a connection dropped
-  mid-response) only for **free** calls (`get_info`, webhook reads).
-
-POSTs, including webhook create/update/test, are never retried on a 5xx by
-default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
-read-only POSTs (search, document reads, resolve, semantic search) on an
-app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
-(`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
-Every wait, server-directed ones included, is clamped to `backoff_cap`
-(default 30 s): a cap below the server's requested wait shortens it.
-
-```python
-from lexapi import LexAPI, RetryConfig
-
-client = LexAPI(max_retries=5)  # just the budget
 client = LexAPI(
-    retry_config=RetryConfig(  # full control
-        max_retries=2,
-        backoff_base=1.0,
-        backoff_cap=10.0,
-    )
-)
-client = LexAPI(retry_config=RetryConfig(retry_read_only_posts=True))
-client = LexAPI(max_retries=0)  # disable retries
-```
-
-### Configuration
-
-```python
-client = LexAPI(
-    api_key="lex_...",  # or LEXAPI_API_KEY env var
-    base_url="https://lex-api.com/api/v1",
-    timeout=95.0,  # per-attempt response timeout, seconds (or an httpx.Timeout)
-    connect_timeout=10.0,
-    user_agent_suffix="myapp/1.0",  # appended to lexapi-python/<version>
-)
-
-# Per-call overrides share the connection pool:
-client.with_options(timeout=30, max_retries=0).semantic_legislation_search(
-    "own funds", as_of="2019-06-01"
+    api_key="lex_...",
+    timeout=95.0,
+    retry_config=RetryConfig(max_retries=2),
 )
 ```
 
-`timeout` is the longest the SDK waits for the next bytes of a response — the
-response head, then each body chunk — on one attempt; it is not a deadline
-for the whole call. The 95 s default sits above the API's 90 s budget for one
-upstream EUR-Lex fetch, so that common timeout comes back as the server's
-typed `TimeoutError` (504, refunded), and below Cloudflare's 100 s limit
-(beyond which you get a 524). A request needing several upstream fetches can
-still run past it and raise a local `RequestTimeoutError`; values above ~100 s
-buy nothing on the public endpoint.
+Retries are automatic only where a retry cannot charge you twice. Every typed response exposes `units_charged`, `credits_remaining` and `resets_at`.
 
 ## Development
 
@@ -681,4 +172,6 @@ ruff check .
 mypy
 ```
 
-Docs: <https://lex-api.com/docs?ref=pypi-sdk>
+## License
+
+MIT
