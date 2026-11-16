@@ -18,6 +18,7 @@ from lexapi._retry import (
     DEFAULT_RETRY_CONFIG,
     RetryConfig,
     compute_backoff,
+    is_incomplete_search,
     is_quota_exhausted,
     is_retryable_exception,
     retry_wait,
@@ -126,13 +127,27 @@ def status_retry_wait(
     *,
     read_only: bool = False,
     free: bool = False,
+    incomplete_retried: bool = False,
 ) -> float | None:
     """Wait before retrying a non-2xx response, or ``None`` for "don't"."""
     if response.is_success:
         return None
     return retry_wait(
-        method, response, decode_body(response), attempt, config, read_only=read_only, free=free
+        method,
+        response,
+        decode_body(response),
+        attempt,
+        config,
+        read_only=read_only,
+        free=free,
+        incomplete_retried=incomplete_retried,
     )
+
+
+def is_incomplete_search_response(response: httpx.Response) -> bool:
+    """An incomplete national semantic search 503 (see
+    :func:`lexapi._retry.is_incomplete_search`)."""
+    return is_incomplete_search(response.status_code, decode_body(response))
 
 
 def exception_retry_wait(

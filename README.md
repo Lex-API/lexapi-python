@@ -96,6 +96,8 @@ by_url = client.get_document_by_url(
 )
 meta = client.get_document_metadata("32016R0679").metadata  # no body parse
 celex = client.resolve("ECLI:EU:C:2020:559").celex  # CELEX/URL/ELI/ECLI → CELEX
+# .resolved_via: celex / url / ecli-corpus / eli-corpus / eli-cellar / eli;
+# .verified False = not confirmed by a lookup (None on older servers)
 ```
 
 Typed responses stay mapping-compatible (`results["totalResults"]` works) and
@@ -416,6 +418,31 @@ except NationalSemanticUnavailableError as err:
     print(f"{err.jurisdiction} semantic index is temporarily down, retry later")
 ```
 
+**Incomplete national searches.** When the national index could not complete
+a semantic search, results may be incomplete. With hits left, the response
+has `partial` (True), `partial_reason` (`"SEARCH_INCOMPLETE"`) and a `hint`
+(retry, or rephrase / change the filters). With nothing left to return the
+call raises instead: `NationalSemanticUnavailableError` (503,
+`partial_reason == "SEARCH_INCOMPLETE"`, `retry_after` when a retry may help —
+retried at most once per call, only with `retry_read_only_posts`; without a
+wait the same search has repeatedly come back incomplete and is not retried
+automatically) or `NationalSemanticFilterUnreachableError` (422, an
+`InvalidParamsError` with `.jurisdiction` / `.partial_reason` — a coverage
+limit, not a malformed request: the request may be valid and `.param` is
+`None`; not retryable as is: rephrase the query or change the filters). Both are
+refunded; an empty answer would not have meant "no matches".
+
+```python
+from lexapi import NationalSemanticFilterUnreachableError
+
+try:
+    hits = client.national.legislation_semantic_search("DE", "Haftung")
+    if hits.partial:
+        print(hits.hint)  # results may be missing better matches
+except NationalSemanticFilterUnreachableError:
+    ...  # rephrase the query or change the filters
+```
+
 `include_national` on the citation-graph methods and national ids on
 `/citations/*` are implemented — see [Citations](#citations) above.
 `coverage()` also reports each live jurisdiction's measured citation graph
@@ -598,6 +625,8 @@ default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
 read-only POSTs (search, document reads, resolve, semantic search) on an
 app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
+Every wait, server-directed ones included, is clamped to `backoff_cap`
+(default 30 s): a cap below the server's requested wait shortens it.
 
 ```python
 from lexapi import LexAPI, RetryConfig

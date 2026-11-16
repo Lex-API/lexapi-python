@@ -263,7 +263,16 @@ class NationalResource:
         :class:`~lexapi.errors.NationalSemanticNotEnabledError` (409) when
         the index does not search this jurisdiction, or
         :class:`~lexapi.errors.NationalSemanticUnavailableError` (503) when
-        it is temporarily down — neither charges anything.
+        it is temporarily down, or could not complete this search with
+        nothing left to return (``partial_reason == "SEARCH_INCOMPLETE"``),
+        or :class:`~lexapi.errors.NationalSemanticFilterUnreachableError`
+        (422) when it cannot search this slice completely — none charges
+        anything.
+
+        Returns a response whose ``partial`` is True (``partial_reason``
+        ``"SEARCH_INCOMPLETE"``) when the index could not complete the
+        search but some hits are left: the results may be missing better
+        matches, and ``hint`` says what may complete them.
         """
         return self._client._request(
             "POST",
@@ -303,9 +312,11 @@ class NationalResource:
 
         5 credits flat. Below BUSINESS, counts against the monthly
         national-call allowance. Raises
-        :class:`~lexapi.errors.NationalSemanticNotEnabledError` (409) or
-        :class:`~lexapi.errors.NationalSemanticUnavailableError` (503) —
-        see :meth:`semantic_search`.
+        :class:`~lexapi.errors.NationalSemanticNotEnabledError` (409),
+        :class:`~lexapi.errors.NationalSemanticUnavailableError` (503) or
+        :class:`~lexapi.errors.NationalSemanticFilterUnreachableError`
+        (422), and may return ``partial`` results — see
+        :meth:`semantic_search`.
         """
         return self._client._request(
             "POST",

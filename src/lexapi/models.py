@@ -2531,7 +2531,21 @@ class ResolveResponse(APIResponse):
 
     @property
     def resolved_via(self) -> str | None:
+        """``celex`` / ``url`` (read off the identifier), ``ecli-corpus`` /
+        ``eli-corpus`` (a corpus lookup answered), ``eli-cellar`` (the ELI was
+        looked up in the Publications Office's Cellar register), or ``eli``
+        (the CELEX was derived from the ELI's pattern alone, unverified)."""
         return _s(self._map, "resolvedVia")
+
+    @property
+    def verified(self) -> bool | None:
+        """True when the corpus or Cellar confirmed the identifier → CELEX
+        mapping; False when the CELEX was read off the identifier without a
+        lookup (CELEX and URL inputs — resolve does not check that the
+        document exists — and an ELI resolved from its pattern while Cellar
+        was unreachable, which may name a CELEX that does not exist: resolve
+        it again later). ``None`` on servers older than the field."""
+        return _b(self._map, "verified")
 
     @property
     def urls(self) -> dict[str, Any]:
@@ -3402,6 +3416,22 @@ class _NationalSemanticResponseBase(_SemanticResponseBase):
     @property
     def jurisdiction(self) -> str | None:
         return _s(self._map, "jurisdiction")
+
+    @property
+    def partial(self) -> bool:
+        """True when the national index could not complete the search but
+        some hits are left: the results may be missing better matches.
+        :attr:`hint` says what may complete it — a retry, or a rephrased
+        query / changed filters. With nothing left to return the call raises
+        instead (:class:`~lexapi.errors.NationalSemanticUnavailableError`
+        503, :class:`~lexapi.errors.NationalSemanticFilterUnreachableError`
+        422)."""
+        return _b(self._map, "partial") or False
+
+    @property
+    def partial_reason(self) -> str | None:
+        """``SEARCH_INCOMPLETE`` when :attr:`partial` is set."""
+        return _s(self._map, "partialReason")
 
     @property
     def attribution(self) -> str | None:

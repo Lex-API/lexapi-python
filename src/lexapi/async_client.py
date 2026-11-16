@@ -16,6 +16,7 @@ from lexapi._base import (
     DEFAULT_TIMEOUT,
     build_httpx_kwargs,
     exception_retry_wait,
+    is_incomplete_search_response,
     make_retry_config,
     make_timeout,
     process_response,
@@ -659,6 +660,7 @@ class AsyncLexAPI:
         request_kwargs: dict[str, Any] = {"params": params, "json": json}
         request_kwargs.update(self._timeout_kwargs(timeout))
         attempt = 0
+        incomplete_retried = False
         while True:
             try:
                 response = await self._http.request(method, path, **request_kwargs)
@@ -670,10 +672,17 @@ class AsyncLexAPI:
                 attempt += 1
                 continue
             wait = status_retry_wait(
-                method, response, attempt, self._retry, read_only=read_only, free=free
+                method,
+                response,
+                attempt,
+                self._retry,
+                read_only=read_only,
+                free=free,
+                incomplete_retried=incomplete_retried,
             )
             if wait is None:
                 return process_response(response, cast)
+            incomplete_retried = incomplete_retried or is_incomplete_search_response(response)
             await asyncio.sleep(wait)
             attempt += 1
 
