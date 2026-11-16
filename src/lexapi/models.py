@@ -808,6 +808,56 @@ class RecentDocumentsResponse(APIResponse):
 
 # ── Citations ───────────────────────────────────────────────────────────
 
+#: ``citationType`` values, copied from openapi.yaml. Typed as ``str`` on
+#: the models so a value added by a newer API version never breaks parsing.
+CitationType = Literal[
+    "reference",
+    "amendment",
+    "repeal",
+    "corrigendum",
+    "implementation",
+    "legal-basis",
+    "proposal",
+    "transposition",
+]
+
+#: Every documented ``citationType`` value.
+CITATION_TYPES: tuple[str, ...] = CitationType.__args__  # type: ignore[attr-defined]
+
+#: Where an edge comes from (``provenance``). ``source`` and ``resolver``
+#: are national edges; ``None`` on the wire is a national edge not yet
+#: classified.
+CitationProvenance = Literal[
+    "notice",
+    "cellar",
+    "notice+cellar",
+    "cellar-nim",
+    "source",
+    "resolver",
+]
+
+#: Every documented ``provenance`` value.
+CITATION_PROVENANCES: tuple[str, ...] = CitationProvenance.__args__  # type: ignore[attr-defined]
+
+#: How an edge's target was identified (``resolution``) — national edges
+#: only; ``None`` on every edge read from EUR-Lex or Cellar.
+CitationResolution = Literal["id", "key", "abbreviation", "text-pattern"]
+
+#: Every documented ``resolution`` value.
+CITATION_RESOLUTIONS: tuple[str, ...] = CitationResolution.__args__  # type: ignore[attr-defined]
+
+#: Where the paging totals were read from (``countsSource``): the per-node
+#: counts the graph maintains (``stats``), or counted over the matching edge
+#: rows for the request (``counted``). Both are exact for the request.
+CountsSource = Literal["stats", "counted"]
+
+#: A graph node's kind (``documentKind``): ``act``, ``decision`` or ``None``.
+GraphDocumentKind = Literal["act", "decision"]
+
+#: Why a national citation-graph rate is not measured
+#: (``citationGraph.methods.unmeasured`` values).
+UnmeasuredReason = Literal["not-collected", "source-empty"]
+
 
 @dataclass(frozen=True)
 class RelationSync:
@@ -845,13 +895,22 @@ class RelationSync:
 
 @dataclass(frozen=True)
 class CitationEdge:
-    """A single citation edge with classification and context."""
+    """A single citation edge with classification and context.
+
+    ``provenance`` says where the edge comes from (see
+    :data:`CitationProvenance`) and ``resolution`` how its target was
+    identified (see :data:`CitationResolution`; ``None`` on every edge read
+    from EUR-Lex or Cellar). Both are ``None`` on the edges a fresh
+    ``extract`` returns.
+    """
 
     citation_type: str | None
     context_snippet: str | None
     target_celex: str | None
     extracted_at: str | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
+    provenance: str | None = None
+    resolution: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CitationEdge:
@@ -861,18 +920,110 @@ class CitationEdge:
             target_celex=_s(data, "targetCelex"),
             extracted_at=_s(data, "extractedAt"),
             raw=data,
+            provenance=_s(data, "provenance"),
+            resolution=_s(data, "resolution"),
+        )
+
+
+@dataclass(frozen=True)
+class CitationEdgeKind:
+    """One distinct (``citation_type``, ``provenance``, ``resolution``)
+    combination — an item of a network neighbour's ``edge_details``, or a
+    counterpart lookup's ``edge``."""
+
+    citation_type: str | None
+    provenance: str | None
+    resolution: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CitationEdgeKind:
+        return cls(
+            citation_type=_s(data, "citationType"),
+            provenance=_s(data, "provenance"),
+            resolution=_s(data, "resolution"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CitationNode:
+    """A graph node's identity: ``id`` (the CELEX number for an EU
+    document, a national document's LexAPI id otherwise), ``jurisdiction``
+    (``EU`` or the upper-case national code) and ``document_kind``
+    (``act``, ``decision`` or ``None``)."""
+
+    id: str | None
+    celex_number: str | None
+    jurisdiction: str | None
+    document_kind: str | None
+    title: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CitationNode:
+        return cls(
+            id=_s(data, "id"),
+            celex_number=_s(data, "celexNumber"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document_kind=_s(data, "documentKind"),
+            title=_s(data, "title"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class UnresolvedReference:
+    """A reference a national document records that LexAPI could not turn
+    into an edge (``unresolved=True`` on ``cites`` / ``network``).
+
+    ``kind``: ``norm``, ``eu-act``, ``relation``, ``nim``. ``status``:
+    ``unresolved``, ``not-held``, ``ambiguous``, ``out-of-scope``.
+    ``parsed_key`` is what the resolver understood of ``text`` (``None``
+    when nothing); ``target_id`` the id the target would have, when it could
+    be built and is visible to you.
+    """
+
+    kind: str | None
+    text: str | None
+    parsed_key: dict[str, Any] | None
+    status: str | None
+    target_id: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UnresolvedReference:
+        return cls(
+            kind=_s(data, "kind"),
+            text=_s(data, "text"),
+            parsed_key=_opt_dict(data, "parsedKey"),
+            status=_s(data, "status"),
+            target_id=_s(data, "targetId"),
+            raw=data,
         )
 
 
 @dataclass(frozen=True)
 class CitationDocumentGroup:
-    """All edges between one document and the queried document."""
+    """All edges between one document and the queried document.
+
+    ``id`` / ``jurisdiction`` / ``document_kind`` identify the document
+    (see :class:`CitationNode`); ``title_source`` says where ``title`` came
+    from. ``has_resume`` / ``has_summary`` (inbound groups only) say legacy
+    ``_RES`` / ``_SUM`` rows of the document were folded into the group.
+    """
 
     celex_number: str | None
     title: str | None
     citation_count: int | None
     citations: list[CitationEdge]
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
+    id: str | None = None
+    jurisdiction: str | None = None
+    document_kind: str | None = None
+    title_source: str | None = None
+    has_resume: bool | None = None
+    has_summary: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CitationDocumentGroup:
@@ -882,18 +1033,34 @@ class CitationDocumentGroup:
             citation_count=_i(data, "citationCount"),
             citations=_parse_items(data, "citations", CitationEdge),
             raw=data,
+            id=_s(data, "id"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document_kind=_s(data, "documentKind"),
+            title_source=_s(data, "titleSource"),
+            has_resume=_b(data, "hasResume"),
+            has_summary=_b(data, "hasSummary"),
         )
 
 
 @dataclass(frozen=True)
 class CitationNeighbour:
-    """A neighbour in the citation graph, deduplicated across edge types."""
+    """A neighbour in the citation graph, deduplicated across edge types.
+
+    ``edge_details`` lists the distinct (``citation_type``, ``provenance``,
+    ``resolution``) of this page's edges to/from the neighbour; ``types``
+    stays the plain list of types.
+    """
 
     celex_number: str | None
     title: str | None
     count: int | None
     types: list[str]
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
+    id: str | None = None
+    jurisdiction: str | None = None
+    document_kind: str | None = None
+    title_source: str | None = None
+    edge_details: list[CitationEdgeKind] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CitationNeighbour:
@@ -903,6 +1070,11 @@ class CitationNeighbour:
             count=_i(data, "count"),
             types=_str_list(data, "types"),
             raw=data,
+            id=_s(data, "id"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document_kind=_s(data, "documentKind"),
+            title_source=_s(data, "titleSource"),
+            edge_details=_parse_items(data, "edgeDetails", CitationEdgeKind),
         )
 
 
@@ -918,6 +1090,9 @@ class CitationPathNode:
     title: str | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
     title_source: str | None = None
+    id: str | None = None
+    jurisdiction: str | None = None
+    document_kind: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CitationPathNode:
@@ -926,6 +1101,9 @@ class CitationPathNode:
             title=_s(data, "title"),
             raw=data,
             title_source=_s(data, "titleSource"),
+            id=_s(data, "id"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document_kind=_s(data, "documentKind"),
         )
 
 
@@ -939,6 +1117,9 @@ class RelatedDocument:
     shared_targets: list[str]
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
     title_source: str | None = None
+    id: str | None = None
+    jurisdiction: str | None = None
+    document_kind: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RelatedDocument:
@@ -949,6 +1130,9 @@ class RelatedDocument:
             shared_targets=_str_list(data, "sharedTargets"),
             raw=data,
             title_source=_s(data, "titleSource"),
+            id=_s(data, "id"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document_kind=_s(data, "documentKind"),
         )
 
 
@@ -970,6 +1154,62 @@ class CitationStatsEntry:
             cited_by_count=_i(data, "citedByCount"),
             cites_count=_i(data, "citesCount"),
             raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CitationJurisdictionCount:
+    """Edges per jurisdiction in ``CitationStatsResponse.by_jurisdiction``."""
+
+    as_source: int | None
+    as_target: int | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CitationJurisdictionCount:
+        return cls(
+            as_source=_i(data, "asSource"),
+            as_target=_i(data, "asTarget"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class TranspositionCounts:
+    """Notified measures (``measures``) and how many of them are matched to
+    a document LexAPI holds (``resolved``; ``None`` when holdings are not
+    joined)."""
+
+    measures: int | None
+    resolved: int | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TranspositionCounts:
+        return cls(
+            measures=_i(data, "measures"),
+            resolved=_i(data, "resolved"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CitationStatsTransposition(TranspositionCounts):
+    """``stats.transposition`` — totals plus ``by_country``."""
+
+    by_country: dict[str, TranspositionCounts] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CitationStatsTransposition:
+        return cls(
+            measures=_i(data, "measures"),
+            resolved=_i(data, "resolved"),
+            raw=data,
+            by_country={
+                key: TranspositionCounts.from_dict(item)
+                for key, item in _dict(data, "byCountry").items()
+                if isinstance(item, dict)
+            },
         )
 
 
@@ -1015,8 +1255,21 @@ class CitedByResponse(APIResponse):
 
     @property
     def total_citations(self) -> int | None:
-        """Total inbound edges matching the filter (across all pages)."""
+        """Distinct citing→cited document pairs matching the filter (across
+        all pages)."""
         return _i(self._map, "totalCitations")
+
+    @property
+    def total_edges(self) -> int | None:
+        """Edge rows matching the filter — what ``offset`` / ``limit`` page
+        over (can exceed ``total_citations``)."""
+        return _i(self._map, "totalEdges")
+
+    @property
+    def counts_source(self) -> str | None:
+        """Where the totals were read from: ``stats`` or ``counted`` (see
+        :data:`CountsSource`)."""
+        return _s(self._map, "countsSource")
 
     @property
     def unique_documents(self) -> int | None:
@@ -1063,7 +1316,20 @@ class CitesResponse(APIResponse):
 
     @property
     def total_citations(self) -> int | None:
+        """Distinct citing→cited document pairs matching the filter (across
+        all pages)."""
         return _i(self._map, "totalCitations")
+
+    @property
+    def total_edges(self) -> int | None:
+        """Edge rows matching the filter — what ``offset`` / ``limit`` page
+        over."""
+        return _i(self._map, "totalEdges")
+
+    @property
+    def counts_source(self) -> str | None:
+        """Where the totals were read from: ``stats`` or ``counted``."""
+        return _s(self._map, "countsSource")
 
     @property
     def unique_documents(self) -> int | None:
@@ -1089,6 +1355,21 @@ class CitesResponse(APIResponse):
         on :meth:`CitationsResource.cites`). ``None`` while no national
         jurisdiction is live."""
         return _b(self._map, "includeNational")
+
+    @property
+    def unresolved(self) -> list[UnresolvedReference] | None:
+        """With ``unresolved=True`` on a national document id: the
+        references the document records that could not be turned into an
+        edge (at most 500). ``None`` when the field is absent."""
+        value = self._map.get("unresolved")
+        if not isinstance(value, list):
+            return None
+        return [UnresolvedReference.from_dict(item) for item in value if isinstance(item, dict)]
+
+    @property
+    def unresolved_truncated(self) -> bool | None:
+        """``True`` when the document has more than 500 such references."""
+        return _b(self._map, "unresolvedTruncated")
 
 
 class CitationNetworkResponse(APIResponse):
@@ -1131,6 +1412,22 @@ class CitationNetworkResponse(APIResponse):
         return _i(_dict(self._map, "paging"), "citedByTotal")
 
     @property
+    def cites_edge_total(self) -> int | None:
+        """Outbound edge rows — what ``offset`` pages over; None when partial."""
+        return _i(_dict(self._map, "paging"), "citesEdgeTotal")
+
+    @property
+    def cited_by_edge_total(self) -> int | None:
+        """Inbound edge rows — what ``offset`` pages over; None when partial."""
+        return _i(_dict(self._map, "paging"), "citedByEdgeTotal")
+
+    @property
+    def counts_source(self) -> str | None:
+        """Where the paging totals were read from (``stats`` / ``counted``);
+        None when partial."""
+        return _s(_dict(self._map, "paging"), "countsSource")
+
+    @property
     def limit(self) -> int | None:
         return _i(_dict(self._map, "paging"), "limit")
 
@@ -1167,6 +1464,21 @@ class CitationNetworkResponse(APIResponse):
         jurisdiction is live."""
         return _b(self._map, "includeNational")
 
+    @property
+    def unresolved(self) -> list[UnresolvedReference] | None:
+        """With ``unresolved=True`` on a national document id: the
+        references the document records that could not be turned into an
+        edge (at most 500). ``None`` when the field is absent."""
+        value = self._map.get("unresolved")
+        if not isinstance(value, list):
+            return None
+        return [UnresolvedReference.from_dict(item) for item in value if isinstance(item, dict)]
+
+    @property
+    def unresolved_truncated(self) -> bool | None:
+        """``True`` when the document has more than 500 such references."""
+        return _b(self._map, "unresolvedTruncated")
+
 
 class CitationStatsResponse(APIResponse):
     """``GET /citations/stats`` — global citation-graph counters."""
@@ -1197,6 +1509,46 @@ class CitationStatsResponse(APIResponse):
         on :meth:`CitationsResource.stats`). ``None`` while no national
         jurisdiction is live."""
         return _b(self._map, "includeNational")
+
+    @property
+    def cached_at(self) -> str | None:
+        """When these statistics were computed."""
+        return _s(self._map, "cachedAt")
+
+    @property
+    def cache_ttl_seconds(self) -> int | None:
+        return _i(self._map, "cacheTtlSeconds")
+
+    @property
+    def by_jurisdiction(self) -> dict[str, CitationJurisdictionCount] | None:
+        """With ``include_national=True`` only: per jurisdiction (``EU`` and
+        each live one in scope), the edges whose citing end (``as_source``)
+        or cited end (``as_target``) is in it. ``unstamped`` counts edges
+        not yet classified, while there are any."""
+        value = _opt_dict(_dict(self._map, "stats"), "byJurisdiction")
+        if value is None:
+            return None
+        return {
+            key: CitationJurisdictionCount.from_dict(item)
+            for key, item in value.items()
+            if isinstance(item, dict)
+        }
+
+    @property
+    def by_provenance(self) -> dict[str, int] | None:
+        """With ``include_national=True`` only: edges per ``provenance``
+        value (``unstamped`` while edges remain unclassified)."""
+        value = _opt_dict(_dict(self._map, "stats"), "byProvenance")
+        if value is None:
+            return None
+        return {key: count for key in value if (count := _i(value, key)) is not None}
+
+    @property
+    def transposition(self) -> CitationStatsTransposition | None:
+        """With ``include_national=True`` only: the notified measures in
+        scope and how many are matched to a document LexAPI holds."""
+        value = _opt_dict(_dict(self._map, "stats"), "transposition")
+        return CitationStatsTransposition.from_dict(value) if value is not None else None
 
 
 class CitationPathResponse(APIResponse):
@@ -1274,6 +1626,338 @@ class RelatedDocumentsResponse(APIResponse):
     def include_national(self) -> bool | None:
         """Whether national documents were considered (see ``include_national``
         on :meth:`CitationsResource.related`). ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
+
+@dataclass(frozen=True)
+class TranspositionResolutionBasis:
+    """What a measure's match used: ``key_kind`` and ``key`` (for example a
+    gazette number)."""
+
+    key_kind: str | None
+    key: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TranspositionResolutionBasis:
+        return cls(key_kind=_s(data, "keyKind"), key=_s(data, "key"), raw=data)
+
+
+@dataclass(frozen=True)
+class TranspositionOfficialJournal:
+    """Where a measure was published, as notified (each field ``None`` when
+    the record has none)."""
+
+    name: str | None
+    number: str | None
+    date: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TranspositionOfficialJournal:
+        return cls(
+            name=_s(data, "name"),
+            number=_s(data, "number"),
+            date=_s(data, "date"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class TranspositionCellarRecord:
+    """The Cellar record of a member state's notification. ``celex`` is the
+    record's sector-7 CELEX for the act (``None`` when it has none);
+    ``commission_reference`` is always ``None`` (not mirrored)."""
+
+    id: str | None
+    celex: str | None
+    commission_reference: str | None
+    date_document: str | None
+    date_notification: str | None
+    entry_into_force: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TranspositionCellarRecord:
+        return cls(
+            id=_s(data, "id"),
+            celex=_s(data, "celex"),
+            commission_reference=_s(data, "commissionReference"),
+            date_document=_s(data, "dateDocument"),
+            date_notification=_s(data, "dateNotification"),
+            entry_into_force=_s(data, "entryIntoForce"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class TranspositionMeasure:
+    """One measure for an EU act — the same keys for every country.
+
+    ``provenance``: ``cellar-nim`` (the Cellar record of the notification)
+    or ``source`` (the national source records that the document transposes
+    or implements the act; ``cellar`` is then ``None``). ``citation_type``:
+    ``transposition`` or ``implementation``.
+
+    ``id``, ``resolved``, ``resolution`` and ``resolution_basis`` come from
+    LexAPI's holdings: filled on BUSINESS, SCALE and ENTERPRISE for a live
+    jurisdiction, ``None`` below BUSINESS, for a jurisdiction that is not
+    live, and while the national-source terms are not accepted.
+
+    A notification is not a finding that the measure transposes the act,
+    or transposes it completely.
+    """
+
+    id: str | None
+    resolved: bool | None
+    resolution: str | None
+    resolution_basis: TranspositionResolutionBasis | None
+    provenance: str | None
+    citation_type: str | None
+    title: str | None
+    type_act: str | None
+    official_journal: TranspositionOfficialJournal | None
+    reference: str | None
+    eli: str | None
+    link: str | None
+    cellar: TranspositionCellarRecord | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TranspositionMeasure:
+        basis = _opt_dict(data, "resolutionBasis")
+        journal = _opt_dict(data, "officialJournal")
+        cellar = _opt_dict(data, "cellar")
+        return cls(
+            id=_s(data, "id"),
+            resolved=_b(data, "resolved"),
+            resolution=_s(data, "resolution"),
+            resolution_basis=(
+                TranspositionResolutionBasis.from_dict(basis) if basis is not None else None
+            ),
+            provenance=_s(data, "provenance"),
+            citation_type=_s(data, "citationType"),
+            title=_s(data, "title"),
+            type_act=_s(data, "typeAct"),
+            official_journal=(
+                TranspositionOfficialJournal.from_dict(journal) if journal is not None else None
+            ),
+            reference=_s(data, "reference"),
+            eli=_s(data, "eli"),
+            link=_s(data, "link"),
+            cellar=TranspositionCellarRecord.from_dict(cellar) if cellar is not None else None,
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class TranspositionCountry:
+    """One country's measures for the act. ``jurisdiction`` is the
+    upper-case code (``EL`` for Greece, ``UK`` for the United Kingdom);
+    ``live`` whether LexAPI serves that country's national law; ``counts``
+    covers all the country's measures, not only this page of
+    ``measures``."""
+
+    jurisdiction: str | None
+    live: bool | None
+    counts: TranspositionCounts | None
+    measures: list[TranspositionMeasure]
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TranspositionCountry:
+        counts = _opt_dict(data, "counts")
+        return cls(
+            jurisdiction=_s(data, "jurisdiction"),
+            live=_b(data, "live"),
+            counts=TranspositionCounts.from_dict(counts) if counts is not None else None,
+            measures=_parse_items(data, "measures", TranspositionMeasure),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class TranspositionCellarSource:
+    """``source.cellar``: when the act's records were last read
+    (``synced_at``), all its measures across every country (``measures``)
+    and the ``attribution`` to keep with anything you republish."""
+
+    synced_at: str | None
+    measures: int | None
+    attribution: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TranspositionCellarSource:
+        return cls(
+            synced_at=_s(data, "syncedAt"),
+            measures=_i(data, "measures"),
+            attribution=_s(data, "attribution"),
+            raw=data,
+        )
+
+
+class TranspositionResponse(APIResponse):
+    """``GET /citations/transposition/{celex}`` — the measures the member
+    states notified to the Commission for an EU act, grouped by country.
+
+    Always show :attr:`note` with the measures, and keep
+    ``source_cellar.attribution`` with anything you republish.
+    """
+
+    @property
+    def document(self) -> CitationNode | None:
+        value = self._map.get("document")
+        return CitationNode.from_dict(value) if isinstance(value, dict) else None
+
+    @property
+    def source_cellar(self) -> TranspositionCellarSource | None:
+        value = _opt_dict(_dict(self._map, "source"), "cellar")
+        return TranspositionCellarSource.from_dict(value) if value is not None else None
+
+    @property
+    def source_lanes(self) -> list[str] | None:
+        """The live jurisdictions whose own sources record a transposition
+        or implementation of the act; ``None`` when holdings are not
+        joined."""
+        return _opt_str_list(_dict(self._map, "source"), "lanes")
+
+    @property
+    def note(self) -> str | None:
+        """Always: a notification is not a finding that the measure
+        transposes the act, or transposes it completely."""
+        return _s(self._map, "note")
+
+    @property
+    def jurisdictions(self) -> list[TranspositionCountry]:
+        """Per country with at least one measure, in code order."""
+        return _parse_items(self._map, "jurisdictions", TranspositionCountry)
+
+    @property
+    def truncated(self) -> bool:
+        """True when more than 2,000 measures matched (narrow with
+        ``jurisdictions``), or the national sources' edges hit their cap."""
+        return _b(self._map, "truncated") or False
+
+    @property
+    def include_national(self) -> bool | None:
+        """``True`` when LexAPI's holdings are joined (BUSINESS, SCALE,
+        ENTERPRISE), ``False`` otherwise. ``None`` while no national
+        jurisdiction is live."""
+        return _b(self._map, "includeNational")
+
+    @property
+    def terms_required(self) -> bool:
+        """True when holdings would be joined but the national-source terms
+        are not yet accepted (every holdings field is then ``None``)."""
+        return _b(self._map, "termsRequired") or False
+
+
+@dataclass(frozen=True)
+class Counterpart:
+    """A measure of another live jurisdiction for the same EU act.
+
+    ``rank``: ``1`` — the national source records the relation
+    (``provenance`` ``source``); ``2`` — a notified measure LexAPI holds
+    (``cellar-nim``, resolved); ``3`` — a notified Cellar record LexAPI does
+    not hold (``id`` is ``None``).
+    """
+
+    jurisdiction: str | None
+    id: str | None
+    resolved: bool | None
+    title: str | None
+    citation_type: str | None
+    provenance: str | None
+    rank: int | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Counterpart:
+        return cls(
+            jurisdiction=_s(data, "jurisdiction"),
+            id=_s(data, "id"),
+            resolved=_b(data, "resolved"),
+            title=_s(data, "title"),
+            citation_type=_s(data, "citationType"),
+            provenance=_s(data, "provenance"),
+            rank=_i(data, "rank"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class CounterpartEuAct(CitationNode):
+    """The EU act a counterpart group goes through; ``notified_measures``
+    counts the measures all member states notified for it."""
+
+    notified_measures: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CounterpartEuAct:
+        return cls(
+            id=_s(data, "id"),
+            celex_number=_s(data, "celexNumber"),
+            jurisdiction=_s(data, "jurisdiction"),
+            document_kind=_s(data, "documentKind"),
+            title=_s(data, "title"),
+            raw=data,
+            notified_measures=_i(data, "notifiedMeasures"),
+        )
+
+
+@dataclass(frozen=True)
+class CounterpartVia:
+    """One EU act the document transposes or implements, with the other
+    live jurisdictions' measures for it.
+
+    ``edge`` is the document's own edge to the act (``None`` when the
+    queried id is the EU act itself). ``counterparts`` are ordered by
+    ``rank``, then jurisdiction; at most 200 (``truncated``).
+    """
+
+    eu_act: CounterpartEuAct | None
+    edge: CitationEdgeKind | None
+    counterparts: list[Counterpart]
+    truncated: bool
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CounterpartVia:
+        act = _opt_dict(data, "euAct")
+        edge = _opt_dict(data, "edge")
+        return cls(
+            eu_act=CounterpartEuAct.from_dict(act) if act is not None else None,
+            edge=CitationEdgeKind.from_dict(edge) if edge is not None else None,
+            counterparts=_parse_items(data, "counterparts", Counterpart),
+            truncated=_b(data, "truncated") or False,
+            raw=data,
+        )
+
+
+class CounterpartsResponse(APIResponse):
+    """``GET /citations/counterparts/{id}`` — a national document's
+    counterparts in the other live jurisdictions, through the EU acts it
+    transposes or implements (``via``, at most 200; ``truncated``)."""
+
+    @property
+    def document(self) -> CitationNode | None:
+        value = self._map.get("document")
+        return CitationNode.from_dict(value) if isinstance(value, dict) else None
+
+    @property
+    def via(self) -> list[CounterpartVia]:
+        return _parse_items(self._map, "via", CounterpartVia)
+
+    @property
+    def truncated(self) -> bool:
+        """True when the document implements more than 200 EU acts."""
+        return _b(self._map, "truncated") or False
+
+    @property
+    def include_national(self) -> bool | None:
+        """Always ``True`` when present; ``None`` while no national
         jurisdiction is live."""
         return _b(self._map, "includeNational")
 
@@ -2073,6 +2757,150 @@ class NationalSource:
 
 
 @dataclass(frozen=True)
+class NationalCitationGraphMethods:
+    """``citationGraph.methods``: how the jurisdiction's citation
+    extraction resolves references — ``decisions`` (court decisions'
+    references to acts), ``acts`` and ``eu`` (references to national acts
+    and to EU law). ``unmeasured`` maps a rate key (``decisionsToActs``,
+    ``actsToEu``, ``textPattern``) to the reason it is not measured
+    (``not-collected`` or ``source-empty``); ``None`` when every rate is
+    measured."""
+
+    decisions: str | None
+    acts: list[str]
+    eu: list[str]
+    unmeasured: dict[str, str] | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCitationGraphMethods:
+        unmeasured = _opt_dict(data, "unmeasured")
+        return cls(
+            decisions=_s(data, "decisions"),
+            acts=_str_list(data, "acts"),
+            eu=_str_list(data, "eu"),
+            unmeasured=(
+                {key: value for key, value in unmeasured.items() if isinstance(value, str)}
+                if unmeasured is not None
+                else None
+            ),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class NationalCitationGraphPrecision:
+    """``citationGraph.precision``: the labelled-sample check of one
+    resolution method — ``resolver``, ``resolver_version``, ``provenance``
+    (``source`` or ``resolver``), ``labelled`` (edges checked by hand) and
+    ``error_upper_bound`` (95 % upper bound on the error rate)."""
+
+    resolver: str | None
+    resolver_version: int | None
+    provenance: str | None
+    labelled: int | None
+    error_upper_bound: float | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCitationGraphPrecision:
+        return cls(
+            resolver=_s(data, "resolver"),
+            resolver_version=_i(data, "resolverVersion"),
+            provenance=_s(data, "provenance"),
+            labelled=_i(data, "labelled"),
+            error_upper_bound=_f(data, "errorUpperBound"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class NationalCitationGraphFloors:
+    """``citationGraph.floors``: the lowest values the rates are expected
+    to stay at (``None`` for a rate that does not apply or was not
+    measured), set at ``derived_at`` from the measurements at
+    ``measured_at_rebuild`` / ``measured_at_nim``."""
+
+    decisions_to_acts: float | None
+    acts_to_eu: float | None
+    text_pattern: float | None
+    nim_resolved: float | None
+    derived_at: str | None
+    measured_at_rebuild: str | None
+    measured_at_nim: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCitationGraphFloors:
+        measured = _dict(data, "measuredAt")
+        return cls(
+            decisions_to_acts=_f(data, "decisionsToActs"),
+            acts_to_eu=_f(data, "actsToEu"),
+            text_pattern=_f(data, "textPattern"),
+            nim_resolved=_f(data, "nimResolved"),
+            derived_at=_s(data, "derivedAt"),
+            measured_at_rebuild=_s(measured, "rebuild"),
+            measured_at_nim=_s(measured, "nim"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class NationalCitationGraph:
+    """A jurisdiction's ``citationGraph`` coverage block — measured values
+    only; a value that was not measured is ``None``.
+
+    Rates are shares between 0 and 1: ``decision_resolution_rate``,
+    ``act_eu_rate``, ``text_pattern_rate`` (from the last full rebuild, at
+    ``measured_at``) and ``nim_resolved_rate`` (from the last matching run
+    of the notified measures, at ``nim_measured_at``). A rate listed in
+    ``methods.unmeasured`` is ``None`` and has no floor.
+    """
+
+    methods: NationalCitationGraphMethods | None
+    edges: int | None
+    decision_resolution_rate: float | None
+    act_eu_rate: float | None
+    text_pattern_rate: float | None
+    transposition: TranspositionCounts | None
+    precision: NationalCitationGraphPrecision | None
+    measured_at: str | None
+    nim_resolved_rate: float | None
+    nim_measured_at: str | None
+    floors: NationalCitationGraphFloors | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalCitationGraph:
+        methods = _opt_dict(data, "methods")
+        transposition = _opt_dict(data, "transposition")
+        precision = _opt_dict(data, "precision")
+        floors = _opt_dict(data, "floors")
+        return cls(
+            methods=(
+                NationalCitationGraphMethods.from_dict(methods) if methods is not None else None
+            ),
+            edges=_i(data, "edges"),
+            decision_resolution_rate=_f(data, "decisionResolutionRate"),
+            act_eu_rate=_f(data, "actEuRate"),
+            text_pattern_rate=_f(data, "textPatternRate"),
+            transposition=(
+                TranspositionCounts.from_dict(transposition) if transposition is not None else None
+            ),
+            precision=(
+                NationalCitationGraphPrecision.from_dict(precision)
+                if precision is not None
+                else None
+            ),
+            measured_at=_s(data, "measuredAt"),
+            nim_resolved_rate=_f(data, "nimResolvedRate"),
+            nim_measured_at=_s(data, "nimMeasuredAt"),
+            floors=NationalCitationGraphFloors.from_dict(floors) if floors is not None else None,
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
 class NationalJurisdictionCoverage:
     """One jurisdiction's entry in ``GET /national/coverage``.
 
@@ -2091,6 +2919,9 @@ class NationalJurisdictionCoverage:
     sources: list[NationalSource]
     last_sync_at: str | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
+    #: The jurisdiction's citation graph, as measured; ``None`` for a
+    #: jurisdiction that is not live, or when its numbers could not be read.
+    citation_graph: NationalCitationGraph | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NationalJurisdictionCoverage:
@@ -2120,6 +2951,11 @@ class NationalJurisdictionCoverage:
             sources=_parse_items(data, "sources", NationalSource),
             last_sync_at=_s(data, "lastSyncAt"),
             raw=data,
+            citation_graph=(
+                NationalCitationGraph.from_dict(citation_graph)
+                if (citation_graph := _opt_dict(data, "citationGraph")) is not None
+                else None
+            ),
         )
 
 

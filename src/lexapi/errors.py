@@ -111,10 +111,26 @@ class InvalidParamsError(LexAPIError):
     """400 ``INVALID_PARAMS`` — missing or malformed parameters.
 
     Legacy validation bodies put their reasons in ``details`` (a list of
-    strings, e.g. every rejected webhook criterion).
+    strings, e.g. every rejected webhook criterion). An unknown citation
+    filter value names the parameter (:attr:`param`) and its allowed values
+    (:attr:`allowed`). Refunded in full.
     """
 
     default_code = "INVALID_PARAMS"
+
+    @property
+    def param(self) -> str | None:
+        """The rejected parameter (e.g. ``citationType``), when named."""
+        value = _field(self, "param")
+        return value if isinstance(value, str) else None
+
+    @property
+    def allowed(self) -> list[str] | None:
+        """The parameter's allowed values, when listed (may be empty)."""
+        value = _field(self, "allowed")
+        if not isinstance(value, list):
+            return None
+        return [item for item in value if isinstance(item, str)]
 
 
 class InvalidCelexError(LexAPIError):
@@ -340,6 +356,32 @@ class NationalSemanticNotEnabledError(LexAPIError):
         return _body_jurisdiction(self)
 
 
+class NationalTermsNotAcceptedError(LexAPIError):
+    """403 ``NATIONAL_TERMS_NOT_ACCEPTED`` — the account must accept the
+    national-source terms once in the dashboard (:attr:`accept_url`)
+    before national data is served. Legacy-shape body. Refunded in full;
+    not retried.
+    """
+
+    default_code = "NATIONAL_TERMS_NOT_ACCEPTED"
+
+    def _str(self, key: str) -> str | None:
+        value = _field(self, key)
+        return value if isinstance(value, str) else None
+
+    @property
+    def terms_version(self) -> str | None:
+        return self._str("termsVersion")
+
+    @property
+    def accept_url(self) -> str | None:
+        return self._str("acceptUrl")
+
+    @property
+    def terms_url(self) -> str | None:
+        return self._str("termsUrl")
+
+
 class UpstreamError(LexAPIError):
     """502 ``UPSTREAM_ERROR`` — EUR-Lex (or the semantic service) returned an error."""
 
@@ -410,9 +452,30 @@ class DocumentWithdrawnError(LexAPIError):
 
 
 class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
-    """504 ``TIMEOUT`` — the upstream fetch timed out (retry-safe)."""
+    """``TIMEOUT`` — the request ran past its server-side budget (504, or a
+    503 with ``partial: true`` from ``citations.counterparts``). Refunded in
+    full. The SDK does not retry the 503 form: re-running waits the full
+    budget again — narrow the request (e.g. ``jurisdictions``) instead."""
 
     default_code = "TIMEOUT"
+
+    @property
+    def partial(self) -> bool:
+        """True when the body says ``partial: true`` (nothing else returned)."""
+        return _field(self, "partial") is True
+
+    @property
+    def partial_reason(self) -> str | None:
+        value = _field(self, "partialReason")
+        return value if isinstance(value, str) else None
+
+    @property
+    def timeout_ms(self) -> int | None:
+        """The server-side budget that expired, in milliseconds."""
+        value = _field(self, "timeoutMs")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
 
 
 class InternalServerError(LexAPIError):
@@ -467,6 +530,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "NATIONAL_ALLOWANCE_EXHAUSTED": NationalAllowanceExhaustedError,
     "NATIONAL_SEMANTIC_NOT_ENABLED": NationalSemanticNotEnabledError,
+    "NATIONAL_TERMS_NOT_ACCEPTED": NationalTermsNotAcceptedError,
     "UPSTREAM_ERROR": UpstreamError,
     "SERVICE_UNAVAILABLE": ServiceUnavailableError,
     "NATIONAL_SEMANTIC_UNAVAILABLE": NationalSemanticUnavailableError,

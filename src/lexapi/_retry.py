@@ -254,6 +254,13 @@ def is_retryable_exception(exc: BaseException, method: str = "GET", *, free: boo
     return free and method.upper() in _IDEMPOTENT_METHODS and isinstance(exc, httpx.TransportError)
 
 
+def is_budget_timeout(status: int, body: Any) -> bool:
+    """A 503 whose body says ``partialReason: "TIMEOUT"``: the request ran
+    out of its fixed server-side budget. Refunded, but a re-run would wait
+    the full budget again, so it is never retried automatically."""
+    return status == 503 and isinstance(body, dict) and body.get("partialReason") == "TIMEOUT"
+
+
 def retry_allowed(
     method: str,
     response: httpx.Response,
@@ -267,6 +274,8 @@ def retry_allowed(
     status = response.status_code
     idempotent = method.upper() in _IDEMPOTENT_METHODS
     if is_quota_exhausted(status, response.headers, body):
+        return False
+    if is_budget_timeout(status, body):
         return False
     if not idempotent and status in config.retry_statuses_non_idempotent:
         return True  # 429 by default; anything else is an explicit caller opt-in
