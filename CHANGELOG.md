@@ -51,9 +51,31 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   citation as one line and `format_passage(passage)` the content followed by
   a `Source:` line; `restrict_to_celex(result, celex)` keeps the passages of
   given acts. No request is made and no dependency is added.
+- **`LexAPIError.body_excerpt`**: the first 200 characters of a body that is
+  not JSON (`None` otherwise); may contain document text, so do not show it to
+  a model or log it by default. `LexAPIError(...)` and `error_from_response`
+  take it as a keyword argument.
+
+### Changed
+
+- A `2xx` answer that is not the documented shape now raises
+  `InvalidResponseError`; before, it could be read as an empty result. This
+  covers an empty body (also a `204`, except for `webhooks.delete`), JSON that
+  is not an object, `success: false` (when the body carries the API's error
+  envelope, the mapped error is raised instead; `webhooks.test` keeps returning
+  `ok == False`), and a list field that is not a list or holds items that are
+  not objects. `results` is required on `search`, `semantic_search`,
+  `semantic_legislation_search` and the national semantic searches. Unknown
+  extra fields are still accepted.
 
 ### Fixed
 
+- `InvalidResponseError` no longer quotes the response body in its message;
+  the excerpt is on `body_excerpt`.
+- An error body whose `code` or `message` is not a string no longer raises
+  `TypeError` or puts that value in the message: it counts as absent.
+- A `LexAPIError` survives a pickle round trip with its message unchanged
+  (before, the `[CODE]` prefix was added twice).
 - `AS_OF_REASONS` / `AsOfReason` now include `amendment_not_consolidated`,
   which `semantic_legislation_search(as_of=...)` hits can carry since LexAPI
   API 2.25.0. (The value was already passed through on `as_of_reason`.)

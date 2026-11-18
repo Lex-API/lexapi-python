@@ -72,16 +72,19 @@ def test_non_json_success_raises_instead_of_empty_result():
             client.search("gdpr")
     assert info.value.code == "INVALID_RESPONSE"
     assert info.value.status == 200
-    assert "Just a moment" in info.value.message
+    assert "Just a moment" not in str(info.value)
+    assert "Just a moment" in (info.value.body_excerpt or "")
 
 
-def test_empty_and_204_bodies_still_succeed():
+def test_204_and_empty_delete_succeed_but_empty_json_endpoint_raises():
     client, _ = counting(lambda r, n: httpx.Response(204))
     with client:
         assert client.webhooks.delete("w1") is None
     client, _ = counting(lambda r, n: httpx.Response(200, content=b""))
     with client:
-        assert dict(client.get_info()) == {}
+        assert client.webhooks.delete("w1") is None
+        with pytest.raises(InvalidResponseError):
+            client.get_info()
 
 
 # ── billing-safe transport retries (§1.2) ──────────────────────────────
