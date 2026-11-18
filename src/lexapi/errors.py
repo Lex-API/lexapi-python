@@ -64,6 +64,10 @@ class LexAPIError(Exception):
             rejected webhook criteria), when present.
         body: the raw decoded response body (``None`` if not JSON).
         retry_after: seconds to wait before retrying, when the server said so.
+        body_excerpt: for a body that is not JSON, its first
+            characters as text (``None`` otherwise). Raw response text that
+            may contain document text: do not show it to a model or log it
+            by default. Never part of ``str(err)``, ``message`` or ``repr``.
     """
 
     default_code = "UNKNOWN"
@@ -77,6 +81,7 @@ class LexAPIError(Exception):
         details: Any | None = None,
         body: Any | None = None,
         retry_after: float | None = None,
+        body_excerpt: str | None = None,
     ) -> None:
         code = code or self.default_code
         suffix = f" (HTTP {status})" if status is not None else ""
@@ -87,6 +92,7 @@ class LexAPIError(Exception):
         self.details = details
         self.body = body
         self.retry_after = retry_after
+        self.body_excerpt = body_excerpt
 
     @classmethod
     def from_response(cls, status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
@@ -561,8 +567,18 @@ class InternalServerError(LexAPIError):
 
 
 class InvalidResponseError(LexAPIError):
-    """A 2xx response whose body is not JSON (e.g. an HTML interstitial from
-    a proxy). Raised instead of returning an empty, "successful" result."""
+    """A 2xx response that is not the documented shape: a body that is not
+    JSON (e.g. an HTML interstitial from a proxy), an empty body, JSON that
+    is not an object, ``success: false`` without an error, or a list field
+    that is missing, not a list, or holds items that are not objects.
+    Raised instead of returning an empty, "successful" result.
+
+    The message names what was expected and what arrived (status, content
+    type, length) and never quotes the body. For a body that is not JSON,
+    :attr:`body_excerpt` holds its first characters; for JSON, :attr:`body`
+    holds it. Both are raw response content that may contain document text:
+    do not show them to a model or log them by default.
+    """
 
     default_code = "INVALID_RESPONSE"
 
@@ -638,7 +654,13 @@ def _extract_resets_at(details: Any, body: Any) -> str | None:
     return None
 
 
-def error_from_response(status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
+def error_from_response(
+    status: int,
+    body: Any,
+    retry_after: float | None = None,
+    *,
+    body_excerpt: str | None = None,
+) -> LexAPIError:
     """Map a non-2xx response to the most specific typed error.
 
     Tolerates both envelope shapes (SDK contract §1.3):
@@ -652,7 +674,9 @@ def error_from_response(status: int, body: Any, retry_after: float | None = None
       kept (also on bodies that carry no ``error`` at all).
 
     Unknown ``error.code`` values fall back to the base :class:`LexAPIError`
-    with the raw code preserved.
+    with the raw code preserved. A body that is not JSON is never quoted in
+    the message (``"HTTP <status>"``); ``body_excerpt`` keeps it, off the
+    message.
     """
     code = STATUS_TO_CODE.get(status, "INTERNAL")
     message = f"HTTP {status}"
@@ -685,6 +709,7 @@ def error_from_response(status: int, body: Any, retry_after: float | None = None
         "details": details,
         "body": body,
         "retry_after": retry_after,
+        "body_excerpt": body_excerpt,
     }
     if error_cls is CreditsExhaustedError or error_cls is NationalAllowanceExhaustedError:
         kwargs["resets_at"] = _extract_resets_at(details, body)

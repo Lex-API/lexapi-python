@@ -532,6 +532,9 @@ class SearchResponse(APIResponse):
     rows), plus the ``X-Warning`` header via ``.warning``.
     """
 
+    list_fields = ("results",)
+    required_list_fields = ("results",)
+
     @property
     def results(self) -> list[SearchHit]:
         return _parse_items(self._map, "results", SearchHit)
@@ -727,6 +730,8 @@ class DocumentBatchResponse(APIResponse):
     ``X-Warning`` header.
     """
 
+    list_fields = ("documents", "errors")
+
     @property
     def documents(self) -> list[Document]:
         return _parse_items(self._map, "documents", Document)
@@ -803,6 +808,8 @@ class DocumentBatchResponse(APIResponse):
 
 class RecentDocumentsResponse(APIResponse):
     """``GET /documents/recent`` — recently-published documents."""
+
+    list_fields = ("results",)
 
     @property
     def results(self) -> list[SearchHit]:
@@ -1250,6 +1257,8 @@ class CitationStatsTransposition(TranspositionCounts):
 class CitationExtractResponse(APIResponse):
     """``POST /citations/extract`` — crawl a document and persist its edges."""
 
+    list_fields = ("citations",)
+
     @property
     def citation_count(self) -> int | None:
         return _i(self._map, "citationCount")
@@ -1278,6 +1287,8 @@ class CitationExtractResponse(APIResponse):
 
 class CitedByResponse(APIResponse):
     """``GET /citations/cited-by/{celex}`` — inbound edges, grouped by source."""
+
+    list_fields = ("citedBy",)
 
     @property
     def target_document(self) -> str | None:
@@ -1339,6 +1350,8 @@ class CitedByResponse(APIResponse):
 
 class CitesResponse(APIResponse):
     """``GET /citations/cites/{celex}`` — outbound edges, grouped by target."""
+
+    list_fields = ("cites", "unresolved")
 
     @property
     def source_document(self) -> str | None:
@@ -1414,6 +1427,8 @@ class CitationNetworkResponse(APIResponse):
     wall-clock budget expires the endpoint still returns 200 with
     ``partial=True`` and empty arrays — check ``.partial``.
     """
+
+    list_fields = ("network.cites", "network.citedBy", "unresolved")
 
     @property
     def document(self) -> str | None:
@@ -1517,6 +1532,8 @@ class CitationNetworkResponse(APIResponse):
 class CitationStatsResponse(APIResponse):
     """``GET /citations/stats`` — global citation-graph counters."""
 
+    list_fields = ("stats.mostCited", "stats.mostCiting")
+
     @property
     def total_citations(self) -> int | None:
         return _i(_dict(self._map, "stats"), "totalCitations")
@@ -1591,6 +1608,8 @@ class CitationPathResponse(APIResponse):
     ``found=False`` is a graceful HTTP-200 response, not an error.
     """
 
+    list_fields = ("path",)
+
     @property
     def found(self) -> bool:
         return _b(self._map, "found") or False
@@ -1630,6 +1649,8 @@ class CitationPathResponse(APIResponse):
 
 class RelatedDocumentsResponse(APIResponse):
     """``GET /citations/related/{celex}`` — bibliographic-coupling neighbours."""
+
+    list_fields = ("related",)
 
     @property
     def related(self) -> list[RelatedDocument]:
@@ -1840,6 +1861,8 @@ class TranspositionResponse(APIResponse):
     ``source_cellar.attribution`` with anything you republish.
     """
 
+    list_fields = ("jurisdictions",)
+
     @property
     def document(self) -> CitationNode | None:
         value = self._map.get("document")
@@ -1974,6 +1997,8 @@ class CounterpartsResponse(APIResponse):
     """``GET /citations/counterparts/{id}`` — a national document's
     counterparts in the other live jurisdictions, through the EU acts it
     transposes or implements (``via``, at most 200; ``truncated``)."""
+
+    list_fields = ("via",)
 
     @property
     def document(self) -> CitationNode | None:
@@ -2144,6 +2169,8 @@ class Webhook:
 class WebhookListResponse(APIResponse):
     """``GET /webhooks`` — the caller's subscriptions (no secrets)."""
 
+    list_fields = ("webhooks",)
+
     @property
     def webhooks(self) -> list[Webhook]:
         return _parse_items(self._map, "webhooks", Webhook)
@@ -2179,6 +2206,8 @@ class WebhookTestResponse(APIResponse):
     ``delivery.error_message``.
     """
 
+    success_false_ok = True
+
     @property
     def ok(self) -> bool:
         return _b(self._map, "success") or False
@@ -2194,6 +2223,8 @@ class WebhookTestResponse(APIResponse):
 
 class WebhookDeliveriesResponse(APIResponse):
     """``GET /webhooks/{id}/deliveries`` — delivery history, newest first."""
+
+    list_fields = ("deliveries",)
 
     @property
     def deliveries(self) -> list[WebhookDelivery]:
@@ -2464,6 +2495,9 @@ class SemanticLegislationResult:
 
 
 class _SemanticResponseBase(APIResponse):
+    list_fields = ("results",)
+    required_list_fields = ("results",)
+
     @property
     def search_type(self) -> str | None:
         return _s(self._map, "searchType")
@@ -2783,6 +2817,8 @@ class VersionEntry:
 
 class DocumentVersionsResponse(APIResponse):
     """``GET /documents/{celex}/versions`` — history list, newest first."""
+
+    list_fields = ("versions",)
 
     @property
     def celex(self) -> str | None:
@@ -3171,6 +3207,8 @@ class NationalCoverageResponse(APIResponse):
     jurisdiction not yet launched answers 404 on every other national
     endpoint, exactly like one that does not exist."""
 
+    list_fields = ("jurisdictions",)
+
     @property
     def updated_at(self) -> str | None:
         return _s(self._map, "updatedAt")
@@ -3475,6 +3513,8 @@ class NationalDocumentListResponse(APIResponse):
     """``GET /{jurisdiction}/documents`` — a page of one jurisdiction's
     documents. 3 credits flat per call (not per page). Newest-first
     by the document's own date (undated rows last), then by id."""
+
+    list_fields = ("results",)
 
     @property
     def jurisdiction(self) -> str | None:

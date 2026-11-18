@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -156,6 +156,15 @@ class APIResponse(Mapping[str, Any]):
     The raw body stays fully accessible (``response["usage"]``,
     ``response.data``) so no information is lost by the typed layer.
     """
+
+    #: The response's list fields (dotted paths for nested ones). When
+    #: present and not ``null``, each must be a list of objects; otherwise
+    #: the SDK raises :class:`~lexapi.errors.InvalidResponseError`.
+    list_fields: ClassVar[tuple[str, ...]] = ()
+    #: List fields the endpoint always sends: missing or ``null`` is an error.
+    required_list_fields: ClassVar[tuple[str, ...]] = ()
+    #: ``True`` where a 2xx legitimately carries ``success: false``.
+    success_false_ok: ClassVar[bool] = False
 
     def __init__(self, data: Any, headers: httpx.Headers | None = None) -> None:
         self.data: Any = data

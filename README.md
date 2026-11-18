@@ -697,7 +697,7 @@ from lexapi import (
     AuthenticationError,  # 401 — missing/invalid/deactivated key
     RequestTimeoutError,  # the SDK's own timeout elapsed
     ServiceUnavailableError,  # 503 (SDK code SERVICE_UNAVAILABLE; subclass of UpstreamError)
-    InvalidResponseError,  # a 2xx whose body is not JSON (e.g. a proxy's HTML page)
+    InvalidResponseError,  # a 2xx that is not the documented shape (e.g. a proxy's HTML page)
     IncompleteExportError,  # export stream ended without a complete _done trailer
 )
 
@@ -719,6 +719,19 @@ retryable. Before API 2.27.0 a failed payment was refused at once with a 403
 without a code, raised as `TierForbiddenError`. A handler that treated
 `TierForbiddenError` as a failed payment needs a `PaymentPastDueError` clause on
 API 2.27.0 and later.
+
+`InvalidResponseError`: a `2xx` answer that is not the documented shape — a
+body that is not JSON (e.g. a proxy's HTML page), an empty body, JSON that is
+not an object, `success: false`, or a list such as `results` that is missing
+where the endpoint always sends it, is not a list, or holds items that are not
+objects. It is raised so that such an answer is never read as an empty result.
+Unknown extra fields are accepted.
+
+No error message quotes the response body: for a body that is not JSON, the
+message gives the status, content type and length, and the first characters
+are on `err.body_excerpt`. That excerpt (like `err.body`) is raw response
+content and may contain document text; do not show it to a model or log it by
+default.
 
 ### Retries
 
