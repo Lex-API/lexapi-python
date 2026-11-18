@@ -207,6 +207,58 @@ is the search by meaning. Needs LexAPI API 2.26.0.
   and 1 if the fetch fails or finds no text. A fetch reserves up to 5 credits:
   a pool holding fewer gets `as_of_reason == "insufficient_credits"`.
 
+### Passages for RAG frameworks
+
+`lexapi.passages` turns responses into framework-neutral passages: a text
+together with the citation it must be shown with. It makes no request of its
+own and imports no framework, so an adapter for any RAG framework can be built
+on it.
+
+```python
+from lexapi import LexAPI, passages
+
+with LexAPI() as client:
+    response = client.semantic_legislation_search(
+        "right to erasure", as_of="2019-06-01", include_text=True
+    )
+
+result = passages.from_legislation_search(response, as_of="2019-06-01")
+for p in result.passages:
+    # for an act as published: CELEX 32016R0679, art_17, version for 2019-06-01: 32016R0679
+    print(passages.format_citation(p))
+    print(p.content())  # the text, or a one-line notice when there is none
+print(result.withheld, "withheld;", result.units_charged, "credits")
+```
+
+- **Unresolved text is withheld.** On an `as_of` search, a hit the API could
+  not answer for that date comes back with its latest indexed text. That text
+  is not established as the text for the date, so the passage is kept with
+  `text=None` (`text_status == "withheld"`) and its `as_of_reason`;
+  `content()` is then a notice such as `[No text: CELEX 31995L0046 art_12 is
+  not established as the text for 2019-06-01 (reason: fetch_timeout).]`.
+  `unresolved="drop"` leaves such hits out and counts them in
+  `result.dropped`; `unresolved="keep_labelled"` keeps the latest text, marked
+  `text_status == "not_established_for_date"`. Only the passages are
+  filtered: `response.results` still holds the latest text of unresolved hits.
+- **Citation.** Every passage has a `celex`; `cite_celex` is the number to
+  cite. A consolidated text has `consolidated=True` and, when the API names
+  it, `base_celex`: consolidated texts have no legal force, so cite the act as
+  published in the Official Journal. When the API does not name that act (a
+  document read), `cite_celex` is `None`.
+- **Nothing is guessed.** A field the API did not send is `None`.
+- **Converters.** `from_legislation_search`, `from_case_law_search`,
+  `from_document` (one passage per article) and `from_legislation_as_of`
+  each return a `PassageResult`: `passages`, the `withheld` / `dropped`
+  counts, `as_of`, and `units_charged` / `credits_remaining` as the response
+  reports them, once per call.
+- **For a framework.** `p.metadata()` is the citation as a flat dictionary
+  (never the text), `p.id` an identifier that is stable across calls and
+  differs between dates, and `passages.format_passage(p)` the content
+  followed by a `Source:` line.
+- **One act only.** The legislation index reads no `filters` key except
+  `language`; `passages.restrict_to_celex(result, "32016R0679")` keeps the
+  passages of that act and its consolidated texts after the search.
+
 ### Citations
 
 The typed citation graph lives under `client.citations`:
