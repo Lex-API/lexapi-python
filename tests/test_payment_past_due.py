@@ -147,6 +147,26 @@ def test_past_due_typed_envelope(raised):
     assert calls == 1
 
 
+@pytest.mark.parametrize("raised", RAISED)
+def test_past_due_details_take_precedence_over_the_top_level(raised):
+    details = {"accessEndedAt": "2026-12-01T00:00:00.000Z", "billingUrl": "https://x.test/d"}
+    err, _ = raised(403, {**PAST_DUE_BODY, "details": details})
+    assert type(err) is PaymentPastDueError
+    assert err.access_ended_at == "2026-12-01T00:00:00.000Z"
+    assert err.billing_url == "https://x.test/d"
+    # Each field on its own: the other still comes from the top level.
+    err, _ = raised(403, {**PAST_DUE_BODY, "details": {"billingUrl": "https://x.test/d"}})
+    assert err.billing_url == "https://x.test/d"
+    assert err.access_ended_at == ENDED_AT
+    err, _ = raised(403, {**PAST_DUE_BODY, "details": {"accessEndedAt": "2026-12-01"}})
+    assert err.access_ended_at == "2026-12-01"
+    assert err.billing_url == BILLING_URL
+    # A value present in details is used even when it is not a string.
+    err, _ = raised(403, {**PAST_DUE_BODY, "details": {"accessEndedAt": 5, "billingUrl": None}})
+    assert err.access_ended_at is None
+    assert err.billing_url is None
+
+
 def test_past_due_typed_envelope_partial_and_non_string_details():
     body = {"error": {"code": "PAYMENT_PAST_DUE", "message": "m", "details": {"billingUrl": 7}}}
     err = error_from_response(403, body)
@@ -218,7 +238,10 @@ def test_typed_tier_forbidden_is_unchanged(raised):
 @pytest.mark.parametrize(
     "body",
     [
-        {"error": "Subscription inactive", "message": "Your subscription is not active."},
+        {
+            "error": "Subscription inactive",
+            "message": "Please activate your subscription or downgrade to the FREE tier",
+        },
         {"error": "No subscription found"},
         # The fields alone, without the code, do not make it a past-due error.
         without(PAST_DUE_BODY, "code"),

@@ -199,9 +199,9 @@ is the search by meaning. Needs LexAPI API 2.26.0.
   (`InvalidCelexError`).
 - **Errors.** An unknown act raises `NotFoundError`; invalid input raises
   `InvalidCelexError` / `InvalidParamsError`. An API older than 2.26.0 has no
-  such endpoint and also answers 404 (`NotFoundError`): on API 2.27.0 and
-  later `err.unknown_endpoint` is True; on older APIs it is False and the
-  message starts with "Unknown API endpoint".
+  such endpoint and also answers 404 (`NotFoundError`). `err.unknown_endpoint`
+  is False there (the API sends it from 2.27.0): check
+  `err.message.startswith("Unknown API endpoint")`.
 - **Cost.** 1 credit when no text is fetched; when the provision's text has to
   be fetched, 4 (5 when it is fetched live from EUR-Lex), whatever the answer,
   and 1 if the fetch fails or finds no text. A fetch reserves up to 5 credits:
@@ -655,14 +655,18 @@ except CreditsExhaustedError as err:
     print(f"need {err.weight}, have {err.available}; resets {err.resets_at}")
 except RateLimitedError as err:
     print(f"rate limited, retry in {err.retry_after}s")
+except PaymentPastDueError as err:
+    print(f"payment past due; pay the open invoice: {err.billing_url or 'in the dashboard'}")
 except LexAPIError as err:
     print(err.code, err.status, err.message)
 ```
 
 `PaymentPastDueError`: a subscription payment failed and was not completed in
 time; pay the open invoice in the dashboard (`err.billing_url`). It is not
-retryable. Before API 2.27.0 this state was a 403 without a code, which the SDK
-raises as `TierForbiddenError`.
+retryable. Before API 2.27.0 a failed payment was refused at once with a 403
+without a code, raised as `TierForbiddenError`. A handler that treated
+`TierForbiddenError` as a failed payment needs a `PaymentPastDueError` clause on
+API 2.27.0 and later.
 
 ### Retries
 
