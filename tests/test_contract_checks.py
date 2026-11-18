@@ -343,7 +343,6 @@ NOT_JSON = [
     (b'{"results": []} trailing', 24),
     ("é".encode(), 2),
     (b"\xef\xbb\xbf\xef\xbb\xbf{}", 8),  # only one byte order mark is ignored
-    (b"[" * 100_000 + b"]" * 100_000, 200_000),  # deeper than the parser supports
 ]
 
 
@@ -360,13 +359,44 @@ def test_rejects_what_is_not_strict_utf8_json(content, size, mode):
     assert err.__context__ is None and err.__cause__ is None
 
 
-def test_deep_nesting_on_an_error_status_is_not_json():
-    content = b"[" * 100_000 + b"]" * 100_000
+DEEP = b"[" * 100_000 + b"]" * 100_000
+
+
+def _refuse_nesting(monkeypatch):
+    """Make the parser refuse nesting, as CPython does below 3.14."""
+    import lexapi._base as base
+
+    def loads(*args: Any, **kwargs: Any) -> Any:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(base.json, "loads", loads)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_nesting_the_parser_refuses_is_not_json(monkeypatch, mode):
+    _refuse_nesting(monkeypatch)
+    err = invalid(search, raw(200, DEEP, "application/json"), mode)
+    assert err.message == (
+        "Expected JSON, got application/json that does not parse as JSON (200000 bytes)"
+    )
+    assert err.body is None and err.body_excerpt == "[" * 200
+    assert err.__context__ is None and err.__cause__ is None
     with pytest.raises(UpstreamError) as info:
-        run(lambda c: c.get_info(), raw(502, content, "application/json"))
+        run(lambda c: c.get_info(), raw(502, DEEP, "application/json"), mode)
     assert info.value.body is None
     assert info.value.message == "HTTP 502"
     assert info.value.body_excerpt == "[" * 200
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_deep_nesting_never_escapes_as_a_raw_error(mode):
+    # Whether this runtime's parser takes this depth or not, the caller gets
+    # InvalidResponseError: "not JSON" if refused, "not an object" if read.
+    err = invalid(search, raw(200, DEEP, "application/json"), mode)
+    assert err.message in (
+        "Expected JSON, got application/json that does not parse as JSON (200000 bytes)",
+        "Expected a JSON object, got array",
+    )
 
 
 @pytest.mark.parametrize("mode", MODES)
