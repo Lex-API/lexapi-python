@@ -494,7 +494,7 @@ class SearchResponse(APIResponse):
 
     Truncation/partial signals are attributes, never hidden: ``truncated``
     (tier-capped, more pages exist), ``partial`` (an upstream page fetch
-    timed out), ``post_filtered_by`` (controller-side post-filter dropped
+    timed out), ``post_filtered_by`` (server-side post-filter dropped
     rows), plus the ``X-Warning`` header via ``.warning``.
     """
 
@@ -542,7 +542,7 @@ class SearchResponse(APIResponse):
 
     @property
     def post_filtered_by(self) -> str | None:
-        """Comma-joined dimensions a controller-side post-filter fired on."""
+        """Comma-joined dimensions a server-side post-filter fired on."""
         return _s(self._map, "postFilteredBy")
 
     @property

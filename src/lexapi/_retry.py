@@ -34,8 +34,7 @@ Wait resolution (server-directed wins, clamped to ``backoff_cap``):
    empty or unparseable value counts as absent,
 2. on a 429 only: ``RateLimit-Reset`` (draft-6 delta-seconds; LexAPI sends
    ``RateLimit-*`` on every response, so outside a 429 it describes the rate
-   window, not a retry time). ``X-RateLimit-*`` is not sent (legacy headers
-   are disabled server-side) and is ignored,
+   window, not a retry time). ``X-RateLimit-*`` is not sent and is ignored,
 3. on a 429 (and a 503 ``NATIONAL_SEMANTIC_UNAVAILABLE``): the JSON
    ``retryAfter`` body field,
 4. exponential backoff with full jitter.

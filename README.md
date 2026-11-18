@@ -43,7 +43,7 @@ if results.truncated:
 if results.partial:
     print("partial answer:", results.partial_reason)
 if results.post_filtered_by:
-    print("controller post-filter fired on:", results.post_filtered_by)
+    print("server-side post-filter fired on:", results.post_filtered_by)
 print(results.source)  # "soap" | "cellar" | "corpus" | None (EUR-Lex result pages)
 print(results.cache)  # "hit" | "miss" | "bypass" — 60-minute result cache, same price
 
@@ -629,7 +629,8 @@ read-only POSTs (search, document reads, resolve, semantic search) on an
 app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
 Every wait, server-directed ones included, is clamped to `backoff_cap`
-(default 30 s): a cap below the server's requested wait shortens it.
+(default 30 s): a cap below the server's requested wait shortens it. The full
+rules are in the [SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md).
 
 ```python
 from lexapi import LexAPI, RetryConfig

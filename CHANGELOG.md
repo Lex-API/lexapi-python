@@ -254,7 +254,8 @@ client written for one country now works for every other:
 
 ## [0.2.0] — 2026-10-26
 
-Synced with the LexAPI API (API 2.0.0). No breaking changes to signatures; behaviour changes are
+Synced with the LexAPI API (API 2.0.0; later items name their API
+version). No breaking changes to signatures; behaviour changes are
 listed under **Changed** — read those before upgrading.
 
 ### Added

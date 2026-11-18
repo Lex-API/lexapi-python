@@ -28,14 +28,15 @@ Definitions:
 - **Never reached the app**:
   - transport failures before the request was sent or answered: DNS / connection refused / TLS failure, connect timeout, timeout waiting for a free pooled connection, and a connection closed **before any response byte** (a stale keep-alive socket the server had already dropped). A close **after part of the response arrived** (head received, body incomplete) is a post-send failure, not this. An SDK identifies the pre-response close by exception type or connection state where the runtime exposes it, otherwise by the HTTP library's exact pre-response message. **A runtime that cannot distinguish a pre-response close from a mid-response close (e.g. `fetch`) treats every such close as a post-send failure: not retryable on billed calls;**
   - Cloudflare **521** (web server down), **522** (connection timed out), **523** (origin unreachable).
-- **Free operations** (0 credits): `GET /info`, `GET /webhooks`, `GET /webhooks/{id}`, `GET /webhooks/{id}/deliveries`. (On legacy daily-call plans a successful call counts one call; a retried call that had silently succeeded can count once more.)
-- **Read-only POSTs**: `POST /search`, `/documentContent`, `/documentContent/batch`, `/documents/url`, `/documents/metadata`, `/resolve`, `/search/semantic`, `/legislation/semantic`. They change no server state.
+- **Free operations** (0 credits): `GET /info`, `GET /webhooks`, `GET /webhooks/{id}`, `GET /webhooks/{id}/deliveries`, `GET /national/coverage`. (On legacy daily-call plans a successful call counts one call; a retried call that had silently succeeded can count once more.)
+- **Read-only POSTs**: `POST /search`, `/documentContent`, `/documentContent/batch`, `/documents/url`, `/documents/metadata`, `/resolve`, `/search/semantic`, `/legislation/semantic`, `/{jurisdiction}/search/semantic`, `/{jurisdiction}/legislation/semantic`. They change no server state.
 - **Mutating calls**: `POST /webhooks`, `PUT/DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` (sends a delivery), `POST /citations/extract` (persists edges).
 
 Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
 
 | Failure | GET, billed | GET, free | Read-only POST | Mutating call |
 |---|---|---|---|---|
+| 503 with `partialReason: "TIMEOUT"` | no | no | no | no |
 | 429, not a quota (see below) | retry | retry | retry | retry |
 | 429 reporting an exhausted quota | no | no | no | no |
 | Never reached the app (transport or 521/522/523) | retry | retry | retry | retry |
@@ -45,13 +46,14 @@ Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
 | 400 / 401 / 402 / 403 / 404 / 500 and anything else | no | no | no | no |
 
 - **Quota 429**: legacy daily-call plans (`"Daily quota exceeded"`) and the legacy monthly semantic quota answer 429 when the quota is used up. From API 2.4.0 on, the body carries a top-level `"code": "QUOTA_EXHAUSTED"` and a top-level `resetsAt` (ISO 8601), next to the legacy string `error` and the `usage` object; that `code` identifies it, whatever else the response carries. Earlier API versions send no `code`: then a 429 is a quota 429 when its body has a `usage` object with `resetsAt` and there is neither a `Retry-After` header nor a `retryAfter` body field. A quota 429 cannot succeed before `resetsAt`, so it is not retried, and the error's retry-after value is **null** (the `RateLimit-Reset` header on it describes the per-minute window, not the quota). The error exposes `resetsAt` (top-level `resetsAt`, else `usage.resetsAt`) and a quota-exhausted flag.
+- **503 with `partialReason: "TIMEOUT"`**: the request ran out of its server-side time budget; a retry would wait the same budget again, so it is never retried.
 - **Opt-in: read-only POSTs.** A boolean option, default **off**, that adds the "app-origin 502/503/504 on a read-only POST" row. Those responses are refunded in full, so the retry is billing-safe. It never applies to mutating calls and never to proxy-origin or unknown-origin responses.
 - **Power-user override** (optional per SDK): a set of statuses retried for every non-GET call regardless of origin. It can duplicate webhooks/test deliveries and double-charge. Default: `{429}`.
 - **Policy defaults:** up to 3 retries after the first attempt; exponential backoff with full jitter, `U(0, min(cap, base × 2^attempt))`, base 0.5 s, cap 30 s; `max retries = 0` disables retrying.
 - **Wait before a retry** (server-directed wins over backoff; every hint is clamped to the 30 s cap):
   1. `Retry-After` header, on any status: delta-seconds or an HTTP-date. An empty or unparseable value counts as absent.
   2. On a 429 only: `RateLimit-Reset` (IETF draft-6, delta-seconds). LexAPI sends `RateLimit-Policy/-Limit/-Remaining/-Reset` on every `/api/v1` response, so on any other status it describes the rate window and must not drive the wait. `X-RateLimit-*` is never sent and is not read.
-  3. On a 429 only: the JSON `retryAfter` body field.
+  3. On a 429 and on a 503 `NATIONAL_SEMANTIC_UNAVAILABLE` only: the JSON `retryAfter` body field.
   4. Computed backoff.
 - **Numeric hints** are delta-seconds. Defensively, a value above **1e12** is read as epoch milliseconds and a value above **1e9** as epoch seconds, and either is converted to a delta (floored at 0). Values up to 1e9 are taken as delta-seconds.
 - The retry-after value exposed on an error follows the same resolution (steps 1–3), and is null for a quota 429.
@@ -59,7 +61,7 @@ Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
 ### 1.3 Typed errors
 
 - Every non-2xx response raises/returns a typed error carrying `code`, `message`, `status`, optional `details`, the raw decoded `body`, and `retryAfter` (§1.2).
-- **Typed envelope** `{"success": false, "error": {"code", "message", "details"}}`: `error.code` is authoritative. Codes from the API reference: `NOT_FOUND`, `INVALID_CELEX`, `INVALID_URL`, `INVALID_PARAMS`, `RATE_LIMITED`, `QUOTA_EXHAUSTED`, `TIER_FORBIDDEN`, `CREDITS_EXHAUSTED`, `UPSTREAM_ERROR`, `TIMEOUT`, `INTERNAL`. An unknown code never crashes the parser: the raw string is kept on the base error type.
+- **Typed envelope** `{"success": false, "error": {"code", "message", "details"}}`: `error.code` is authoritative. Codes from the API reference: `NOT_FOUND`, `INVALID_CELEX`, `INVALID_URL`, `INVALID_PARAMS`, `RATE_LIMITED`, `QUOTA_EXHAUSTED`, `TIER_FORBIDDEN`, `CREDITS_EXHAUSTED`, `UPSTREAM_ERROR`, `TIMEOUT`, `INTERNAL`. An unknown code never crashes the parser: any code not listed here is preserved as the raw string on the error.
 - **Legacy shape** `{"error": "<text>", "message"?: "...", "details"?: ...}` (API-key 401s, every 429, some validation 400s, some tier gates, some 502/504 and webhook 404/500 answers): the string `error` is **human text, never a code** — even when it happens to equal a slug. `message` = the `error` text, followed by `": " + message` when `message` is present and different. The code is the body's top-level `code` when it is a string (API 2.4.0 adds it to legacy-shape bodies, e.g. `RATE_LIMITED`, `QUOTA_EXHAUSTED`); it takes precedence over the status-derived code. Without one, the code comes from the HTTP status (table below).
 - **`details`**: `error.details` on the typed envelope; otherwise the top-level `details` member (validation errors put a list of reasons there), including on bodies that have no `error` member at all (`{"message", "details"}`).
 - **No usable body** (non-JSON, empty): `message` = `"HTTP <status>"`, code from the status.
@@ -106,7 +108,7 @@ One model, per attempt:
 - There is no whole-call deadline across retries; worst case is about `(retries + 1) × (C + R)` plus backoff.
 - A runtime that cannot time the connect phase separately (e.g. `fetch`) counts it inside the first `R` window; it still restarts the timer on each body chunk.
 - Both values are configurable per client and per call.
-- Why 95 s: the server allows **one** upstream EUR-Lex fetch 90 s, so that common timeout reaches the caller as the server's typed, refunded 504; Cloudflare ends any wait at 100 s with a 524. A request that needs several upstream fetches can still exceed 95 s and surface as `REQUEST_TIMEOUT` or a 524. On the public endpoint a value above ~100 s buys nothing.
+- Why 95 s: it sits above the API's 90 s request deadline, so that timeout reaches the caller as the server's typed, refunded 504; Cloudflare ends any wait at 100 s with a 524. Some requests can still exceed 95 s and surface as `REQUEST_TIMEOUT` or a 524. On the public endpoint a value above ~100 s buys nothing.
 
 ### 1.7 User agent
 
