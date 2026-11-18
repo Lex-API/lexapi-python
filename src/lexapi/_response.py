@@ -163,8 +163,15 @@ class APIResponse(Mapping[str, Any]):
     _list_fields: ClassVar[tuple[str, ...]] = ()
     #: List fields the endpoint always sends: missing or ``null`` is an error.
     _required_list_fields: ClassVar[tuple[str, ...]] = ()
+    #: Fields the endpoint always sends, with their kind (``"object"``,
+    #: ``"string"`` or ``"boolean"``), in the order they are checked.
+    _required_fields: ClassVar[tuple[tuple[str, str], ...]] = ()
+    #: Fields that, when present and not ``null``, must be a JSON object.
+    _optional_object_fields: ClassVar[tuple[str, ...]] = ()
     #: ``True`` where a 2xx legitimately carries ``success: false``.
     _success_false_ok: ClassVar[bool] = False
+    #: ``True`` where a 204 or an empty body is a result (the webhook delete).
+    _allow_empty: ClassVar[bool] = False
 
     def __init__(self, data: Any, headers: httpx.Headers | None = None) -> None:
         self.data: Any = data

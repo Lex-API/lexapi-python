@@ -130,7 +130,14 @@ FAMILIES: dict[str, tuple[Callable[[Any], Any], dict[str, Any], str | None, bool
     ),
     "as_of": (
         lambda c: c.legislation_as_of("32099R0001", "2099-01-01"),
-        {"success": True, "asOfResolved": False, "asOfReason": "no_version_listed"},
+        {
+            "success": True,
+            "document": "32099R0001",
+            "asOfResolved": False,
+            "asOfReason": "no_version_listed",
+            "act": {"celex": "32099R0001"},
+            "provenance": {},
+        },
         None,
         False,
     ),

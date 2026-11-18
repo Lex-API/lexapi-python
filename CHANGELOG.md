@@ -51,29 +51,54 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   citation as one line and `format_passage(passage)` the content followed by
   a `Source:` line; `restrict_to_celex(result, celex)` keeps the passages of
   given acts. No request is made and no dependency is added.
-- **`LexAPIError.body_excerpt`**: the first 200 characters of a body that is
-  not JSON (`None` otherwise); may contain document text, so do not show it to
+- **`LexAPIError.body_excerpt`**: the first 200 characters (code points) of a
+  body that is neither JSON nor empty, decoded as UTF-8 with invalid bytes
+  replaced (`None` otherwise); may contain document text, so do not show it to
   a model or log it by default. `LexAPIError(...)` and `error_from_response`
   take it as a keyword argument.
 
 ### Changed
 
 - A `2xx` answer that is not the documented shape now raises
-  `InvalidResponseError`; before, it could be read as an empty result. This
-  covers an empty body (also a `204`, except for `webhooks.delete`), JSON that
-  is not an object, `success: false` (when the body carries the API's error
-  envelope, the mapped error is raised instead; `webhooks.test` keeps returning
-  `ok == False`), and a list field that is not a list or holds items that are
-  not objects. `results` is required on `search`, `semantic_search`,
-  `semantic_legislation_search` and the national semantic searches. Unknown
-  extra fields are still accepted.
+  `InvalidResponseError`; before, it could be read as an empty result. To tell
+  a malformed answer from an empty result, catch `InvalidResponseError`. This
+  covers:
+  - a `204` or an empty body, except for `webhooks.delete`;
+  - a body that is not strict UTF-8 JSON: `NaN` / `Infinity`, UTF-16 or
+    UTF-32, invalid UTF-8 (an encoded surrogate included) and trailing data
+    are no longer accepted (one leading UTF-8 byte order mark still is);
+  - JSON that is not an object;
+  - `success: false`. When the body carries the API's error envelope (`error`
+    is an object or a non-empty string), the mapped API error is raised
+    instead; it keeps the answer's status (`err.status == 200`) and uses code
+    `INTERNAL` (`InternalServerError`) when the body names none. It is never
+    retried. `webhooks.test` keeps returning `ok == False`;
+  - a document or as-of answer without its documented fields: `get_document`,
+    `get_document_by_url`, `national.get_document`, `get_document_version` and
+    `get_document_at_date` need a `document` object (and a `document.content`
+    that is an object when present, with `articles` a list of objects);
+    `legislation_as_of` needs `document` (a non-empty string), `asOfResolved`
+    (a boolean), `act` and `provenance` (objects);
+  - a list field that is not a list or holds items that are not objects, and a
+    missing `results` on `search`, `semantic_search`,
+    `semantic_legislation_search` and the national semantic searches.
+
+  Unknown extra fields are still accepted. The full list per endpoint is in
+  `docs/sdk-contract.md` §1.3.
 
 ### Fixed
 
 - `InvalidResponseError` no longer quotes the response body in its message;
   the excerpt is on `body_excerpt`.
-- An error body whose `code` or `message` is not a string no longer raises
-  `TypeError` or puts that value in the message: it counts as absent.
+- The excerpt is decoded as UTF-8 with replacement whatever charset the
+  response names (a leading byte order mark is kept), and is cut to 200 code
+  points.
+- An empty or JSON `null` error body leaves `err.body` as `None` (an empty one
+  was `{}`) and sets no excerpt.
+- A deeply nested JSON body is treated as not JSON (`InvalidResponseError`, or
+  `HTTP <status>` on an error status) instead of raising `RecursionError`.
+- An error body whose `code` or `message` is not a non-empty string no longer
+  raises `TypeError` or puts that value in the message: it counts as absent.
 - A `LexAPIError` survives a pickle round trip with its message unchanged
   (before, the `[CODE]` prefix was added twice).
 - `AS_OF_REASONS` / `AsOfReason` now include `amendment_not_consolidated`,

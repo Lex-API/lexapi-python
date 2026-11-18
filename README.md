@@ -720,12 +720,16 @@ without a code, raised as `TierForbiddenError`. A handler that treated
 `TierForbiddenError` as a failed payment needs a `PaymentPastDueError` clause on
 API 2.27.0 and later.
 
-`InvalidResponseError`: a `2xx` answer that is not the documented shape — a
-body that is not JSON (e.g. a proxy's HTML page), an empty body, JSON that is
-not an object, `success: false`, or a list such as `results` that is missing
-where the endpoint always sends it, is not a list, or holds items that are not
-objects. It is raised so that such an answer is never read as an empty result.
-Unknown extra fields are accepted.
+`InvalidResponseError`: a `2xx` answer that is not the documented shape — no
+body, a body that is not strict UTF-8 JSON (e.g. a proxy's HTML page), JSON
+that is not an object, `success: false`, a documented field that is missing or
+of the wrong kind (e.g. `document` on a document read), or a list such as
+`results` that is missing where the endpoint always sends it, is not a list, or
+holds items that are not objects. It is raised so that such an answer is never
+read as an empty result: catch it to tell the two apart. Unknown extra fields
+are accepted. A `success: false` answer that carries the API's error envelope
+raises the mapped error instead, with the answer's status (`err.status ==
+200`; code `INTERNAL` when the body names none).
 
 `InvalidResponseError` does not quote the response body in its message. For a
 body that is not JSON, the first 200 characters are on `err.body_excerpt`.
