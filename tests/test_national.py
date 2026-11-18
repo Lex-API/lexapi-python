@@ -891,13 +891,13 @@ def test_national_document_full_field_round_trip() -> None:
 
     payload = {
         "document": {
-            "id": "PL-DU-2020-1",
-            "jurisdiction": "PL",
-            "language": "pl",
+            "id": "AT-JUD-JJT_20250612_OGH0002_0010OB00001_25X0000_000",
+            "jurisdiction": "AT",
+            "language": "de",
             "documentKind": "decision",
             "title": "T",
-            "documentType": "Wyrok",
-            "ecli": "ECLI:PL:X",
+            "documentType": "Urteil",
+            "ecli": "ECLI:AT:OGH0002:2025:0010OB00001.25X.0612.000",
             "eli": "https://eli/1",
             "dateOfDocument": "2025-06-12",
             "version": 4,
@@ -905,12 +905,12 @@ def test_national_document_full_field_round_trip() -> None:
             "validTo": "2027-01-01",
             "inForce": True,
             "decision": {
-                "court": "Sąd Najwyższy",
-                "chamber": "Izba Cywilna",
-                "caseNumbers": ["III CZP 1/25", "III CZP 2/25"],
+                "court": "Oberster Gerichtshof",
+                "chamber": "1. Senat",
+                "caseNumbers": ["1 Ob 1/25x", "1 Ob 2/25y"],
                 "citedNorms": [
-                    {"text": "art. 415 k.c.", "documentId": "PL-DU-1964-93"},
-                    {"text": "art. 5 k.c.", "documentId": None},
+                    {"text": "§ 1295 ABGB", "documentId": "AT-NOR-10001622"},
+                    {"text": "§ 7 ABGB", "documentId": None},
                 ],
             },
             "content": {
@@ -919,26 +919,26 @@ def test_national_document_full_field_round_trip() -> None:
                     {
                         "number": "Art. 1",
                         "title": "t",
-                        "section": "Dział I",
+                        "section": "1. Abschnitt",
                         "text": None,
                         "inForceFrom": "2018-05-25",
                         "inForceTo": "2020-01-01",
                         "details": {"unitId": "u1"},
                     }
                 ],
-                "textLanguages": ["en", "pl"],
+                "textLanguages": ["en", "de"],
                 "textLanguage": "en",
                 "embeddedForeignText": True,
                 "repeal": {
                     "validTo": "2027-01-01",
-                    "basis": "uchylony",
+                    "basis": "aufgehoben",
                     "detectedAt": "2026-10-01T00:00:00Z",
                 },
-                "source": {"system": "ISAP"},
-                "details": {"sygnatura": "III CZP 1/25"},
+                "source": {"system": "RIS"},
+                "details": {"geschaeftszahl": "1 Ob 1/25x"},
             },
             "textAvailability": {"available": True},
-            "attribution": "Source: ISAP.",
+            "attribution": "Source: RIS.",
             "textBasis": {
                 "basis": "official_consolidated",
                 "asOf": "2024-01-01",
@@ -946,7 +946,7 @@ def test_national_document_full_field_round_trip() -> None:
                 "newestPdfOnlyDate": "2025-01-01",
                 "newerPdfOnly": ["2025-01-01"],
                 "amendedSince": False,
-                "textFrom": "PL-DU-2024-5",
+                "textFrom": "AT-NOR-40001234",
             },
         }
     }
@@ -954,15 +954,15 @@ def test_national_document_full_field_round_trip() -> None:
     for wire, attr in _SPEC_DOCUMENT_KEYS.items():
         assert hasattr(doc, attr), f"{wire} -> {attr} missing"
     assert (doc.id, doc.jurisdiction, doc.language, doc.document_kind, doc.title) == (
-        "PL-DU-2020-1",
-        "PL",
-        "pl",
+        "AT-JUD-JJT_20250612_OGH0002_0010OB00001_25X0000_000",
+        "AT",
+        "de",
         "decision",
         "T",
     )
     assert (doc.document_type, doc.ecli, doc.eli, doc.date_of_document, doc.version) == (
-        "Wyrok",
-        "ECLI:PL:X",
+        "Urteil",
+        "ECLI:AT:OGH0002:2025:0010OB00001.25X.0612.000",
         "https://eli/1",
         "2025-06-12",
         4,
@@ -976,13 +976,13 @@ def test_national_document_full_field_round_trip() -> None:
     d = doc.decision
     assert d is not None
     assert (d.court, d.chamber, d.case_numbers) == (
-        "Sąd Najwyższy",
-        "Izba Cywilna",
-        ["III CZP 1/25", "III CZP 2/25"],
+        "Oberster Gerichtshof",
+        "1. Senat",
+        ["1 Ob 1/25x", "1 Ob 2/25y"],
     )
     assert [(n.text, n.document_id) for n in d.cited_norms] == [
-        ("art. 415 k.c.", "PL-DU-1964-93"),
-        ("art. 5 k.c.", None),
+        ("§ 1295 ABGB", "AT-NOR-10001622"),
+        ("§ 7 ABGB", None),
     ]
     c = doc.content
     assert c is not None
@@ -990,7 +990,7 @@ def test_national_document_full_field_round_trip() -> None:
     assert (a.number, a.title, a.section, a.text, a.in_force_from, a.in_force_to, a.details) == (
         "Art. 1",
         "t",
-        "Dział I",
+        "1. Abschnitt",
         None,
         "2018-05-25",
         "2020-01-01",
@@ -998,19 +998,19 @@ def test_national_document_full_field_round_trip() -> None:
     )
     assert (c.full_text, c.text_languages, c.text_language, c.embedded_foreign_text) == (
         "ft",
-        ["en", "pl"],
+        ["en", "de"],
         "en",
         True,
     )
     assert c.repeal is not None
     assert (c.repeal.valid_to, c.repeal.basis, c.repeal.detected_at) == (
         "2027-01-01",
-        "uchylony",
+        "aufgehoben",
         "2026-10-01T00:00:00Z",
     )
-    assert c.source == {"system": "ISAP"} and c.details == {"sygnatura": "III CZP 1/25"}
+    assert c.source == {"system": "RIS"} and c.details == {"geschaeftszahl": "1 Ob 1/25x"}
     assert doc.text_availability is not None and doc.text_availability.available is True
-    assert doc.attribution == "Source: ISAP."
+    assert doc.attribution == "Source: RIS."
     tb = doc.text_basis
     assert tb is not None
     assert (tb.basis, tb.as_of, tb.newer_consolidation_exists, tb.newest_pdf_only_date) == (
@@ -1022,5 +1022,5 @@ def test_national_document_full_field_round_trip() -> None:
     assert (tb.newer_pdf_only, tb.amended_since, tb.text_from) == (
         ["2025-01-01"],
         False,
-        "PL-DU-2024-5",
+        "AT-NOR-40001234",
     )

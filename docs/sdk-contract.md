@@ -29,7 +29,7 @@ Definitions:
   - transport failures before the request was sent or answered: DNS / connection refused / TLS failure, connect timeout, timeout waiting for a free pooled connection, and a connection closed **before any response byte** (a stale keep-alive socket the server had already dropped). A close **after part of the response arrived** (head received, body incomplete) is a post-send failure, not this. An SDK identifies the pre-response close by exception type or connection state where the runtime exposes it, otherwise by the HTTP library's exact pre-response message. **A runtime that cannot distinguish a pre-response close from a mid-response close (e.g. `fetch`) treats every such close as a post-send failure: not retryable on billed calls;**
   - Cloudflare **521** (web server down), **522** (connection timed out), **523** (origin unreachable).
 - **Free operations** (0 credits): `GET /info`, `GET /webhooks`, `GET /webhooks/{id}`, `GET /webhooks/{id}/deliveries`, `GET /national/coverage`. (On legacy daily-call plans a successful call counts one call; a retried call that had silently succeeded can count once more.)
-- **Read-only POSTs**: `POST /search`, `/documentContent`, `/documentContent/batch`, `/documents/url`, `/documents/metadata`, `/resolve`, `/search/semantic`, `/legislation/semantic`, `/{jurisdiction}/search/semantic`, `/{jurisdiction}/legislation/semantic`. They change no server state.
+- **Read-only POSTs**: `POST /search`, `/documentContent`, `/documentContent/batch`, `/documents/url`, `/documents/metadata`, `/resolve`, `/search/semantic`, `/legislation/semantic`, `/{jurisdiction}/search/semantic`, `/{jurisdiction}/legislation/semantic`. They change no caller-visible state.
 - **Mutating calls**: `POST /webhooks`, `PUT/DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` (sends a delivery), `POST /citations/extract` (persists edges).
 
 Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
@@ -37,6 +37,7 @@ Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
 | Failure | GET, billed | GET, free | Read-only POST | Mutating call |
 |---|---|---|---|---|
 | 503 with `partialReason: "TIMEOUT"` | no | no | no | no |
+| 503 with `partialReason: "SEARCH_INCOMPLETE"` and no `Retry-After` / `retryAfter` | no | no | no | no |
 | 429, not a quota (see below) | retry | retry | retry | retry |
 | 429 reporting an exhausted quota | no | no | no | no |
 | Never reached the app (transport or 521/522/523) | retry | retry | retry | retry |
@@ -47,6 +48,7 @@ Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
 
 - **Quota 429**: legacy daily-call plans (`"Daily quota exceeded"`) and the legacy monthly semantic quota answer 429 when the quota is used up. From API 2.4.0 on, the body carries a top-level `"code": "QUOTA_EXHAUSTED"` and a top-level `resetsAt` (ISO 8601), next to the legacy string `error` and the `usage` object; that `code` identifies it, whatever else the response carries. Earlier API versions send no `code`: then a 429 is a quota 429 when its body has a `usage` object with `resetsAt` and there is neither a `Retry-After` header nor a `retryAfter` body field. A quota 429 cannot succeed before `resetsAt`, so it is not retried, and the error's retry-after value is **null** (the `RateLimit-Reset` header on it describes the per-minute window, not the quota). The error exposes `resetsAt` (top-level `resetsAt`, else `usage.resetsAt`) and a quota-exhausted flag.
 - **503 with `partialReason: "TIMEOUT"`**: the request ran out of its server-side time budget; a retry would wait the same budget again, so it is never retried.
+- **503 with `partialReason: "SEARCH_INCOMPLETE"`**: without a server-directed wait it is not retried; with one it is retried at most once per call, under the app-origin 503 row.
 - **Opt-in: read-only POSTs.** A boolean option, default **off**, that adds the "app-origin 502/503/504 on a read-only POST" row. Those responses are refunded in full, so the retry is billing-safe. It never applies to mutating calls and never to proxy-origin or unknown-origin responses.
 - **Power-user override** (optional per SDK): a set of statuses retried for every non-GET call regardless of origin. It can duplicate webhooks/test deliveries and double-charge. Default: `{429}`.
 - **Policy defaults:** up to 3 retries after the first attempt; exponential backoff with full jitter, `U(0, min(cap, base × 2^attempt))`, base 0.5 s, cap 30 s; `max retries = 0` disables retrying.
@@ -81,21 +83,22 @@ Decision table (first matching row wins; "GET" means GET/HEAD/OPTIONS):
   | 504, 524 | `TIMEOUT` |
   | anything else | `INTERNAL` |
 
-- **SDK-side codes** (never in `error.code`): `UNAUTHORIZED`, `SERVICE_UNAVAILABLE`, `INVALID_RESPONSE` (a 2xx whose non-empty body is not JSON — e.g. a proxy's HTML interstitial; never turned into an empty success), `INCOMPLETE_EXPORT` (§1.8), `CONNECTION_ERROR` (transport failure), `REQUEST_TIMEOUT` (the SDK's own timeout, distinct from the server's `TIMEOUT`).
+- **SDK-side codes** (never in `error.code`): `UNAUTHORIZED`, `SERVICE_UNAVAILABLE`, `INVALID_RESPONSE` (a 2xx whose non-empty body is not JSON — e.g. a proxy's HTML interstitial; never turned into an empty success), `INCOMPLETE_EXPORT` (§1.8), `CONNECTION_ERROR` (transport failure), `REQUEST_TIMEOUT` (the SDK's own timeout, distinct from the server's `TIMEOUT`), `ABORTED` (TypeScript only: the caller's `AbortSignal` fired).
 - A 204 or an empty 2xx body is a successful empty object.
-- **Typed extras:** `CREDITS_EXHAUSTED` exposes `details.operation`, `weight`, `available`, `included`, `topup`, `used`, `resetsAt`. `RATE_LIMITED` and `QUOTA_EXHAUSTED` share the rate-limit error type (its `code` tells them apart), which exposes the quota flag and `resetsAt` (§1.2). Legacy tier gates expose `upgradeUrl`.
+- **Typed extras:** `CREDITS_EXHAUSTED` exposes `details.operation`, `weight`, `available`, `included`, `topup`, `used`, `resetsAt`. `RATE_LIMITED` and `QUOTA_EXHAUSTED` share the rate-limit error type (the quota flag tells them apart; from API 2.4.0 the `code` does too), which exposes the quota flag and `resetsAt` (§1.2). Legacy tier gates carry `upgradeUrl`: the `upgrade_url` accessor in Python, the raw `body` in TypeScript.
 
 ### 1.4 Pagination helpers
 
 - `/search` has no page cursor — only `maxPages` (fetch the first N pages, tier-bounded) — so there is no search iterator. The SDKs surface `truncated`/`truncatedAt`/`truncatedReason` and `partial`/`partialReason` instead of hiding them.
 - Offset-paginated list endpoints get an iterator. None has a stable cursor, so each iterator documents its limits:
-  - `/citations/cites/{celex}` and `/citations/cited-by/{celex}`: offsets count **edge rows**; the iterator advances by the sum of the page's `citationCount`s and stops at the first page shorter than the page size (it never compares offsets with `totalCitations`, which counts distinct document pairs). Edges are ordered by extraction time only, so edges extracted at the same instant or during the walk can shift: an edge may repeat or be missed. Every page is a billed call.
+  - `/citations/cites/{celex}` and `/citations/cited-by/{celex}`: offsets count **edge rows**; the iterator advances by the sum of the page's `citationCount`s and stops at the first short page (the Python SDK also stops once the offset reaches `totalEdges`, when sent). It never compares offsets with `totalCitations`, which counts distinct document pairs. Edges are ordered by extraction time only, so edges extracted at the same instant or during the walk can shift: an edge may repeat or be missed. Every page is a billed call.
   - `/webhooks/{id}/deliveries` (newest first): each delivery is yielded at most once (deduplicated on `id`), because a delivery created during the walk shifts later pages by one; the iterator stops on an empty page or when the offset reaches `total`.
+- `/{jurisdiction}/documents` is cursor-paginated: its iterator follows each page's `nextCursor` until there is none.
 
 ### 1.5 Credit visibility
 
 - Successful responses can carry a `usage` block (`current`/`limit`/`remaining`/`unit`/`resetsAt`; credits on credit plans, daily calls on legacy plans) and, on credit-pool accounts, a `credits` block (`operation_weight`, `current`, `limit`, `remaining`, `included`, `topup`, `resetsAt`).
-- Every response wrapper exposes `unitsCharged` (`credits.operation_weight`; 0 for free operations and legacy accounts), `creditsRemaining` (`credits.remaining`, falling back to `usage.remaining`) and `resetsAt`. The raw blocks stay accessible without loss.
+- Every response exposes (Python: properties on the response; TypeScript: `getCreditUsage(response)`) `unitsCharged` (`credits.operation_weight`; 0 for free operations and legacy accounts), `creditsRemaining` (`credits.remaining`, falling back to `usage.remaining`) and `resetsAt`. The raw blocks stay accessible without loss.
 - `operation_weight` already reflects a settlement applied before the answer (for example a document served from the LexAPI corpus settles at 1 credit). Failure refunds land after the response is sent, so an error's own figures show the pre-refund pool and the next call reflects it.
 - Helpers tolerate either block being absent.
 
@@ -108,11 +111,11 @@ One model, per attempt:
 - There is no whole-call deadline across retries; worst case is about `(retries + 1) × (C + R)` plus backoff.
 - A runtime that cannot time the connect phase separately (e.g. `fetch`) counts it inside the first `R` window; it still restarts the timer on each body chunk.
 - Both values are configurable per client and per call.
-- Why 95 s: it sits above the API's 90 s request deadline, so that timeout reaches the caller as the server's typed, refunded 504; Cloudflare ends any wait at 100 s with a 524. Some requests can still exceed 95 s and surface as `REQUEST_TIMEOUT` or a 524. On the public endpoint a value above ~100 s buys nothing.
+- The 95 s default sits above the API's 90 s deadline on document reads, so that timeout comes back as a typed, refunded 504; the CDN ends any wait at 100 s. Some requests can still exceed 95 s and surface as `REQUEST_TIMEOUT` or a 524. On the public endpoint a value above ~100 s buys nothing.
 
 ### 1.7 User agent
 
-- Every request sends `User-Agent: lexapi-<lang>/<version>` (e.g. `lexapi-python/0.2.0`, `lexapi-typescript/0.2.0`), with an optional caller-supplied suffix after a space.
+- Every request sends `User-Agent: lexapi-<lang>/<version>` (e.g. `lexapi-python/0.2.0`, `lexapi-typescript/0.2.0`), with an optional caller-supplied suffix after a space (the TypeScript SDK omits it in browsers, which do not allow setting it).
 
 ### 1.8 Export stream (`GET /export`, NDJSON)
 
@@ -120,7 +123,7 @@ One model, per attempt:
 - A transport failure while reading rows surfaces as the SDK's `CONNECTION_ERROR` / `REQUEST_TIMEOUT` error, never a raw HTTP-library exception.
 - A body that ends without its `_done` line raises `INCOMPLETE_EXPORT` **after** yielding the rows that did arrive: a cut-short export never looks complete. The stream exposes a `complete` flag and a count of rows read.
 - Two more shapes mean incomplete, handled defensively (the API ends a failed export without a trailer): a `_done` line whose `complete` is exactly `false`, and any line whose only key is `_error`. Both raise `INCOMPLETE_EXPORT` after the rows that did arrive, and `complete` stays false. An `_error` line is never yielded as a row; its `code` / `message` travel on the error's details. A `_done` without a `complete` field, or with `complete: true`, is complete.
-- One behaviour after the caller ends a stream: iterating a stream whose `_done` trailer was never read raises `INCOMPLETE_EXPORT`, however it was ended (closed before iterating, `break` and iterate again, leaving the `with`/`using` block early). Iterating a stream that was read to its `_done` again yields nothing and does not raise. A stream is read once; call `export()` again to re-read.
+- One behaviour after the caller ends a stream: iterating a stream whose `_done` trailer was never read raises `INCOMPLETE_EXPORT`, however it was ended (closed or cancelled before iterating, `break` and iterate again, leaving a Python `with` block early). Iterating a stream that was read to its `_done` again yields nothing and does not raise. A stream is read once; call `export()` again to re-read.
 - Lines that are not JSON objects (e.g. a half-written last line) are counted (`invalidLines`), not silently dropped.
 - `truncated` means matching rows remain that the export did not reach. Once the `_done` trailer has been read, `_done.truncated` is authoritative (API 2.3.0). The server sets it when the export wrote up to `limit` / the server maximum and another matching row exists past the last one read, when the credit pool could not pay for rows added since the count, or when the server ended the export early (`truncatedBy`: `limit`, `max_rows`, `credits` or `recovered`). It is never derived from the row count, and skipped stubs do not count. Before the trailer, `truncated` falls back to the `X-Export-Truncated` header (`1`/`0`), then `_meta.truncated`. Both come from the up-front count, which may be up to a minute old and never caps the stream (rows added since are streamed and reserved as they come), so they are only a hint.
 - Credit cost of an export (API 2.3.0): 1 credit per row written, at least 1 per export. The call is admitted for 1 credit, the matching rows are counted, and the rest of 1 credit per row the export can return is reserved; a pool that cannot cover it answers `402 CREDITS_EXHAUSTED` before anything streams. Rows added since the count are streamed too, each reserved as it comes; if the pool cannot pay for them, the export ends with `truncatedBy: "credits"`. Unwritten rows are refunded when the stream ends; the settled charge is `_done.credits.charged`.

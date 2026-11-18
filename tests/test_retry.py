@@ -141,9 +141,8 @@ def test_read_timeout_not_retried():
 # ── wait resolution ─────────────────────────────────────────────────────
 
 
-def test_header_preferred_over_buggy_epoch_body_field():
-    # The JSON `retryAfter` field was buggy (epoch seconds) until a pending
-    # server fix — the header must win.
+def test_header_preferred_over_epoch_body_field():
+    # The JSON `retryAfter` field can carry epoch seconds — the header must win.
     headers = httpx.Headers({"Retry-After": "5"})
     body = {"error": "slow", "retryAfter": time.time() + 9999}
     assert server_wait_hint(headers, body) == 5.0

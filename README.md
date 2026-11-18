@@ -666,12 +666,11 @@ client.with_options(timeout=30, max_retries=0).semantic_legislation_search(
 
 `timeout` is the longest the SDK waits for the next bytes of a response — the
 response head, then each body chunk — on one attempt; it is not a deadline
-for the whole call. The 95 s default sits above the API's 90 s budget for one
-upstream EUR-Lex fetch, so that common timeout comes back as the server's
-typed `TimeoutError` (504, refunded), and below Cloudflare's 100 s limit
-(beyond which you get a 524). A request needing several upstream fetches can
-still run past it and raise a local `RequestTimeoutError`; values above ~100 s
-buy nothing on the public endpoint.
+for the whole call. The 95 s default sits above the API's 90 s deadline on
+document reads, so that timeout comes back as a typed, refunded 504; the CDN
+ends any wait at 100 s. A request can still run past the timeout and raise a
+local `RequestTimeoutError`; values above ~100 s buy nothing on the public
+endpoint.
 
 ## Development
 

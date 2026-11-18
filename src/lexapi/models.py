@@ -3373,10 +3373,9 @@ class NationalSemanticLegislationResult(SemanticLegislationResult):
     ``valid_from``, ``valid_to`` and ``law_type`` — ``None`` when the index
     has nothing for the unit (which of them it has differs by jurisdiction).
 
-    Quirk straight from the server: unlike every camelCase field elsewhere
-    in this SDK, these index fields are the server's own snake_case wire
-    names (``in_force`` / ``valid_from`` / ``valid_to`` / ``law_type``) —
-    do not "fix" this, it would stop matching the API.
+    Unlike the camelCase fields elsewhere in this SDK, these index fields
+    have snake_case wire names (``in_force`` / ``valid_from`` /
+    ``valid_to`` / ``law_type``), mirrored here as sent.
 
     ``in_force`` comes from the semantic index, as of today (``None`` when
     unknown). LexAPI's own corpus row only ever forces it to ``False`` (and

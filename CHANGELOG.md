@@ -246,9 +246,8 @@ client written for one country now works for every other:
 ### Notes
 
 - `NationalSemanticLegislationResult.in_force` / `.valid_to` mirror the
-  server's own inconsistent wire field names for this one endpoint
-  (`in_force` / `valid_to`, snake_case) — unlike every other camelCase field
-  in this SDK. Intentional; do not "fix" it, it would stop matching the API.
+  API's snake_case wire field names for this endpoint (`in_force` /
+  `valid_to`), unlike the camelCase fields elsewhere in this SDK.
 - National semantic responses carry a `credits` body block, like the other
   credit-metered routes.
 

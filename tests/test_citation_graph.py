@@ -745,14 +745,14 @@ def test_transposition_unknown_jurisdiction_is_invalid_params():
         "code": "INVALID_PARAMS",
         "error": "Invalid jurisdictions",
         "param": "jurisdictions",
-        "allowed": ["AT", "BE"],
+        "allowed": ["AT", "DE"],
     }
     client, _ = capture_client(json_responder(body, status=400))
     with client:
         with pytest.raises(InvalidParamsError) as info:
             client.citations.transposition("32016L0680", jurisdictions="xx")
     assert info.value.param == "jurisdictions"
-    assert info.value.allowed == ["AT", "BE"]
+    assert info.value.allowed == ["AT", "DE"]
 
 
 # ── counterparts ───────────────────────────────────────────────────────

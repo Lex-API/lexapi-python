@@ -200,7 +200,7 @@ class _ExportStreamBase:
 
         Once the ``_done`` trailer has been read, its ``truncated`` flag is
         authoritative (API 2.3.0): the server sets it when it wrote up to
-        ``limit`` / ``EXPORT_MAX_ROWS`` and found another matching row past
+        ``limit`` / the server's row ceiling (50,000) and found another matching row past
         the last one it read, or when the credit pool could not pay for rows
         added since its count (``done["truncatedBy"]`` says which). It never
         derives it from the row count, and skipped stubs do not count.
