@@ -834,6 +834,7 @@ def test_as_of_resolved_consolidated_answer():
         version_kind="consolidated",
         version_date="2099-01-01",
         version_valid_until="2099-12-31",
+        as_of_echoed="2099-06-01",
     )
     assert p.cite_celex == "32099R0001"
     assert result == PassageResult(
@@ -1031,6 +1032,9 @@ def test_restrict_to_celex_counts_labelled_passages_and_matches_nothing_on_empty
     for empty in ([], "", "  ", ["", " "], "CELEX:"):
         with pytest.raises(ValueError, match="at least one CELEX number"):
             passages.restrict_to_celex(result, empty)
+    for bad in ([None], ["32099L0003", 5], [b"32099L0003"], [["32099L0003"]]):
+        with pytest.raises(ValueError, match="as strings"):
+            passages.restrict_to_celex(result, bad)  # type: ignore[arg-type]
     for prefixed in ("CELEX:32099L0003", " celex: 32099l0003 ", ["CELEX:32099L0003"]):
         assert len(passages.restrict_to_celex(result, prefixed).passages) == 1
     # a number is matched whole, never as a prefix
@@ -1363,6 +1367,16 @@ def test_format_passage_is_content_then_source_line():
         assert passages.format_passage(p) == (
             p.content() + "\nSource: " + passages.format_citation(p)
         )
+    labelled = _one(
+        passages.from_legislation_search(leg(hit_unresolved()), unresolved="keep_labelled")
+    )
+    assert passages.format_passage(labelled) == (
+        "[Latest indexed text of CELEX 32099L0003 art_12; not established as the text for "
+        "2099-06-01 (reason: fetch_timeout).]\n"
+        + SYN
+        + "LATEST-TEXT-MUST-NOT-LEAK\n"
+        + "Source: CELEX 32099L0003, art_12, text for 2099-06-01 not established"
+    )
 
 
 # ── notices ─────────────────────────────────────────────────────────────
@@ -1415,6 +1429,65 @@ def test_every_reason_renders_one_of_the_two_notices(reason):
             assert "in force" not in p.content()
     for p in (withheld, labelled, answer):
         assert passages.format_citation(p).count("text for 2099-06-01 not established") == 1
+
+
+@pytest.mark.parametrize("reason", sorted(NOT_IN_FORCE))
+@pytest.mark.parametrize("policy", ["withhold", "keep_labelled"])
+def test_not_in_force_wording_only_for_the_date_the_api_judged(policy, reason):
+    hit = hit_unresolved()
+    hit.update(asOf="2098-01-01", asOfReason=reason)
+    response = leg(hit, as_of="2098-01-01")
+    # the caller asked for another date than the one the API answered for
+    p = _one(passages.from_legislation_search(response, unresolved=policy, as_of="2099-06-01"))
+    assert (p.as_of, p.as_of_echoed, p.as_of_reason) == ("2099-06-01", "2098-01-01", reason)
+    generic = f"not established as the text for 2099-06-01 (reason: {reason})."
+    if policy == "withhold":
+        assert p.content() == f"[No text: CELEX 32099L0003 art_12 is {generic}]"
+    else:
+        assert p.content() == (
+            f"[Latest indexed text of CELEX 32099L0003 art_12; {generic}]\n"
+            + SYN
+            + "LATEST-TEXT-MUST-NOT-LEAK"
+        )
+    assert "in force" not in p.content()
+    assert "2098-01-01" not in p.content()
+    assert "as_of_echoed" not in p.metadata()
+
+    # the API echoed no date at all: nothing was judged for the date printed
+    silent = without_as_of(hit_unresolved())
+    silent["asOfReason"] = reason
+    response = leg(silent, as_of=None)
+    p = _one(passages.from_legislation_search(response, unresolved=policy, as_of="2099-06-01"))
+    assert p.as_of_echoed is None
+    assert "in force" not in p.content() and generic in p.content()
+
+    # same date: the not-in-force wording stands
+    same = hit_unresolved()
+    same["asOfReason"] = reason
+    p = _one(passages.from_legislation_search(leg(same), unresolved=policy, as_of="2099-06-01"))
+    assert p.as_of_echoed == "2099-06-01"
+    assert f"not in force on 2099-06-01 (reason: {reason})." in p.content()
+
+
+def test_not_in_force_wording_needs_an_echoed_date_on_a_hand_built_passage():
+    p = Passage(
+        kind="legislation",
+        celex="32099L0003",
+        text=None,
+        text_status="withheld",
+        as_of="2099-06-01",
+        as_of_resolved=False,
+        as_of_reason="no_longer_in_force",
+    )
+    assert "in force" not in p.content()
+    assert (
+        "not in force on 2099-06-01" in dataclasses.replace(p, as_of_echoed="2099-06-01").content()
+    )
+    undated = dataclasses.replace(p, as_of=None)
+    assert undated.content() == (
+        "[No text: CELEX 32099L0003 is not established as the text for the date asked "
+        "(reason: no_longer_in_force).]"
+    )
 
 
 def test_notice_of_a_version_only_answer():

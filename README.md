@@ -224,7 +224,8 @@ with LexAPI() as client:
 
 result = passages.from_legislation_search(response, as_of="2019-06-01")
 for p in result.passages:
-    print(passages.format_citation(p))  # CELEX 32016R0679, art_17, version for 2019-06-01: ...
+    # for an act as published: CELEX 32016R0679, art_17, version for 2019-06-01: 32016R0679
+    print(passages.format_citation(p))
     print(p.content())  # the text, or a one-line notice when there is none
 print(result.withheld, "withheld;", result.units_charged, "credits")
 ```

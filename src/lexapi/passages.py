@@ -55,6 +55,12 @@ Building an adapter
   truncation are the adapter's job.
 - **Documents.** :func:`from_document` gives the articles of a document
   read; its annexes and recitals are left out.
+- **id.** :attr:`Passage.id` is stable across calls but not unique within
+  a result (two hits of one decision without a paragraph number share it),
+  and it does not say whether the passage has text or what its ``kind`` is:
+  a withheld passage and a later resolved one for the same article and date
+  share it. De-duplicate in the adapter; do not store a notice over a text,
+  and do not index withheld passages.
 - **kind** says which call produced the passage, not what the document is:
   a ``"document_read"`` passage can be legislation or case law.
 """
@@ -238,6 +244,11 @@ class Passage:
     document_type: str | None = None
     #: Case law: position of the match within the decision.
     paragraph_number: int | None = None
+    #: The date the API answered for, as it echoed it. It differs from
+    #: ``as_of`` when the API did not answer for the date asked; the
+    #: ``as_of_reason`` is then about this date, not about ``as_of``. Not
+    #: part of :meth:`metadata`.
+    as_of_echoed: str | None = None
 
     @property
     def cite_celex(self) -> str | None:
@@ -268,6 +279,13 @@ class Passage:
         an unknown ``as_of`` or ``language`` is empty. It is built from the
         citation only, never from the text, so it is the same on every call
         that returns the same passage and differs between dates.
+
+        It is not unique within a result: two hits of one decision without a
+        paragraph number share it. It does not say whether the passage has
+        text, nor its ``kind``: a withheld passage and a later resolved one
+        for the same article and date share it. De-duplicate in the adapter;
+        do not store a notice over a text, and do not index withheld
+        passages.
         """
         part = self.article_ref
         if not part and self.paragraph_number is not None:
@@ -281,7 +299,7 @@ class Passage:
         - Text: the text.
         - Withheld: ``[No text: CELEX <celex> <part> is not established as
           the text for <as_of> (reason: <as_of_reason>).]``, or, when the
-          reason says the act was not in force, ``[No text: CELEX <celex>
+          reason says the act was not in force on that date, ``[No text: CELEX <celex>
           <part> was not in force on <as_of> (reason: <as_of_reason>).]``
         - Kept with ``unresolved="keep_labelled"``: ``[Latest indexed text of
           CELEX <celex> <part>; not established as the text for <as_of>
@@ -505,6 +523,7 @@ def from_legislation_as_of(
         as_of=as_of,
         as_of_resolved=resolved,
         as_of_reason=response.as_of_reason,
+        as_of_echoed=as_of,
         **_version_fields(version),
     )
     return PassageResult(passages=(passage,), as_of=as_of, withheld=0 if resolved else 1, **credits)
@@ -521,9 +540,13 @@ def restrict_to_celex(result: PassageResult, celex: str | Iterable[str]) -> Pass
     be shorter than the search's ``limit``.
 
     Numbers are compared whole, ignoring case, surrounding spaces and a
-    leading ``CELEX:``. Giving no number raises ``ValueError``.
+    leading ``CELEX:``. Giving no number, or a value that is not a string,
+    raises ``ValueError``.
     """
-    wanted = {_bare_celex(value) for value in ([celex] if isinstance(celex, str) else celex)}
+    values = [celex] if isinstance(celex, str) else list(celex)
+    if not all(isinstance(value, str) for value in values):
+        raise ValueError("restrict_to_celex takes CELEX numbers as strings")
+    wanted = {_bare_celex(value) for value in values}
     wanted.discard("")
     if not wanted:
         raise ValueError("restrict_to_celex needs at least one CELEX number")
@@ -662,7 +685,9 @@ def _date(passage: Passage) -> str:
 
 def _date_clause(passage: Passage, verb: str, not_in_force_verb: str) -> str:
     reason = f" (reason: {passage.as_of_reason})" if passage.as_of_reason else ""
-    if passage.as_of_reason in _NOT_IN_FORCE_REASONS:
+    # A reason is a statement about the date the API answered for.
+    judged = passage.as_of is not None and passage.as_of_echoed == passage.as_of
+    if judged and passage.as_of_reason in _NOT_IN_FORCE_REASONS:
         return f"{not_in_force_verb} not in force on {_date(passage)}{reason}."
     lead = f"{verb} " if verb else ""
     return f"{lead}not established as the text for {_date(passage)}{reason}."
@@ -716,6 +741,7 @@ def _legislation_hit(
         as_of=((asked or echoed) if date_asked else None) or None,
         as_of_resolved=resolved if date_asked else None,
         as_of_reason=hit.as_of_reason,
+        as_of_echoed=(echoed if date_asked else None) or None,
         **_version_fields(version),
     )
 
