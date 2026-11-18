@@ -64,9 +64,10 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   a malformed answer from an empty result, catch `InvalidResponseError`. This
   covers:
   - a `204` or an empty body, except for `webhooks.delete`;
-  - a body that is not strict UTF-8 JSON: `NaN` / `Infinity`, UTF-16 or
-    UTF-32, invalid UTF-8 (an encoded surrogate included) and trailing data
-    are no longer accepted (one leading UTF-8 byte order mark still is);
+  - a body that is not strict UTF-8 JSON. Newly rejected: `NaN` / `Infinity`,
+    UTF-16 and UTF-32 bodies, and UTF-8-encoded surrogates (an invalid UTF-8
+    byte and data after the JSON value already raised). One leading UTF-8 byte
+    order mark is still accepted;
   - JSON that is not an object;
   - `success: false`. When the body carries the API's error envelope (`error`
     is an object or a non-empty string), the mapped API error is raised
@@ -85,6 +86,10 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
   Unknown extra fields are still accepted. The full list per endpoint is in
   `docs/sdk-contract.md` §1.3.
+- An error (non-2xx) body is read by the same strict parser: one that is not
+  strict UTF-8 JSON is treated as not JSON — `err.body` is `None`, the message
+  is `HTTP <status>`, the code comes from the status, and a `retryAfter` in it
+  is not read; its start is on `body_excerpt`.
 
 ### Fixed
 

@@ -731,6 +731,25 @@ are accepted. A `success: false` answer that carries the API's error envelope
 raises the mapped error instead, with the answer's status (`err.status ==
 200`; code `INTERNAL` when the body names none).
 
+An `InvalidResponseError` means the answer was not a LexAPI answer in the
+documented shape — for example a proxy's page, an outage page, or a body cut
+off in transit. The client never retries a `2xx` answer, and the call may
+already have been charged, so retrying a paid call yourself can be charged
+again.
+
+Fields the client requires (a missing one raises `InvalidResponseError` with
+`Expected "<field>" in the response; it is missing`, where *missing* means
+absent, `null`, or an empty string where a string is required):
+
+| Call | Required |
+|---|---|
+| `search`, `semantic_search`, `semantic_legislation_search`, `national.semantic_search`, `national.legislation_semantic_search` | `results` (a list) |
+| `get_document`, `get_document_by_url`, `national.get_document`, `get_document_version`, `get_document_at_date` | `document` (an object) |
+| `legislation_as_of` | `document` (a string), `asOfResolved` (a boolean), `act`, `provenance` (objects) |
+
+The full list, including the list fields checked when present, is in the
+[SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md) §1.3.
+
 `InvalidResponseError` does not quote the response body in its message. For a
 body that is not JSON, the first 200 characters are on `err.body_excerpt`.
 That excerpt (like `err.body`) is raw response content and may contain
@@ -756,6 +775,7 @@ default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
 read-only POSTs (search, document reads, resolve, semantic search,
 `legislation_as_of`) on an app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
+A `2xx` answer is never retried, whatever its body.
 Every wait, server-directed ones included, is clamped to `backoff_cap`
 (default 30 s): a cap below the server's requested wait shortens it. The full
 rules are in the [SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md).

@@ -610,3 +610,15 @@ def test_shape_check_order_across_groups():
         == 'Expected every item of "items" to be an object, got number at index 1'
     )
     assert problem(**dict(ok, meta=None, extra=None)) is None
+
+
+def test_repeated_content_type_headers_are_joined():
+    respond = lambda request: httpx.Response(  # noqa: E731
+        200,
+        content=b"<p>",
+        headers=[(b"content-type", b" text/html"), (b"content-type", b"text/plain; x")],
+    )
+    err = invalid(search, respond)
+    assert err.message == (
+        "Expected JSON, got text/html, text/plain that does not parse as JSON (3 bytes)"
+    )
