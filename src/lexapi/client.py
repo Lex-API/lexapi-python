@@ -387,9 +387,10 @@ class LexAPI:
     # ── Point-in-time versions ────────────────────────────────────────
     # Versions are LexAPI observation snapshots (content-hash changes
     # between fetches), NOT legal in-force reconstructions; history begins
-    # at first ingestion. For the text in force on a date, use
-    # legislation_as_of(...), semantic_legislation_search(as_of=...) or a
-    # consolidated CELEX.
+    # at first ingestion.
+    # For the version of an act listed for a date, use legislation_as_of(...);
+    # semantic_legislation_search(as_of=...) searches the text in force on a
+    # date; or read a consolidated CELEX.
 
     def list_document_versions(
         self, celex: str, *, language: str | None = None
@@ -565,10 +566,13 @@ class LexAPI:
 
         Args:
             document: CELEX number of an EU regulation, directive or decision
-                (``32016R0679``). A consolidated id is read as its act. For
-                an ELI or a URL, call :meth:`resolve` first.
+                (``32016R0679``). A consolidated id is read as its act. Send
+                the bare number: a ``CELEX:`` prefix is a 400
+                (:class:`~lexapi.InvalidCelexError`). For an ELI or a URL,
+                call :meth:`resolve` first.
             as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01
-                to today UTC.
+                to today UTC. A ``datetime`` is sent as its own calendar
+                date; for today pass ``datetime.now(timezone.utc).date()``.
             provision: a whole article (``art_17``, ``17``, ``Article 17``),
                 an annex by its numeral or letter (``anx_III``), or recitals
                 (``rct_26``, ``rct_26-28``, at most 50). Paragraphs and
@@ -590,8 +594,11 @@ class LexAPI:
         :class:`~lexapi.InvalidParamsError` (both refunded); an unknown act
         :class:`~lexapi.NotFoundError`.
 
-        **Cost:** 1 credit; 4 when the text has to be fetched (5 when it is
-        fetched live from EUR-Lex), 1 if that fetch fails or finds no text.
+        **Cost:** 1 credit when no text is fetched; when the provision's
+        text has to be fetched, 4 (5 when it is fetched live from EUR-Lex),
+        whatever the answer, and 1 if the fetch fails or finds no text. A
+        fetch reserves up to 5 credits: a pool holding fewer gets
+        ``as_of_reason == "insufficient_credits"``.
         """
         body = _payloads.legislation_as_of_body(
             document, as_of, provision=provision, language=language

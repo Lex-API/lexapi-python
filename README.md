@@ -167,7 +167,8 @@ if answer.as_of_resolved:
     v = answer.as_of_version  # kind: "consolidated" | "as_published"
     print(v.celex, v.kind, v.date)
     print(answer.provision.number, answer.provision.text)
-    if answer.consolidated:  # no legal force — cite the authentic act
+    # no legal force — cite the authentic act (answer.document is always the act)
+    if answer.consolidated:
         print("cite", answer.base_celex)
 else:
     print("not established:", answer.as_of_reason)  # see lexapi.AS_OF_LOOKUP_REASONS
@@ -176,11 +177,33 @@ else:
 The version of an EU regulation, directive or decision listed for a date: the
 newest consolidated version dated on or before it, or the act as published in
 the Official Journal. `provision` adds one article, annex (`anx_III`) or recital
-range (`rct_26-28`); omit it for the version only. An answer that cannot be
-established is a normal return with `as_of_resolved == False` and an
-`as_of_reason` — use the text only when `as_of_resolved` is true. It does not
-say whether an individual provision applied on that date. Cost: 1 credit; 4
-when the text has to be fetched (5 live from EUR-Lex). Needs LexAPI API 2.26.0.
+range (`rct_26-28`); omit it for the version only. `legislation_as_of` reads one
+act you already know by CELEX number; `semantic_legislation_search(as_of=...)`
+is the search by meaning. Needs LexAPI API 2.26.0.
+
+- **Unresolved.** An answer that cannot be established is a normal return with
+  `as_of_resolved == False` and an `as_of_reason` — use the text only when
+  `as_of_resolved` is true. Unresolved answers are returned, not raised, so a
+  retry loop has to look at `as_of_reason`: the `fetch_*` reasons,
+  `request_deadline`, `version_list_unavailable` and `version_lookup_cap` are
+  worth asking again; the others are the answer for that date.
+- **To cite.** `answer.document` is always the act itself;
+  `answer.as_of_version.celex` and `.date` name the version the text comes from
+  (`base_celex` is set on consolidated answers only).
+- **Dates.** `answer.as_of_version.valid_until`, when set, is the last day this
+  version is the one listed. `answer.act.in_force_today` is about today, not
+  about `as_of`. An amendment that applies retroactively counts from the date
+  of the amending act. The answer does not say whether an individual provision
+  applied on that date.
+- **Input.** Send the bare CELEX number: a `CELEX:` prefix is a 400
+  (`InvalidCelexError`).
+- **Errors.** An unknown act raises `NotFoundError`; invalid input raises
+  `InvalidCelexError` / `InvalidParamsError`. An API older than 2.26.0 has no
+  such endpoint and also answers 404 (`NotFoundError`, "Unknown API endpoint").
+- **Cost.** 1 credit when no text is fetched; when the provision's text has to
+  be fetched, 4 (5 when it is fetched live from EUR-Lex), whatever the answer,
+  and 1 if the fetch fails or finds no text. A fetch reserves up to 5 credits:
+  a pool holding fewer gets `as_of_reason == "insufficient_credits"`.
 
 ### Citations
 
@@ -539,9 +562,9 @@ retrieval and evaluation.
 
 Versions are LexAPI *observation snapshots* — the document as fetched — not
 legal in-force reconstructions; history begins at first ingestion. (For the
-text *in force* on a date, use `legislation_as_of(...)`,
-`semantic_legislation_search(as_of=...)` or a consolidated CELEX such as
-`02016R0679-20180524`.)
+version of an act listed for a date, use `legislation_as_of(...)`; to search
+the text in force on a date, `semantic_legislation_search(as_of=...)`; or read
+a consolidated CELEX such as `02016R0679-20180524`.)
 
 ```python
 history = client.list_document_versions("32016R0679")
@@ -649,8 +672,8 @@ the SDK retries:
 
 POSTs, including webhook create/update/test, are never retried on a 5xx by
 default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
-read-only POSTs (search, document reads, resolve, semantic search) on an
-app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
+read-only POSTs (search, document reads, resolve, semantic search,
+`legislation_as_of`) on an app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
 Every wait, server-directed ones included, is clamped to `backoff_cap`
 (default 30 s): a cap below the server's requested wait shortens it. The full

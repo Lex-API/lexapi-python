@@ -24,9 +24,9 @@ The body is never used — an intermediary can answer JSON with an ``error``
 key. When the origin is unknown the response is treated as proxy-generated.
 
 POST/PUT/DELETE are retried only on 429 and on never-reached failures. The
-read-only POSTs (search, document reads, resolve, semantic search) may also
-retry an app-origin 502/503/504 when ``RetryConfig.retry_read_only_posts`` is
-set; webhook writes and tests never are.
+read-only POSTs (search, document reads, resolve, semantic search,
+``legislation_as_of``) may also retry an app-origin 502/503/504 when
+``RetryConfig.retry_read_only_posts`` is set; webhook writes and tests never are.
 
 Wait resolution (server-directed wins, clamped to ``backoff_cap``):
 
@@ -100,7 +100,8 @@ class RetryConfig:
             Default ``{429}``. Widening it can duplicate webhooks or test
             deliveries and can double-charge — prefer ``retry_read_only_posts``.
         retry_read_only_posts: also retry the read-only POSTs (search,
-            document reads, resolve, semantic search) on an **app-origin**
+            document reads, resolve, semantic search,
+            ``legislation_as_of``) on an **app-origin**
             502/503/504, which the API refunds in full. Default off; never
             applies to webhook create/update/test.
     """

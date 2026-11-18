@@ -24,6 +24,7 @@ SPEC_AS_OF_REASONS = [
     "no_longer_in_force",
     "in_force_dates_unknown",
     "not_in_language",
+    "amendment_not_consolidated",
     "text_unavailable",
     "article_not_in_version",
     "part_not_resolvable",

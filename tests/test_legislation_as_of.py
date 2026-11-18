@@ -2,20 +2,25 @@
 and errors, on the sync and the async client."""
 
 import asyncio
+import dataclasses
 import datetime as dt
 import json
+import sys
 
 import httpx
 import pytest
 
 from lexapi import (
     AS_OF_LOOKUP_REASONS,
+    AsOfVersion,
     AsyncLexAPI,
     InvalidCelexError,
     InvalidParamsError,
     LegislationAsOfResponse,
     LexAPI,
     NotFoundError,
+    RetryConfig,
+    ServiceUnavailableError,
     __version__,
 )
 
@@ -247,7 +252,8 @@ def test_as_of_accepts_date_and_datetime():
     ],
 )
 def test_inputs_are_sent_unchanged(document, provision):
-    # Validation is the API's: the SDK neither rewrites nor rejects an id.
+    # Validation is the API's: the SDK neither rewrites nor rejects an id
+    # (the API answers 400 INVALID_CELEX to some of these, e.g. a `CELEX:` prefix).
     _, _, seen = call(RESOLVED_BODY, document, "2019-06-01", provision=provision)
     assert seen["body"]["document"] == document
     assert seen["body"]["provision"] == provision
@@ -389,6 +395,7 @@ def test_missing_or_null_objects_do_not_crash(body):
         if isinstance(body.get("asOfVersion"), dict):
             assert resp.as_of_version.celex is None
             assert resp.as_of_version.valid_until is None
+            assert resp.provision.id is None
             assert resp.provision.text is None
             assert resp.act.in_force_today is None
         else:
@@ -455,3 +462,76 @@ def test_unknown_route_on_an_older_api_is_not_found():
     )
     assert err.status == 404
     assert err.message.startswith("Unknown API endpoint")
+
+
+def test_provision_is_hidden_on_an_unresolved_answer():
+    # Not a shape the API sends: a text must never be read off an unresolved answer.
+    body = unresolved_body("fetch_failed", provision={"id": "art_17", "text": "stale text"})
+    for resp in call(body, "32016R0679", "2016-05-10", provision="art_17")[:2]:
+        assert resp.as_of_resolved is False
+        assert resp.provision is None
+        assert resp["provision"] == {"id": "art_17", "text": "stale text"}  # raw body kept
+
+
+# ── Retries ─────────────────────────────────────────────────────────────
+
+APP_HEADERS = {"X-LexAPI-Version": "2.26.0"}
+
+
+def flaky_handler(calls):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": "Service unavailable"}, headers=APP_HEADERS)
+        return httpx.Response(200, json=RESOLVED_BODY, headers=APP_HEADERS)
+
+    return handler
+
+
+def test_app_origin_503_is_retried_with_the_read_only_opt_in():
+    config = RetryConfig(retry_read_only_posts=True, backoff_cap=0)
+
+    calls = []
+    transport = httpx.MockTransport(flaky_handler(calls))
+    with LexAPI(api_key="lex_test_key", transport=transport, retry_config=config) as client:
+        resp = client.legislation_as_of("32016R0679", "2019-06-01", provision="art_17")
+    assert len(calls) == 2
+    assert resp.as_of_resolved is True
+
+    async_calls = []
+
+    async def run():
+        transport = httpx.MockTransport(flaky_handler(async_calls))
+        async with AsyncLexAPI(
+            api_key="lex_test_key", transport=transport, retry_config=config
+        ) as client:
+            return await client.legislation_as_of("32016R0679", "2019-06-01", provision="art_17")
+
+    assert asyncio.run(run()).as_of_resolved is True
+    assert len(async_calls) == 2
+
+
+def test_app_origin_503_is_not_retried_by_default():
+    calls = []
+    transport = httpx.MockTransport(flaky_handler(calls))
+    with LexAPI(api_key="lex_test_key", transport=transport) as client:
+        with pytest.raises(ServiceUnavailableError):
+            client.legislation_as_of("32016R0679", "2019-06-01")
+    assert len(calls) == 1
+
+
+# ── AsOfVersion stays compatible ────────────────────────────────────────
+
+
+def test_as_of_version_keeps_its_positional_shape():
+    bare = AsOfVersion("C", None, "as_published")
+    assert (bare.celex, bare.date, bare.kind, bare.raw) == ("C", None, "as_published", {})
+    assert bare.valid_until is None and bare.checked_at is None
+
+    with_raw = AsOfVersion("C", "d", "k", {})
+    assert with_raw.raw == {}
+    assert with_raw.valid_until is None and with_raw.checked_at is None
+
+    if sys.version_info >= (3, 10):  # dataclasses set __match_args__ from 3.10
+        assert AsOfVersion.__match_args__[:4] == ("celex", "date", "kind", "raw")
+    assert [f.name for f in dataclasses.fields(AsOfVersion)][:4] == ["celex", "date", "kind", "raw"]

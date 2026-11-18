@@ -18,10 +18,18 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `consolidated`, `consolidated_as_of`, `base_celex`, `consolidated_note`,
   `provenance`). An answer that cannot be established is a normal return
   with `as_of_resolved == False` and an `as_of_reason`
-  (`AS_OF_LOOKUP_REASONS`), never an exception. 1 credit; 4 when the text
-  has to be fetched (5 live from EUR-Lex). **Requires LexAPI API 2.26.0**;
+  (`AS_OF_LOOKUP_REASONS`), never an exception. 1 credit when no text is
+  fetched; when the provision's text has to be fetched, 4 (5 when it is
+  fetched live from EUR-Lex), whatever the answer, and 1 if the fetch fails
+  or finds no text. **Requires LexAPI API 2.26.0**;
   on an older API the call raises `NotFoundError`.
 - `AsOfVersion.valid_until` / `.checked_at` (set by `legislation_as_of`).
+
+### Fixed
+
+- `AS_OF_REASONS` / `AsOfReason` now include `amendment_not_consolidated`,
+  which `semantic_legislation_search(as_of=...)` hits can carry since LexAPI
+  API 2.25.0. (The value was already passed through on `as_of_reason`.)
 
 ## [0.4.0] — 2026-11-11
 

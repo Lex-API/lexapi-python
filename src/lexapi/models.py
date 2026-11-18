@@ -28,13 +28,15 @@ from lexapi._response import APIResponse, header
 #: Why a semantic-legislation hit could not be answered for ``asOf``
 #: (``SemanticLegislationResult.as_of_reason``), copied from openapi.yaml.
 #: Typed as ``str`` on the model so a reason added by a newer API version
-#: never breaks parsing; compare against :data:`AS_OF_REASONS`.
+#: never breaks parsing; compare against :data:`AS_OF_REASONS`. For
+#: ``legislation_as_of``, use :data:`AS_OF_LOOKUP_REASONS`.
 AsOfReason = Literal[
     "not_yet_adopted",
     "not_yet_in_force",
     "no_longer_in_force",
     "in_force_dates_unknown",
     "not_in_language",
+    "amendment_not_consolidated",
     "text_unavailable",
     "article_not_in_version",
     "part_not_resolvable",
@@ -57,7 +59,8 @@ AS_OF_REASONS: tuple[str, ...] = AsOfReason.__args__  # type: ignore[attr-define
 #: Why ``POST /legislation/as-of`` could not answer
 #: (``LegislationAsOfResponse.as_of_reason``), copied from openapi.yaml.
 #: Typed as ``str`` on the model so a reason added by a newer API version
-#: never breaks parsing; compare against :data:`AS_OF_LOOKUP_REASONS`.
+#: never breaks parsing; compare against :data:`AS_OF_LOOKUP_REASONS`. For
+#: ``semantic_legislation_search(as_of=...)`` hits, use :data:`AS_OF_REASONS`.
 AsOfLookupReason = Literal[
     "not_yet_adopted",
     "not_yet_in_force",
@@ -2587,8 +2590,9 @@ class LegislationAsOfProvision:
     """One article, annex or recital range of the version returned.
 
     ``id`` is the provision as normalised (``art_17``, ``anx_III``,
-    ``rct_26-28``), ``number`` its heading in the text (``Article 17``),
-    ``title`` its title when it has one.
+    ``rct_26-28``), ``number`` its heading in the text (``Article 17``;
+    ``None`` when the part has no heading of its own (recitals)), ``title``
+    its title when it has one.
     """
 
     id: str | None
@@ -2655,7 +2659,8 @@ class LegislationAsOfResponse(APIResponse):
     @property
     def as_of_version(self) -> AsOfVersion | None:
         """The version listed for the date. ``None`` when none was
-        established."""
+        established. Can be present on an unresolved answer that asked for a
+        ``provision``."""
         value = _opt_dict(self._map, "asOfVersion")
         return AsOfVersion.from_dict(value) if value is not None else None
 
@@ -2668,6 +2673,8 @@ class LegislationAsOfResponse(APIResponse):
     def provision(self) -> LegislationAsOfProvision | None:
         """The provision asked for, on a resolved answer; ``None`` when no
         ``provision`` was requested or the answer is unresolved."""
+        if not self.as_of_resolved:
+            return None
         value = _opt_dict(self._map, "provision")
         return LegislationAsOfProvision.from_dict(value) if value is not None else None
 
