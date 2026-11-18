@@ -173,9 +173,18 @@ class InvalidURLError(LexAPIError):
 
 
 class NotFoundError(LexAPIError):
-    """404 ``NOT_FOUND`` — document or resource missing."""
+    """404 ``NOT_FOUND`` — document or resource missing, or a path or
+    method the API does not have (:attr:`unknown_endpoint`)."""
 
     default_code = "NOT_FOUND"
+
+    @property
+    def unknown_endpoint(self) -> bool:
+        """True when the API has no such endpoint (``details.reason`` is
+        ``unknown_endpoint``, API 2.27.0 on) — e.g. a method newer than the
+        API that answered. No other 404 carries that value. Never inferred
+        from the message: always False on an older API."""
+        return isinstance(self.details, dict) and self.details.get("reason") == "unknown_endpoint"
 
 
 def _usage_resets_at(body: Any) -> str | None:
@@ -233,6 +242,33 @@ class TierForbiddenError(LexAPIError):
     """
 
     default_code = "TIER_FORBIDDEN"
+
+
+class PaymentPastDueError(LexAPIError):
+    """403 ``PAYMENT_PAST_DUE`` — a subscription payment failed and was not
+    completed in time (up to 7 days), so every API request is refused until
+    the payment succeeds. Pay the open invoice in the dashboard
+    (:attr:`billing_url`). Never retried.
+
+    Legacy-shape body with top-level ``accessEndedAt`` and ``billingUrl``;
+    both attributes read ``details`` first, then the raw ``body``. Sent from
+    API 2.27.0 on; before that this state was a 403 without a code
+    (:class:`TierForbiddenError`).
+    """
+
+    default_code = "PAYMENT_PAST_DUE"
+
+    @property
+    def access_ended_at(self) -> str | None:
+        """When API access ended (ISO-8601); ``None`` when not known."""
+        value = _field(self, "accessEndedAt")
+        return value if isinstance(value, str) else None
+
+    @property
+    def billing_url(self) -> str | None:
+        """Where to pay the open invoice (absolute URL)."""
+        value = _field(self, "billingUrl")
+        return value if isinstance(value, str) else None
 
 
 class CreditsExhaustedError(LexAPIError):
@@ -567,6 +603,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "RATE_LIMITED": RateLimitedError,
     "QUOTA_EXHAUSTED": RateLimitedError,
     "TIER_FORBIDDEN": TierForbiddenError,
+    "PAYMENT_PAST_DUE": PaymentPastDueError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "NATIONAL_ALLOWANCE_EXHAUSTED": NationalAllowanceExhaustedError,
     "NATIONAL_SEMANTIC_NOT_ENABLED": NationalSemanticNotEnabledError,

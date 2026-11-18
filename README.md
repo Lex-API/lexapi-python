@@ -199,7 +199,9 @@ is the search by meaning. Needs LexAPI API 2.26.0.
   (`InvalidCelexError`).
 - **Errors.** An unknown act raises `NotFoundError`; invalid input raises
   `InvalidCelexError` / `InvalidParamsError`. An API older than 2.26.0 has no
-  such endpoint and also answers 404 (`NotFoundError`, "Unknown API endpoint").
+  such endpoint and also answers 404 (`NotFoundError`): on API 2.27.0 and
+  later `err.unknown_endpoint` is True; on older APIs it is False and the
+  message starts with "Unknown API endpoint".
 - **Cost.** 1 credit when no text is fetched; when the provision's text has to
   be fetched, 4 (5 when it is fetched live from EUR-Lex), whatever the answer,
   and 1 if the fetch fails or finds no text. A fetch reserves up to 5 credits:
@@ -364,7 +366,8 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
 
 National jurisdictions (member states, and non-EU legal orders such as the UK) live under `client.national`. Call `coverage()`
 first — a jurisdiction that has not launched yet answers every other national
-method with `NotFoundError`, exactly like one that does not exist:
+method with `NotFoundError`, exactly like one that does not exist (and like
+a path the API does not have: `err.unknown_endpoint` is True, API 2.27.0+):
 
 ```python
 coverage = client.national.coverage()  # public, free
@@ -630,12 +633,13 @@ shape are handled; a legacy body's `details` list is kept on `err.details`):
 ```python
 from lexapi import (
     LexAPIError,  # base — code / message / status / details / body / retry_after
-    NotFoundError,  # 404 NOT_FOUND
+    NotFoundError,  # 404 NOT_FOUND — .unknown_endpoint (API 2.27.0+): the API has no such endpoint
     InvalidCelexError,  # 400 INVALID_CELEX
     InvalidParamsError,  # 400 INVALID_PARAMS (e.g. an invalid as_of)
     RateLimitedError,  # 429 — .retry_after; code QUOTA_EXHAUSTED / .quota_exhausted / .resets_at on legacy quotas
     CreditsExhaustedError,  # 402 CREDITS_EXHAUSTED — .resets_at, .operation, .weight, .available
     TierForbiddenError,  # 403 TIER_FORBIDDEN — .upgrade_url on legacy tier gates
+    PaymentPastDueError,  # 403 PAYMENT_PAST_DUE — .billing_url, .access_ended_at
     UpstreamError,  # 502 UPSTREAM_ERROR
     TimeoutError,  # 504 TIMEOUT (server-side upstream timeout, retry-safe)
     AuthenticationError,  # 401 — missing/invalid/deactivated key
@@ -654,6 +658,11 @@ except RateLimitedError as err:
 except LexAPIError as err:
     print(err.code, err.status, err.message)
 ```
+
+`PaymentPastDueError`: a subscription payment failed and was not completed in
+time; pay the open invoice in the dashboard (`err.billing_url`). It is not
+retryable. Before API 2.27.0 this state was a 403 without a code, which the SDK
+raises as `TierForbiddenError`.
 
 ### Retries
 
