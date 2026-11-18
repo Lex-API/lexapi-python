@@ -195,6 +195,25 @@ def semantic_search_body(
     return body
 
 
+def legislation_as_of_body(
+    document: str,
+    as_of: DateLike,
+    *,
+    provision: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Body for ``POST /legislation/as-of`` (``as_of`` sent as ``asOf``,
+    ``YYYY-MM-DD``). The server validates every field."""
+    return drop_none(
+        {
+            "document": document,
+            "asOf": iso_date(as_of),
+            "provision": provision,
+            "language": language,
+        }
+    )
+
+
 def _single(name: str, value: Any) -> str | None:
     """A filter the endpoint honours with one value only.
 

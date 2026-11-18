@@ -36,6 +36,7 @@ from lexapi.models import (
     DocumentVersionResponse,
     DocumentVersionsResponse,
     InfoResponse,
+    LegislationAsOfResponse,
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
@@ -387,7 +388,8 @@ class LexAPI:
     # Versions are LexAPI observation snapshots (content-hash changes
     # between fetches), NOT legal in-force reconstructions; history begins
     # at first ingestion. For the text in force on a date, use
-    # semantic_legislation_search(as_of=...) or a consolidated CELEX.
+    # legislation_as_of(...), semantic_legislation_search(as_of=...) or a
+    # consolidated CELEX.
 
     def list_document_versions(
         self, celex: str, *, language: str | None = None
@@ -542,6 +544,63 @@ class LexAPI:
             "/legislation/semantic",
             json=body,
             cast=SemanticLegislationResponse,
+            read_only=True,
+        )
+
+    # ── Legislation on a date ─────────────────────────────────────────
+    def legislation_as_of(
+        self,
+        document: str,
+        as_of: DateLike,
+        *,
+        provision: str | None = None,
+        language: str | None = None,
+    ) -> LegislationAsOfResponse:
+        """POST /legislation/as-of — the version of an EU act listed for a
+        date and, optionally, one provision of it. Needs LexAPI API 2.26.0.
+
+        The answer is the newest consolidated version dated on or before
+        ``as_of``, or the act as published in the Official Journal when none
+        is.
+
+        Args:
+            document: CELEX number of an EU regulation, directive or decision
+                (``32016R0679``). A consolidated id is read as its act. For
+                an ELI or a URL, call :meth:`resolve` first.
+            as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01
+                to today UTC.
+            provision: a whole article (``art_17``, ``17``, ``Article 17``),
+                an annex by its numeral or letter (``anx_III``), or recitals
+                (``rct_26``, ``rct_26-28``, at most 50). Paragraphs and
+                points are not addressable. Omit it to get the version only.
+            language: language of the text (default ``en``).
+
+        **Unresolved is a normal return, not an error.** When the version or
+        the text cannot be established, the response has
+        ``as_of_resolved == False``, an ``as_of_reason`` (see
+        :data:`~lexapi.AS_OF_LOOKUP_REASONS`) and no ``provision``. Use
+        ``response.provision.text`` only when ``as_of_resolved`` is ``True``.
+
+        Consolidated texts have no legal force: when ``response.consolidated``
+        is ``True``, ``base_celex`` names the authentic act. The answer does
+        not say whether an individual provision applied on that date.
+
+        A ``document`` that is not the CELEX number of an EU act raises
+        :class:`~lexapi.InvalidCelexError`; any other invalid input
+        :class:`~lexapi.InvalidParamsError` (both refunded); an unknown act
+        :class:`~lexapi.NotFoundError`.
+
+        **Cost:** 1 credit; 4 when the text has to be fetched (5 when it is
+        fetched live from EUR-Lex), 1 if that fetch fails or finds no text.
+        """
+        body = _payloads.legislation_as_of_body(
+            document, as_of, provision=provision, language=language
+        )
+        return self._request(
+            "POST",
+            "/legislation/as-of",
+            json=body,
+            cast=LegislationAsOfResponse,
             read_only=True,
         )
 

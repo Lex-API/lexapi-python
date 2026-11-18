@@ -4,6 +4,25 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (0.x: minors may break, documented here).
 
+## [Unreleased]
+
+### Added
+
+- **`client.legislation_as_of(document, as_of, *, provision=None, language=None)`**
+  (sync + async) — `POST /legislation/as-of`: the version of an EU
+  regulation, directive or decision listed for a date and, with
+  `provision`, one article, annex or recital range of it
+  (`LegislationAsOfResponse`: `document`, `language`, `as_of`,
+  `as_of_resolved`, `as_of_reason`, `as_of_version`, `act`
+  (`LegislationAsOfAct`), `provision` (`LegislationAsOfProvision`),
+  `consolidated`, `consolidated_as_of`, `base_celex`, `consolidated_note`,
+  `provenance`). An answer that cannot be established is a normal return
+  with `as_of_resolved == False` and an `as_of_reason`
+  (`AS_OF_LOOKUP_REASONS`), never an exception. 1 credit; 4 when the text
+  has to be fetched (5 live from EUR-Lex). **Requires LexAPI API 2.26.0**;
+  on an older API the call raises `NotFoundError`.
+- `AsOfVersion.valid_until` / `.checked_at` (set by `legislation_as_of`).
+
 ## [0.4.0] — 2026-11-11
 
 Syncs the citation graph with LexAPI API 2.10.0–2.13.0. **Requires LexAPI

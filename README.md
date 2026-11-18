@@ -159,6 +159,29 @@ cover is skipped (`as_of_reason == "insufficient_credits"`) — only the search
 itself can raise `CreditsExhaustedError`. An invalid date is a 400
 (`InvalidParamsError`, refunded).
 
+#### One act on a date (`legislation_as_of`)
+
+```python
+answer = client.legislation_as_of("32016R0679", "2019-06-01", provision="art_17")
+if answer.as_of_resolved:
+    v = answer.as_of_version  # kind: "consolidated" | "as_published"
+    print(v.celex, v.kind, v.date)
+    print(answer.provision.number, answer.provision.text)
+    if answer.consolidated:  # no legal force — cite the authentic act
+        print("cite", answer.base_celex)
+else:
+    print("not established:", answer.as_of_reason)  # see lexapi.AS_OF_LOOKUP_REASONS
+```
+
+The version of an EU regulation, directive or decision listed for a date: the
+newest consolidated version dated on or before it, or the act as published in
+the Official Journal. `provision` adds one article, annex (`anx_III`) or recital
+range (`rct_26-28`); omit it for the version only. An answer that cannot be
+established is a normal return with `as_of_resolved == False` and an
+`as_of_reason` — use the text only when `as_of_resolved` is true. It does not
+say whether an individual provision applied on that date. Cost: 1 credit; 4
+when the text has to be fetched (5 live from EUR-Lex). Needs LexAPI API 2.26.0.
+
 ### Citations
 
 The typed citation graph lives under `client.citations`:
@@ -516,8 +539,9 @@ retrieval and evaluation.
 
 Versions are LexAPI *observation snapshots* — the document as fetched — not
 legal in-force reconstructions; history begins at first ingestion. (For the
-text *in force* on a date, use `semantic_legislation_search(as_of=...)` or a
-consolidated CELEX such as `02016R0679-20180524`.)
+text *in force* on a date, use `legislation_as_of(...)`,
+`semantic_legislation_search(as_of=...)` or a consolidated CELEX such as
+`02016R0679-20180524`.)
 
 ```python
 history = client.list_document_versions("32016R0679")
