@@ -24,6 +24,18 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   or finds no text. **Requires LexAPI API 2.26.0**;
   on an older API the call raises `NotFoundError`.
 - `AsOfVersion.valid_until` / `.checked_at` (set by `legislation_as_of`).
+- **`PaymentPastDueError`** (403 `PAYMENT_PAST_DUE`, API 2.27.0): a
+  subscription payment failed and was not completed in time, so API requests
+  are refused until it succeeds. `.billing_url` is where to pay the open
+  invoice, `.access_ended_at` when access ended (`None` when not known).
+  Never retried. This code was raised as the base `LexAPIError` before;
+  `except LexAPIError` still catches it. It is not a `TierForbiddenError`; on
+  an API before 2.27.0 a failed payment is still a code-less 403 raised as
+  `TierForbiddenError`.
+- **`NotFoundError.unknown_endpoint`**: True when the API (2.27.0 or later)
+  has no such endpoint: a mistyped path, a method newer than the API, or a
+  national route for a country that is not available. Always False on APIs
+  before 2.27.0; there the message starts with "Unknown API endpoint".
 
 ### Fixed
 
