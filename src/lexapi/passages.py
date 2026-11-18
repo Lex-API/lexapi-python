@@ -11,8 +11,10 @@ The rules it applies:
   :attr:`PassageResult.uncitable`.
 - **Text for a date.** On an ``as_of`` search the API returns a hit it could
   not answer for that date with its latest indexed text. That text is not
-  established as the text in force on the date, so by default it is withheld:
-  the passage is kept, ``text`` is ``None`` and ``as_of_reason`` says why.
+  established as the text for the date, so by default it is withheld: the
+  passage is kept, ``text`` is ``None`` and ``as_of_reason`` says why. Only
+  the passages are filtered: ``response.results`` still holds the latest text
+  of unresolved hits.
 - **Consolidated texts** have no legal force. Such a passage has
   ``consolidated=True`` and, when the API names it, ``base_celex``: the act
   as published in the Official Journal, which is the one to cite.
@@ -27,20 +29,44 @@ Example::
         response = client.semantic_legislation_search(
             "right to erasure", as_of="2019-06-01", include_text=True
         )
-    result = passages.from_legislation_search(response)
+    result = passages.from_legislation_search(response, as_of="2019-06-01")
     for passage in result.passages:
-        print(passages.format_citation(passage))
-        print(passage.content())
+        print(passages.format_passage(passage))
+
+Building an adapter
+-------------------
+
+- **Document text.** An adapter whose framework does not show metadata to
+  the model uses :func:`format_passage` as the document text. Otherwise use
+  :meth:`Passage.content` and :meth:`Passage.metadata`; add only the
+  framework's own aliases to the metadata.
+- **Errors** are never turned into an empty list: a failed payment or an
+  exhausted credit pool must not read as "no law found". Let the SDK's
+  errors propagate.
+- **k** is the number of hits requested. A result can hold fewer passages
+  with text than hits. Do not ask for more hits to fill ``k``: on an
+  ``as_of`` search, fetching versions costs credits.
+- **Score** is passed through unchanged. A withheld passage keeps the score
+  of the text that was withheld.
+- **Credits.** ``units_charged`` is what the call cost, once per call, not
+  per passage.
+- **Text.** Legislation and case-law searches carry text only when sent with
+  ``include_text=True``. A case-law text is the whole decision: chunking and
+  truncation are the adapter's job.
+- **Documents.** :func:`from_document` gives the articles of a document
+  read; its annexes and recitals are left out.
+- **kind** says which call produced the passage, not what the document is:
+  a ``"document_read"`` passage can be legislation or case law.
 """
 
 from __future__ import annotations
 
-import datetime as _dt
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
+from lexapi._payloads import DateLike, iso_date
 from lexapi._response import APIResponse
 from lexapi.models import (
     Article,
@@ -61,6 +87,7 @@ __all__ = [
     "TextStatus",
     "UnresolvedPolicy",
     "format_citation",
+    "format_passage",
     "from_case_law_search",
     "from_document",
     "from_legislation_as_of",
@@ -68,9 +95,11 @@ __all__ = [
     "restrict_to_celex",
 ]
 
-#: What a passage is taken from: a legislation search or ``legislation_as_of``
-#: answer, a case-law search, or a document read.
-PassageKind = Literal["legislation", "case_law", "document"]
+#: Which call produced a passage: a legislation search or
+#: ``legislation_as_of`` answer (``"legislation"``), a case-law search
+#: (``"case_law"``), or a document read (``"document_read"``, which can be
+#: legislation or case law).
+PassageKind = Literal["legislation", "case_law", "document_read"]
 
 #: What to do with a hit whose text is not established for the date asked:
 #: ``"withhold"`` keeps the passage without its text (the default),
@@ -80,19 +109,55 @@ PassageKind = Literal["legislation", "case_law", "document"]
 UnresolvedPolicy = Literal["withhold", "drop", "keep_labelled"]
 
 #: State of :attr:`Passage.text`: ``"provided"`` (text from the API),
-#: ``"withheld"`` (not established for the date asked, so not passed on),
-#: ``"not_established_for_date"`` (the latest indexed text, kept on request;
-#: it is not established as the text in force on the date) or ``"absent"``
-#: (the API sent no text).
+#: ``"withheld"`` (not established as the text for the date asked, so not
+#: passed on), ``"not_established_for_date"`` (the latest indexed text, kept
+#: on request; it is not established as the text for the date) or
+#: ``"absent"`` (the API sent no text).
 TextStatus = Literal["provided", "withheld", "not_established_for_date", "absent"]
 
-DateLike = Union[str, _dt.date]
-
 _POLICIES = ("withhold", "drop", "keep_labelled")
+
+# Reasons that say the act itself was not in force on the date.
+_NOT_IN_FORCE_REASONS = ("not_yet_adopted", "not_yet_in_force", "no_longer_in_force")
 
 # A consolidated text's CELEX number: sector 0 and a consolidation date
 # (``02016R0679-20160504``).
 _CONSOLIDATED_CELEX = re.compile(r"^0\d{4}[A-Z]{1,2}\d{4}.*-\d{8}$")
+
+# Body keys that show a date was asked for.
+_AS_OF_KEYS = ("asOf", "asOfResolved", "asOfReason")
+
+# Fields of a passage that go into its metadata as they are.
+_METADATA_FIELDS = (
+    "kind",
+    "celex",
+    "text_status",
+    "consolidated",
+    "article_ref",
+    "article_number",
+    "article_title",
+    "title",
+    "language",
+    "url",
+    "eli",
+    "score",
+    "base_celex",
+    "consolidated_as_of",
+    "consolidated_note",
+    "as_of",
+    "as_of_resolved",
+    "as_of_reason",
+    "version_celex",
+    "version_kind",
+    "version_date",
+    "version_valid_until",
+    "ecli",
+    "case_number",
+    "court",
+    "decision_date",
+    "document_type",
+    "paragraph_number",
+)
 
 
 @dataclass(frozen=True)
@@ -128,11 +193,13 @@ class Passage:
     title: str | None = None
     #: Language of the text (ISO 639-1).
     language: str | None = None
-    #: The document's page at its publisher (EUR-Lex).
+    #: The document's page at its publisher (EUR-Lex). The page shows what
+    #: the publisher serves today, also for a withheld passage.
     url: str | None = None
     #: ELI of the document.
     eli: str | None = None
-    #: Similarity score of a search hit.
+    #: Similarity score of a search hit, unchanged. A withheld passage keeps
+    #: the score of the text that was withheld.
     score: float | None = None
     #: ``True`` for a consolidated text. Consolidated texts have no legal
     #: force; cite ``base_celex``.
@@ -173,11 +240,12 @@ class Passage:
     paragraph_number: int | None = None
 
     @property
-    def cite_celex(self) -> str:
-        """The CELEX number to cite: ``base_celex`` for a consolidated text
-        when the API names it, ``celex`` otherwise."""
-        if self.consolidated and self.base_celex:
-            return self.base_celex
+    def cite_celex(self) -> str | None:
+        """The CELEX number to cite: ``celex``, or ``base_celex`` for a
+        consolidated text. ``None`` for a consolidated text whose act the API
+        did not name: the act to cite is then not known."""
+        if self.consolidated:
+            return self.base_celex or None
         return self.celex
 
     @property
@@ -186,21 +254,81 @@ class Passage:
         established for ``as_of``."""
         return self.text_status == "withheld"
 
-    def content(self) -> str:
-        """The text to hand to a model.
+    @property
+    def has_text(self) -> bool:
+        """``True`` when ``text`` holds a text."""
+        return self.text is not None
 
-        A withheld text gives a one-line notice instead of text. A text kept
-        with ``unresolved="keep_labelled"`` is preceded by a line saying it
-        is not established for the date. A passage without text gives ``""``;
-        the ``snippet`` is never used.
+    @property
+    def id(self) -> str:
+        """An identifier for the passage:
+        ``lexapi:<celex>:<part>:<as_of>:<language>``.
+
+        ``<part>`` is ``article_ref``, else ``paragraph_number``, else empty;
+        an unknown ``as_of`` or ``language`` is empty. It is built from the
+        citation only, never from the text, so it is the same on every call
+        that returns the same passage and differs between dates.
         """
+        part = self.article_ref
+        if not part and self.paragraph_number is not None:
+            part = str(self.paragraph_number)
+        return f"lexapi:{self.celex}:{part or ''}:{self.as_of or ''}:{self.language or ''}"
+
+    def content(self) -> str:
+        """The text to hand to a model, or a one-line notice when there is
+        none. The ``snippet`` is never used.
+
+        - Text: the text.
+        - Withheld: ``[No text: CELEX <celex> <part> is not established as
+          the text for <as_of> (reason: <as_of_reason>).]``, or, when the
+          reason says the act was not in force, ``[No text: CELEX <celex>
+          <part> was not in force on <as_of> (reason: <as_of_reason>).]``
+        - Kept with ``unresolved="keep_labelled"``: ``[Latest indexed text of
+          CELEX <celex> <part>; not established as the text for <as_of>
+          (reason: <as_of_reason>).]`` (or ``; the act was not in force on
+          <as_of> (...)``), a line break, then the text.
+        - No text sent: ``[No text returned for CELEX <celex> <part>.]``, or,
+          for a ``legislation_as_of`` answer without a provision,
+          ``[Version <version_celex> (<version_kind>) is the version listed
+          for <as_of>; no provision was requested.]``
+        """
+        subject = _subject(self)
         if self.text_status == "withheld":
-            return f"[Text withheld: {_not_established(self)}]"
+            return f"[No text: {subject} {_date_clause(self, 'is', 'was')}]"
         if self.text is None:
-            return ""
+            if self.as_of_resolved is True and self.version_celex and not self.article_ref:
+                kind = f" ({self.version_kind})" if self.version_kind else ""
+                return (
+                    f"[Version {self.version_celex}{kind} is the version listed for "
+                    f"{_date(self)}; no provision was requested.]"
+                )
+            return f"[No text returned for {subject}.]"
         if self.text_status == "not_established_for_date":
-            return f"[Latest indexed text; {_not_established(self)}]\n{self.text}"
+            clause = _date_clause(self, "", "the act was")
+            return f"[Latest indexed text of {subject}; {clause}]\n{self.text}"
         return self.text
+
+    def metadata(self) -> dict[str, str | int | float | bool]:
+        """The passage's citation as a flat dictionary of JSON scalars.
+
+        Never holds ``text`` or ``snippet``. Always present: ``kind``,
+        ``celex``, ``text_status``, ``text_withheld``, ``consolidated``,
+        ``citation`` (:func:`format_citation`) and ``id``. ``cite_celex``
+        and every other field are present when known; a key whose value is
+        not known is left out. Adapters add only their framework's aliases.
+        """
+        out: dict[str, str | int | float | bool] = {}
+        for name in _METADATA_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                out[name] = value
+        out["text_withheld"] = self.text_withheld
+        cite = self.cite_celex
+        if cite is not None:
+            out["cite_celex"] = cite
+        out["citation"] = format_citation(self)
+        out["id"] = self.id
+        return out
 
 
 @dataclass(frozen=True)
@@ -214,7 +342,7 @@ class PassageResult:
     passages: tuple[Passage, ...]
     #: The date asked for (``YYYY-MM-DD``); ``None`` when no date was asked.
     as_of: str | None = None
-    #: Passages kept without their text.
+    #: Passages without text because they are not resolved for ``as_of``.
     withheld: int = 0
     #: Passages kept with the latest indexed text (``"keep_labelled"``).
     kept_labelled: int = 0
@@ -224,8 +352,8 @@ class PassageResult:
     uncitable: int = 0
     #: Passages removed by :func:`restrict_to_celex`.
     filtered_out: int = 0
-    #: Credits the call cost, as the response reports them; ``None`` when the
-    #: response reports none.
+    #: Credits the call cost, as the response reports them, once per call;
+    #: ``None`` when the response reports none.
     units_charged: int | None = None
     #: Credits left, as the response reports them.
     credits_remaining: int | None = None
@@ -245,22 +373,27 @@ def from_legislation_search(
     text on by default: ``unresolved="withhold"`` keeps the passage with
     ``text=None`` and its ``as_of_reason``. ``"drop"`` leaves such hits out
     and counts them; ``"keep_labelled"`` keeps the latest indexed text with
-    ``text_status="not_established_for_date"``.
+    ``text_status="not_established_for_date"``. Only the passages are
+    filtered: ``response.results`` still holds the latest text of unresolved
+    hits.
 
+    A date counts as asked when ``as_of`` is given here, or the response or
+    the hit carries any of ``asOf``, ``asOfResolved`` or ``asOfReason``.
     Pass the ``as_of`` you sent to have every hit checked against it: a hit
     that does not echo that date as resolved is treated as unresolved. Search
     with ``include_text=True`` to get full texts.
     """
     _check_policy(unresolved)
-    asked = _iso(as_of)
+    asked = iso_date(as_of)
     response_as_of = response.as_of
+    dated = asked is not None or _has_as_of_keys(response)
     out: list[Passage] = []
     counts = {"withheld": 0, "kept_labelled": 0, "dropped": 0, "uncitable": 0}
     for hit in response.results:
         if not hit.law_id:
             counts["uncitable"] += 1
             continue
-        passage = _legislation_hit(hit, response_as_of, asked, unresolved)
+        passage = _legislation_hit(hit, response_as_of, asked, dated, unresolved)
         if passage is None:
             counts["dropped"] += 1
             continue
@@ -307,7 +440,7 @@ def from_document(response: DocumentResponse) -> PassageResult:
 
     A consolidated text is recognised by its CELEX number
     (``02016R0679-20160504``). A document read does not name the act it
-    consolidates, so ``base_celex`` is ``None``.
+    consolidates, so ``base_celex`` and ``cite_celex`` are ``None``.
     """
     document = response.document
     if not document.celex:
@@ -325,6 +458,7 @@ def from_document(response: DocumentResponse) -> PassageResult:
 def from_legislation_as_of(
     response: LegislationAsOfResponse,
     *,
+    provision: str | None = None,
     unresolved: UnresolvedPolicy = "withhold",
 ) -> PassageResult:
     """The passage of a ``legislation_as_of`` answer.
@@ -335,6 +469,9 @@ def from_legislation_as_of(
     counts it; ``"keep_labelled"`` has no text to keep and acts as
     ``"withhold"``. A resolved answer without a ``provision`` names the
     version and has no text.
+
+    An unresolved answer does not say which provision was asked for. Pass
+    the ``provision`` you sent to have it as the passage's ``article_ref``.
     """
     _check_policy(unresolved)
     credits = _credits(response)
@@ -346,8 +483,8 @@ def from_legislation_as_of(
     if not resolved and unresolved == "drop":
         return PassageResult(passages=(), as_of=as_of, dropped=1, **credits)
     version = response.as_of_version
-    provision = response.provision if resolved else None
-    text = provision.text if provision is not None else None
+    answered = response.provision if resolved else None
+    text = answered.text if answered is not None else None
     celex = version.celex if resolved and version is not None and version.celex else document
     consolidated = response.consolidated or _is_consolidated_celex(celex)
     status: TextStatus = "withheld" if not resolved else ("absent" if text is None else "provided")
@@ -356,9 +493,9 @@ def from_legislation_as_of(
         celex=celex,
         text=text,
         text_status=status,
-        article_ref=provision.id if provision is not None else None,
-        article_number=provision.number if provision is not None else None,
-        article_title=provision.title if provision is not None else None,
+        article_ref=answered.id if answered is not None else (None if resolved else provision),
+        article_number=answered.number if answered is not None else None,
+        article_title=answered.title if answered is not None else None,
         language=response.language,
         url=_source_url(response.provenance),
         consolidated=consolidated,
@@ -382,9 +519,14 @@ def restrict_to_celex(result: PassageResult, celex: str | Iterable[str]) -> Pass
     one of the numbers given, so the consolidated texts of an act are kept
     with it. The number removed is added to ``filtered_out``. The result can
     be shorter than the search's ``limit``.
+
+    Numbers are compared whole, ignoring case, surrounding spaces and a
+    leading ``CELEX:``. Giving no number raises ``ValueError``.
     """
-    wanted = {celex} if isinstance(celex, str) else set(celex)
-    wanted = {value.strip().upper() for value in wanted if value.strip()}
+    wanted = {_bare_celex(value) for value in ([celex] if isinstance(celex, str) else celex)}
+    wanted.discard("")
+    if not wanted:
+        raise ValueError("restrict_to_celex needs at least one CELEX number")
     kept: list[Passage] = []
     removed: list[Passage] = []
     for passage in result.passages:
@@ -407,27 +549,57 @@ def format_citation(passage: Passage) -> str:
     The parts, in this order and separated by ``", "``, each left out when
     not known::
 
-        CELEX <cite_celex>, <article_ref>, <ECLI>, para. <n>, <note>, <url>
+        CELEX <cite_celex>, <article_ref>, <ECLI>, para. <n>, <consolidated>, <date>, <url>
 
-    ``<note>`` is present for a consolidated text only:
-    ``consolidated text <celex> (no legal force)``. For example::
+    ``<consolidated>`` is ``consolidated text <celex> (no legal force)``.
+    When the API did not name the act a consolidated text consolidates, the
+    line starts with ``consolidated text <celex> (no legal force; act not
+    named)`` instead of a CELEX number to cite. ``<date>`` is ``version for
+    <as_of>: <version_celex>`` on a resolved passage and ``text for <as_of>
+    not established`` on one that is not. For example::
 
         CELEX 32016R0679, art_17, https://eur-lex.europa.eu/...
         CELEX 32016R0679, art_17, consolidated text 02016R0679-20160504 (no legal force)
+        CELEX 32016R0679, art_17, version for 2019-06-01: 32016R0679
+        CELEX 31995L0046, art_12, text for 2019-06-01 not established
+        consolidated text 02016R0679-20160504 (no legal force; act not named), art_17
         CELEX 62012CJ0131, ECLI:EU:C:2014:317, para. 93
+
+    No title or heading is added; an adapter may put ``title`` or
+    ``article_number`` in front when present.
     """
-    parts = [f"CELEX {passage.cite_celex}"]
+    parts: list[str] = []
+    cite = passage.cite_celex
+    if cite is not None:
+        parts.append(f"CELEX {cite}")
+    else:
+        parts.append(f"consolidated text {passage.celex} (no legal force; act not named)")
     if passage.article_ref:
         parts.append(passage.article_ref)
     if passage.ecli:
         parts.append(passage.ecli)
     if passage.paragraph_number is not None:
         parts.append(f"para. {passage.paragraph_number}")
-    if passage.consolidated:
+    if passage.consolidated and cite is not None:
         parts.append(f"consolidated text {passage.celex} (no legal force)")
+    if passage.as_of_resolved is True:
+        version = f": {passage.version_celex}" if passage.version_celex else ""
+        parts.append(f"version for {_date(passage)}{version}")
+    elif passage.as_of_resolved is False:
+        parts.append(f"text for {_date(passage)} not established")
     if passage.url:
         parts.append(passage.url)
     return ", ".join(parts)
+
+
+def format_passage(passage: Passage) -> str:
+    """The passage as one text: :meth:`Passage.content`, a line break, then
+    ``Source:`` and :func:`format_citation`.
+
+    An adapter whose framework does not show metadata to the model uses this
+    as the document text.
+    """
+    return f"{passage.content()}\nSource: {format_citation(passage)}"
 
 
 # ── internals ───────────────────────────────────────────────────────────
@@ -438,13 +610,14 @@ def _check_policy(unresolved: str) -> None:
         raise ValueError(f"unresolved must be one of {', '.join(_POLICIES)}; got {unresolved!r}")
 
 
-def _iso(value: DateLike | None) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, _dt.datetime):
-        return value.date().isoformat()
-    if isinstance(value, _dt.date):
-        return value.isoformat()
+def _has_as_of_keys(body: Mapping[str, Any]) -> bool:
+    return any(body.get(key) is not None for key in _AS_OF_KEYS)
+
+
+def _bare_celex(value: str) -> str:
+    value = value.strip().upper()
+    if value.startswith("CELEX:"):
+        value = value[len("CELEX:") :].strip()
     return value
 
 
@@ -478,26 +651,33 @@ def _version_fields(version: AsOfVersion | None) -> dict[str, Any]:
     }
 
 
-def _not_established(passage: Passage) -> str:
-    date = f" on {passage.as_of}" if passage.as_of else " on the date asked"
+def _subject(passage: Passage) -> str:
+    part = f" {passage.article_ref}" if passage.article_ref else ""
+    return f"CELEX {passage.celex}{part}"
+
+
+def _date(passage: Passage) -> str:
+    return passage.as_of or "the date asked"
+
+
+def _date_clause(passage: Passage, verb: str, not_in_force_verb: str) -> str:
     reason = f" (reason: {passage.as_of_reason})" if passage.as_of_reason else ""
-    return f"not established as the text in force{date}{reason}."
+    if passage.as_of_reason in _NOT_IN_FORCE_REASONS:
+        return f"{not_in_force_verb} not in force on {_date(passage)}{reason}."
+    lead = f"{verb} " if verb else ""
+    return f"{lead}not established as the text for {_date(passage)}{reason}."
 
 
 def _legislation_hit(
     hit: SemanticLegislationResult,
     response_as_of: str | None,
     asked: str | None,
+    dated: bool,
     policy: UnresolvedPolicy,
 ) -> Passage | None:
     celex = hit.law_id or ""
     echoed = hit.as_of or response_as_of
-    date_asked = (
-        asked is not None
-        or echoed is not None
-        or hit.as_of_resolved is not None
-        or hit.as_of_reason is not None
-    )
+    date_asked = dated or _has_as_of_keys(hit.raw)
     # Resolved only when the API says so, for the date that was asked.
     resolved = hit.as_of_resolved is True and (asked is None or echoed == asked)
     not_established = date_asked and not resolved
@@ -533,7 +713,7 @@ def _legislation_hit(
         base_celex=hit.base_celex if consolidated else None,
         consolidated_as_of=hit.consolidated_as_of if consolidated else None,
         consolidated_note=hit.consolidated_note if consolidated else None,
-        as_of=(asked or echoed) if date_asked else None,
+        as_of=((asked or echoed) if date_asked else None) or None,
         as_of_resolved=resolved if date_asked else None,
         as_of_reason=hit.as_of_reason,
         **_version_fields(version),
@@ -566,7 +746,7 @@ def _document_passage(document: Document, article: Article | None) -> Passage:
     text = article.content if article is not None else (content.full_text if content else None)
     html = document.urls.get("html")
     return Passage(
-        kind="document",
+        kind="document_read",
         celex=celex,
         text=text,
         text_status="absent" if text is None else "provided",

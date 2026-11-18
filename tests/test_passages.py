@@ -21,7 +21,7 @@ import sys
 import httpx
 import pytest
 
-from lexapi import AsyncLexAPI, LexAPI, passages
+from lexapi import AS_OF_LOOKUP_REASONS, AS_OF_REASONS, AsyncLexAPI, LexAPI, passages
 from lexapi.models import (
     DocumentResponse,
     LegislationAsOfResponse,
@@ -41,6 +41,7 @@ NOTE = (
 URL_CONS = "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX:02099R0001-20990101"
 URL_BASE = "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX:32099R0001"
 CREDITS = {"operation_weight": 9, "remaining": 991}
+AS_OF_KEYS = ("asOf", "asOfResolved", "asOfReason")
 
 
 # ── offline harness ─────────────────────────────────────────────────────
@@ -277,7 +278,9 @@ def strings_of(obj):
             out.extend(strings_of(passage))
         return out
     values = [v for v in dataclasses.asdict(obj).values() if isinstance(v, str)]
-    return [*values, obj.content(), passages.format_citation(obj), repr(obj), str(obj)]
+    meta = [str(v) for v in obj.metadata().values()]
+    rendered = [obj.content(), passages.format_citation(obj), passages.format_passage(obj), obj.id]
+    return [*values, *meta, *rendered, repr(obj), str(obj)]
 
 
 def assert_no_leak(result, *needles):
@@ -358,10 +361,9 @@ def test_consolidated_celex_is_consolidated_even_without_the_label():
     (p,) = passages.from_legislation_search(leg(hit, as_of=None)).passages
     assert p.consolidated is True
     assert p.base_celex is None  # not sent, so not derived from the number
-    assert p.cite_celex == "02099R0001-20990101"
+    assert p.cite_celex is None  # the act to cite is not named
     assert passages.format_citation(p) == (
-        "CELEX 02099R0001-20990101, art_17, "
-        f"consolidated text 02099R0001-20990101 (no legal force), {URL_CONS}"
+        f"consolidated text 02099R0001-20990101 (no legal force; act not named), art_17, {URL_CONS}"
     )
 
 
@@ -378,7 +380,9 @@ def test_non_article_refs_pass_through(ref):
     hit["article_ref"] = ref
     (p,) = passages.from_legislation_search(leg(hit)).passages
     assert p.article_ref == ref
-    assert passages.format_citation(p) == f"CELEX 32099R0002, {ref}"
+    assert passages.format_citation(p) == (
+        f"CELEX 32099R0002, {ref}, version for 2099-06-01: 32099R0002"
+    )
 
 
 def test_missing_optional_fields_are_none():
@@ -387,7 +391,8 @@ def test_missing_optional_fields_are_none():
     )
     (p,) = result.passages
     assert p == Passage(kind="legislation", celex="32099R0002", text=None, text_status="absent")
-    assert p.content() == ""
+    assert p.content() == "[No text returned for CELEX 32099R0002.]"
+    assert p.has_text is False
     assert passages.format_citation(p) == "CELEX 32099R0002"
     assert result == PassageResult(passages=(p,))
     assert result.units_charged is None
@@ -424,9 +429,10 @@ def test_unresolved_hit_is_kept_without_its_text_by_default():
     assert p.title == "Directive (EU) 2099/3 (synthetic)"
     assert (p.as_of, p.as_of_resolved, p.as_of_reason) == ("2099-06-01", False, "fetch_timeout")
     assert p.content() == (
-        "[Text withheld: not established as the text in force on 2099-06-01 "
+        "[No text: CELEX 32099L0003 art_12 is not established as the text for 2099-06-01 "
         "(reason: fetch_timeout).]"
     )
+    assert p.has_text is False
     assert (result.withheld, result.kept_labelled, result.dropped) == (1, 0, 0)
     assert_no_leak(result, "MUST-NOT-LEAK")
     # the resolved hit next to it is untouched
@@ -460,9 +466,10 @@ def test_unresolved_text_kept_with_a_label_only_on_request():
     assert p.text_withheld is False
     assert (p.as_of_resolved, p.as_of_reason) == (False, "fetch_timeout")
     assert p.content() == (
-        "[Latest indexed text; not established as the text in force on 2099-06-01 "
-        "(reason: fetch_timeout).]\n" + SYN + "LATEST-TEXT-MUST-NOT-LEAK"
+        "[Latest indexed text of CELEX 32099L0003 art_12; not established as the text for "
+        "2099-06-01 (reason: fetch_timeout).]\n" + SYN + "LATEST-TEXT-MUST-NOT-LEAK"
     )
+    assert p.has_text is True
     assert (result.withheld, result.kept_labelled, result.dropped) == (0, 1, 0)
     assert result.passages[0].text_status == "provided"
 
@@ -474,7 +481,7 @@ def test_keep_labelled_marks_a_hit_that_has_only_a_snippet():
     (p,) = result.passages
     assert p.text_status == "not_established_for_date"
     assert p.snippet == SYN + "LATEST-SNIPPET-MUST-NOT-LEAK"
-    assert p.content() == ""
+    assert p.content() == "[No text returned for CELEX 32099L0003 art_12.]"  # never the snippet
     assert result.kept_labelled == 1
 
 
@@ -492,12 +499,17 @@ def test_notice_without_a_reason_or_a_date():
     hit = hit_unresolved()
     del hit["asOfReason"]
     (p,) = passages.from_legislation_search(leg(hit)).passages
-    assert p.content() == ("[Text withheld: not established as the text in force on 2099-06-01.]")
+    assert p.content() == (
+        "[No text: CELEX 32099L0003 art_12 is not established as the text for 2099-06-01.]"
+    )
     hit = {"law_id": "32099L0003", "text": "LATEST-TEXT-MUST-NOT-LEAK", "asOfResolved": False}
     (p,) = passages.from_legislation_search(leg(hit, as_of=None)).passages
     assert p.as_of is None
     assert p.content() == (
-        "[Text withheld: not established as the text in force on the date asked.]"
+        "[No text: CELEX 32099L0003 is not established as the text for the date asked.]"
+    )
+    assert passages.format_citation(p) == (
+        "CELEX 32099L0003, text for the date asked not established"
     )
 
 
@@ -602,9 +614,8 @@ def test_unresolved_text_never_leaks_under_the_default_policy_property():
             echoed = hit.get("asOf") if isinstance(hit.get("asOf"), str) else response_as_of
             asked = (
                 sent is not None
-                or echoed is not None
-                or isinstance(hit.get("asOfResolved"), bool)
-                or isinstance(hit.get("asOfReason"), str)
+                or response_as_of is not None
+                or any(hit.get(key) is not None for key in AS_OF_KEYS)
             )
             established = not asked or (
                 hit.get("asOfResolved") is True and (sent is None or echoed == sent)
@@ -663,7 +674,8 @@ def test_case_law_snippet_is_never_promoted_to_text():
     assert p.text is None
     assert p.text_status == "absent"
     assert p.snippet == SYN + "case snippet"
-    assert p.content() == ""
+    assert p.content() == "[No text returned for CELEX 62099CJ9901.]"  # never the snippet
+    assert p.has_text is False
 
 
 def test_case_law_missing_fields_and_uncitable_hits():
@@ -688,7 +700,7 @@ def test_document_gives_one_passage_per_article():
     result = passages.from_document(DocumentResponse(document_body()))
     first, second = result.passages
     assert first == Passage(
-        kind="document",
+        kind="document_read",
         celex="32099R0001",
         text=SYN + "article one",
         text_status="provided",
@@ -722,10 +734,10 @@ def test_consolidated_document_is_marked_and_names_no_base_act():
     for p in result.passages:
         assert p.consolidated is True
         assert p.base_celex is None
-        assert p.cite_celex == "02099R0001-20990101"
+        assert p.cite_celex is None
+        assert "cite_celex" not in p.metadata()
     assert passages.format_citation(result.passages[0]) == (
-        "CELEX 02099R0001-20990101, art_1, "
-        f"consolidated text 02099R0001-20990101 (no legal force), {URL_BASE}"
+        f"consolidated text 02099R0001-20990101 (no legal force; act not named), art_1, {URL_BASE}"
     )
 
 
@@ -874,7 +886,7 @@ def test_as_of_unresolved_answer_is_a_withheld_passage():
     )
     assert p.version_celex is None
     assert p.content() == (
-        "[Text withheld: not established as the text in force on 2099-06-01 "
+        "[No text: CELEX 32099R0001 is not established as the text for 2099-06-01 "
         "(reason: amendment_not_consolidated).]"
     )
     assert (result.withheld, result.dropped, result.kept_labelled) == (1, 0, 0)
@@ -924,10 +936,12 @@ def test_citation_format_is_pinned():
         leg(hit_consolidated(), hit_as_published())
     ).passages
     assert passages.format_citation(cons) == (
-        "CELEX 32099R0001, art_17, "
-        f"consolidated text 02099R0001-20990101 (no legal force), {URL_CONS}"
+        "CELEX 32099R0001, art_17, consolidated text 02099R0001-20990101 (no legal force), "
+        f"version for 2099-06-01: 02099R0001-20990101, {URL_CONS}"
     )
-    assert passages.format_citation(pub) == "CELEX 32099R0002, art_5"
+    assert passages.format_citation(pub) == (
+        "CELEX 32099R0002, art_5, version for 2099-06-01: 32099R0002"
+    )
     (case,) = passages.from_case_law_search(SemanticSearchResponse(case_body(CASE_HIT))).passages
     assert passages.format_citation(case) == (
         "CELEX 62099CJ9901, ECLI:EU:C:2099:1, para. 93, "
@@ -941,12 +955,14 @@ def test_citation_format_is_pinned():
 
 def test_citation_of_a_withheld_passage_still_names_the_act():
     (p,) = passages.from_legislation_search(leg(hit_unresolved())).passages
-    assert passages.format_citation(p) == "CELEX 32099L0003, art_12"
+    assert passages.format_citation(p) == (
+        "CELEX 32099L0003, art_12, text for 2099-06-01 not established"
+    )
 
 
 def test_citation_parts_keep_one_order():
     p = Passage(
-        kind="document",
+        kind="document_read",
         celex="02099R0001-20990101",
         text=None,
         text_status="absent",
@@ -955,12 +971,24 @@ def test_citation_parts_keep_one_order():
         paragraph_number=4,
         consolidated=True,
         base_celex="32099R0001",
+        as_of="2099-06-01",
+        as_of_resolved=True,
+        version_celex="02099R0001-20990101",
         url="https://example.invalid/page",
     )
     assert passages.format_citation(p) == (
         "CELEX 32099R0001, art_1, ECLI:EU:C:2099:1, para. 4, "
-        "consolidated text 02099R0001-20990101 (no legal force), https://example.invalid/page"
+        "consolidated text 02099R0001-20990101 (no legal force), "
+        "version for 2099-06-01: 02099R0001-20990101, https://example.invalid/page"
     )
+    unnamed = dataclasses.replace(p, base_celex=None, as_of_resolved=False, version_celex=None)
+    assert passages.format_citation(unnamed) == (
+        "consolidated text 02099R0001-20990101 (no legal force; act not named), art_1, "
+        "ECLI:EU:C:2099:1, para. 4, text for 2099-06-01 not established, "
+        "https://example.invalid/page"
+    )
+    no_version = dataclasses.replace(p, version_celex=None, url=None)
+    assert passages.format_citation(no_version).endswith("(no legal force), version for 2099-06-01")
 
 
 def test_citation_paragraph_zero_is_kept():
@@ -1000,8 +1028,11 @@ def test_restrict_to_celex_counts_labelled_passages_and_matches_nothing_on_empty
     assert result.kept_labelled == 1
     none = passages.restrict_to_celex(result, "32099R0001")
     assert (none.passages, none.filtered_out, none.kept_labelled) == ((), 1, 0)
-    assert passages.restrict_to_celex(result, []).passages == ()
-    assert passages.restrict_to_celex(result, "").passages == ()
+    for empty in ([], "", "  ", ["", " "], "CELEX:"):
+        with pytest.raises(ValueError, match="at least one CELEX number"):
+            passages.restrict_to_celex(result, empty)
+    for prefixed in ("CELEX:32099L0003", " celex: 32099l0003 ", ["CELEX:32099L0003"]):
+        assert len(passages.restrict_to_celex(result, prefixed).passages) == 1
     # a number is matched whole, never as a prefix
     assert passages.restrict_to_celex(result, "32099L000").passages == ()
 
@@ -1114,6 +1145,430 @@ def test_client_legislation_as_of_to_passages(cls):
     assert (result.passages[0].text, result.withheld) == (None, 1)
 
 
+# ── metadata, id, format_passage ────────────────────────────────────────
+
+ALWAYS = {"kind", "celex", "text_status", "text_withheld", "consolidated", "citation", "id"}
+EVERY_KEY = ALWAYS | {
+    "cite_celex",
+    "article_ref",
+    "article_number",
+    "article_title",
+    "title",
+    "language",
+    "url",
+    "eli",
+    "score",
+    "base_celex",
+    "consolidated_as_of",
+    "consolidated_note",
+    "as_of",
+    "as_of_resolved",
+    "as_of_reason",
+    "version_celex",
+    "version_kind",
+    "version_date",
+    "version_valid_until",
+    "ecli",
+    "case_number",
+    "court",
+    "decision_date",
+    "document_type",
+    "paragraph_number",
+}
+HIT_KEYS = {"cite_celex", "article_ref", "title", "language", "score", "as_of", "as_of_resolved"}
+
+
+def _one(result):
+    (p,) = result.passages
+    return p
+
+
+def _metadata_cases():
+    unlabelled = without_as_of(hit_consolidated())
+    for key in ("consolidated", "consolidatedAsOf", "baseCelex", "consolidatedNote"):
+        del unlabelled[key]
+    consolidated = {"base_celex", "consolidated_as_of", "consolidated_note"}
+    version = {"version_celex", "version_kind", "version_date"}
+    search = passages.from_legislation_search
+    as_of = passages.from_legislation_as_of
+    return {
+        "resolved consolidated": (
+            _one(search(leg(hit_consolidated()))),
+            ALWAYS | HIT_KEYS | consolidated | version | {"url"},
+        ),
+        "resolved as published": (
+            _one(search(leg(hit_as_published()))),
+            ALWAYS | HIT_KEYS | {"version_celex", "version_kind"},
+        ),
+        "withheld": (
+            _one(search(leg(hit_unresolved()))),
+            ALWAYS | HIT_KEYS | {"as_of_reason"},
+        ),
+        "keep_labelled": (
+            _one(search(leg(hit_unresolved()), unresolved="keep_labelled")),
+            ALWAYS | HIT_KEYS | {"as_of_reason"},
+        ),
+        "no date": (
+            _one(search(leg(without_as_of(hit_as_published()), as_of=None))),
+            ALWAYS | {"cite_celex", "article_ref", "title", "language", "score"},
+        ),
+        "consolidated without base": (
+            _one(search(leg(unlabelled, as_of=None))),
+            ALWAYS | {"article_ref", "title", "language", "score", "url"},
+        ),
+        "bare": (
+            _one(search(leg({"law_id": "32099R0002"}, as_of=None))),
+            ALWAYS | {"cite_celex"},
+        ),
+        "case law": (
+            _one(passages.from_case_law_search(SemanticSearchResponse(case_body(CASE_HIT)))),
+            ALWAYS
+            | {"cite_celex", "title", "language", "url", "score", "ecli", "case_number", "court"}
+            | {"decision_date", "document_type", "paragraph_number"},
+        ),
+        "document": (
+            passages.from_document(DocumentResponse(document_body())).passages[0],
+            ALWAYS
+            | {"cite_celex", "article_ref", "article_number", "article_title", "title"}
+            | {"language", "url", "eli"},
+        ),
+        "consolidated document": (
+            passages.from_document(DocumentResponse(document_body("02099R0001-20990101"))).passages[
+                1
+            ],
+            ALWAYS | {"article_ref", "article_number", "title", "language", "url", "eli"},
+        ),
+        "as-of resolved": (
+            _one(as_of(LegislationAsOfResponse(as_of_body()))),
+            ALWAYS
+            | {"cite_celex", "article_ref", "article_number", "article_title", "language", "url"}
+            | {"as_of", "as_of_resolved", "version_valid_until"}
+            | consolidated
+            | version,
+        ),
+        "as-of unresolved": (
+            _one(as_of(LegislationAsOfResponse(unresolved_as_of_body()))),
+            ALWAYS | {"cite_celex", "language", "url", "as_of", "as_of_resolved", "as_of_reason"},
+        ),
+    }
+
+
+@pytest.mark.parametrize("case", sorted(_metadata_cases()))
+def test_metadata_key_set_is_pinned(case):
+    passage, keys = _metadata_cases()[case]
+    meta = passage.metadata()
+    assert set(meta) == keys
+    assert ALWAYS <= set(meta) <= EVERY_KEY
+    assert "text" not in meta and "snippet" not in meta
+    for key, value in meta.items():
+        assert type(value) in (str, int, float, bool), key
+    assert meta["citation"] == passages.format_citation(passage)
+    assert meta["id"] == passage.id
+    assert meta["text_withheld"] is passage.text_withheld
+    assert meta.get("cite_celex") == passage.cite_celex
+    for key in set(meta) - {"citation", "id", "text_withheld", "cite_celex"}:
+        assert meta[key] == getattr(passage, key)
+
+
+def test_metadata_never_holds_text_or_snippet():
+    for policy in ("withhold", "keep_labelled"):
+        result = passages.from_legislation_search(
+            leg(hit_consolidated(), hit_unresolved()), unresolved=policy
+        )
+        for p in result.passages:
+            for value in p.metadata().values():
+                assert "MUST-NOT-LEAK" not in str(value)
+                assert SYN not in str(value)
+
+
+def test_metadata_values_of_a_withheld_passage():
+    meta = _one(passages.from_legislation_search(leg(hit_unresolved()))).metadata()
+    assert meta == {
+        "kind": "legislation",
+        "celex": "32099L0003",
+        "cite_celex": "32099L0003",
+        "text_status": "withheld",
+        "text_withheld": True,
+        "consolidated": False,
+        "article_ref": "art_12",
+        "title": "Directive (EU) 2099/3 (synthetic)",
+        "language": "en",
+        "score": 0.75,
+        "as_of": "2099-06-01",
+        "as_of_resolved": False,
+        "as_of_reason": "fetch_timeout",
+        "citation": "CELEX 32099L0003, art_12, text for 2099-06-01 not established",
+        "id": "lexapi:32099L0003:art_12:2099-06-01:en",
+    }
+
+
+def test_metadata_keeps_false_and_zero():
+    p = Passage(
+        kind="case_law",
+        celex="62099CJ9901",
+        text=None,
+        text_status="absent",
+        score=0.0,
+        paragraph_number=0,
+        as_of_resolved=False,
+    )
+    meta = p.metadata()
+    assert (meta["score"], meta["paragraph_number"], meta["as_of_resolved"]) == (0.0, 0, False)
+    assert meta["consolidated"] is False
+
+
+def test_id_is_stable_and_differs_by_date():
+    first = _one(passages.from_legislation_search(leg(hit_as_published())))
+    again = _one(passages.from_legislation_search(leg(hit_as_published())))
+    assert first.id == again.id == "lexapi:32099R0002:art_5:2099-06-01:en"
+    other = hit_as_published()
+    other.update(asOf="2098-01-01", text="another text", score=0.1)
+    other_date = _one(passages.from_legislation_search(leg(other, as_of="2098-01-01")))
+    assert other_date.id == "lexapi:32099R0002:art_5:2098-01-01:en"
+    undated = _one(passages.from_legislation_search(leg(without_as_of(other), as_of=None)))
+    assert undated.id == "lexapi:32099R0002:art_5::en"
+    # the text plays no part: withheld and labelled passages share the id
+    withheld = _one(passages.from_legislation_search(leg(hit_unresolved())))
+    labelled = _one(
+        passages.from_legislation_search(leg(hit_unresolved()), unresolved="keep_labelled")
+    )
+    assert withheld.id == labelled.id == "lexapi:32099L0003:art_12:2099-06-01:en"
+
+
+def test_id_of_case_law_documents_and_bare_passages():
+    case = _one(passages.from_case_law_search(SemanticSearchResponse(case_body(CASE_HIT))))
+    assert case.id == "lexapi:62099CJ9901:93::en"
+    first, second = passages.from_document(DocumentResponse(document_body())).passages
+    assert (first.id, second.id) == ("lexapi:32099R0001:art_1::en", "lexapi:32099R0001:art_6a::en")
+    bare = Passage(kind="case_law", celex="62099CJ9901", text=None, text_status="absent")
+    assert bare.id == "lexapi:62099CJ9901:::"
+    assert dataclasses.replace(bare, paragraph_number=0).id == "lexapi:62099CJ9901:0::"
+
+
+def test_format_passage_is_content_then_source_line():
+    cons, unresolved = passages.from_legislation_search(
+        leg(hit_consolidated(), hit_unresolved())
+    ).passages
+    assert passages.format_passage(cons) == (
+        SYN + "consolidated article seventeen\n"
+        "Source: CELEX 32099R0001, art_17, consolidated text 02099R0001-20990101 "
+        f"(no legal force), version for 2099-06-01: 02099R0001-20990101, {URL_CONS}"
+    )
+    assert passages.format_passage(unresolved) == (
+        "[No text: CELEX 32099L0003 art_12 is not established as the text for 2099-06-01 "
+        "(reason: fetch_timeout).]\n"
+        "Source: CELEX 32099L0003, art_12, text for 2099-06-01 not established"
+    )
+    for p in (cons, unresolved):
+        assert passages.format_passage(p) == (
+            p.content() + "\nSource: " + passages.format_citation(p)
+        )
+
+
+# ── notices ─────────────────────────────────────────────────────────────
+
+NOT_IN_FORCE = {"not_yet_adopted", "not_yet_in_force", "no_longer_in_force"}
+ALL_REASONS = sorted(set(AS_OF_REASONS) | set(AS_OF_LOOKUP_REASONS) | {"a_reason_added_later"})
+
+
+def test_not_in_force_reasons_are_documented_reasons():
+    assert NOT_IN_FORCE <= set(AS_OF_REASONS)
+    assert NOT_IN_FORCE <= set(AS_OF_LOOKUP_REASONS)
+
+
+@pytest.mark.parametrize("reason", ALL_REASONS)
+def test_every_reason_renders_one_of_the_two_notices(reason):
+    hit = hit_unresolved()
+    hit["asOfReason"] = reason
+    withheld = _one(passages.from_legislation_search(leg(hit)))
+    labelled = _one(passages.from_legislation_search(leg(hit), unresolved="keep_labelled"))
+    answer = _one(
+        passages.from_legislation_as_of(
+            LegislationAsOfResponse(unresolved_as_of_body(asOfReason=reason)), provision="art_12"
+        )
+    )
+    text = SYN + "LATEST-TEXT-MUST-NOT-LEAK"
+    tail = f"2099-06-01 (reason: {reason})."
+    if reason in NOT_IN_FORCE:
+        assert withheld.content() == (
+            f"[No text: CELEX 32099L0003 art_12 was not in force on {tail}]"
+        )
+        assert labelled.content() == (
+            "[Latest indexed text of CELEX 32099L0003 art_12; the act was not in force on "
+            f"{tail}]\n{text}"
+        )
+        assert answer.content() == (
+            f"[No text: CELEX 32099R0001 art_12 was not in force on {tail}]"
+        )
+    else:
+        assert withheld.content() == (
+            f"[No text: CELEX 32099L0003 art_12 is not established as the text for {tail}]"
+        )
+        assert labelled.content() == (
+            "[Latest indexed text of CELEX 32099L0003 art_12; not established as the text for "
+            f"{tail}]\n{text}"
+        )
+        assert answer.content() == (
+            f"[No text: CELEX 32099R0001 art_12 is not established as the text for {tail}]"
+        )
+        for p in (withheld, labelled, answer):
+            assert "in force" not in p.content()
+    for p in (withheld, labelled, answer):
+        assert passages.format_citation(p).count("text for 2099-06-01 not established") == 1
+
+
+def test_notice_of_a_version_only_answer():
+    p = _one(passages.from_legislation_as_of(LegislationAsOfResponse(as_of_body(provision=...))))
+    assert p.has_text is False
+    assert p.content() == (
+        "[Version 02099R0001-20990101 (consolidated) is the version listed for 2099-06-01; "
+        "no provision was requested.]"
+    )
+    no_kind = as_of_body(provision=..., asOfVersion={"celex": "32099R0001"})
+    p = _one(passages.from_legislation_as_of(LegislationAsOfResponse(no_kind)))
+    assert p.content() == (
+        "[Version 32099R0001 is the version listed for 2099-06-01; no provision was requested.]"
+    )
+
+
+def test_notice_of_a_resolved_provision_without_text():
+    body = as_of_body(provision={"id": "art_17"})
+    p = _one(passages.from_legislation_as_of(LegislationAsOfResponse(body)))
+    assert p.text_status == "absent"
+    assert p.content() == "[No text returned for CELEX 02099R0001-20990101 art_17.]"
+
+
+def test_has_text():
+    cons, unresolved = passages.from_legislation_search(
+        leg(hit_consolidated(), hit_unresolved())
+    ).passages
+    assert (cons.has_text, unresolved.has_text) == (True, False)
+    empty = Passage(kind="legislation", celex="32099R0002", text="", text_status="provided")
+    assert empty.has_text is True and empty.content() == ""
+
+
+# ── the act to cite ─────────────────────────────────────────────────────
+
+
+def test_cite_celex_is_none_only_for_a_consolidated_text_without_its_act():
+    plain = Passage(kind="legislation", celex="32099R0002", text=None, text_status="absent")
+    assert plain.cite_celex == "32099R0002"
+    # base_celex is ignored on a text that is not consolidated
+    assert dataclasses.replace(plain, base_celex="32099R0009").cite_celex == "32099R0002"
+    cons = dataclasses.replace(plain, celex="02099R0001-20990101", consolidated=True)
+    assert cons.cite_celex is None
+    assert dataclasses.replace(cons, base_celex="").cite_celex is None
+    assert dataclasses.replace(cons, base_celex="32099R0001").cite_celex == "32099R0001"
+    assert passages.format_citation(cons) == (
+        "consolidated text 02099R0001-20990101 (no legal force; act not named)"
+    )
+    assert "CELEX 02099R0001" not in passages.format_citation(cons)
+
+
+# ── legislation_as_of: the provision asked for ──────────────────────────
+
+
+def test_as_of_unresolved_answer_carries_the_provision_asked_for():
+    response = LegislationAsOfResponse(unresolved_as_of_body())
+    p = _one(passages.from_legislation_as_of(response, provision="art_17"))
+    assert (p.article_ref, p.text, p.text_status) == ("art_17", None, "withheld")
+    assert p.id == "lexapi:32099R0001:art_17:2099-06-01:en"
+    assert passages.format_citation(p) == (
+        f"CELEX 32099R0001, art_17, text for 2099-06-01 not established, {URL_CONS}"
+    )
+    assert _one(passages.from_legislation_as_of(response)).article_ref is None
+
+
+def test_as_of_resolved_answer_keeps_the_provision_the_api_names():
+    response = LegislationAsOfResponse(as_of_body())
+    p = _one(passages.from_legislation_as_of(response, provision="Article 17"))
+    assert p.article_ref == "art_17"
+    version_only = LegislationAsOfResponse(as_of_body(provision=...))
+    p = _one(passages.from_legislation_as_of(version_only, provision="art_17"))
+    assert p.article_ref is None  # the answer is about the version, not a provision
+
+
+# ── fail closed on any sign of a date ───────────────────────────────────
+
+ABSENT = object()
+HIT_AS_OF = [ABSENT, None, "", "2099-06-01", "2098-01-01", 20990601, 0, False, []]
+HIT_RESOLVED = [ABSENT, None, True, False, "true", "True", 1, 0, "", [True]]
+HIT_REASON = [ABSENT, None, "", "fetch_timeout", 5, False]
+RESPONSE_AS_OF = [ABSENT, None, "", "2099-06-01", 0]
+RESPONSE_OTHER = [ABSENT, ("asOfResolved", False), ("asOfReason", "fetch_failed")]
+
+
+def _with(body, key, value):
+    if value is not ABSENT:
+        body[key] = value
+
+
+def _enumerated_bodies():
+    for hit_as_of in HIT_AS_OF:
+        for hit_resolved in HIT_RESOLVED:
+            for hit_reason in HIT_REASON:
+                hit = {"law_id": "32099L0003", "text": "SECRET-TEXT", "snippet": "SECRET-SNIP"}
+                _with(hit, "asOf", hit_as_of)
+                _with(hit, "asOfResolved", hit_resolved)
+                _with(hit, "asOfReason", hit_reason)
+                for response_as_of in RESPONSE_AS_OF:
+                    for other in RESPONSE_OTHER:
+                        body = {"results": [hit]}
+                        _with(body, "asOf", response_as_of)
+                        if other is not ABSENT:
+                            body[other[0]] = other[1]
+                        for sent in (None, "2099-06-01"):
+                            yield hit, body, sent
+
+
+def test_no_text_passes_unless_resolved_is_exactly_true_enumeration():
+    combos = passed = blocked = 0
+    for hit, body, sent in _enumerated_bodies():
+        combos += 1
+        date_involved = sent is not None or any(
+            source.get(key) is not None for source in (hit, body) for key in AS_OF_KEYS
+        )
+        response = SemanticLegislationResponse(body)
+        for policy in ("withhold", "drop"):
+            result = passages.from_legislation_search(response, unresolved=policy, as_of=sent)
+            leaked = any("SECRET" in s for s in strings_of(result))
+            if date_involved and hit.get("asOfResolved") is not True:
+                assert not leaked, (hit, body, sent, policy)
+                blocked += 1
+            elif not date_involved:
+                assert leaked, (hit, body, sent, policy)
+                passed += 1
+            elif leaked:
+                # resolved is exactly True: text passes only for the date sent
+                echoed = hit.get("asOf") if isinstance(hit.get("asOf"), str) else None
+                if not echoed and isinstance(body.get("asOf"), str):
+                    echoed = body["asOf"]
+                assert sent is None or echoed == sent, (hit, body, sent, policy)
+                passed += 1
+    assert combos == 9 * 10 * 6 * 5 * 3 * 2 == 16200
+    assert blocked > 20000 and passed > 500
+
+
+def test_a_hit_level_empty_as_of_falls_back_to_the_response_date():
+    hit = hit_as_published()
+    hit["asOf"] = ""
+    p = _one(passages.from_legislation_search(leg(hit), as_of="2099-06-01"))
+    assert (p.as_of, p.as_of_resolved, p.has_text) == ("2099-06-01", True, True)
+    # and on its own it is still a sign that a date was asked
+    lone = {"law_id": "32099L0003", "text": "LATEST-TEXT-MUST-NOT-LEAK", "asOf": ""}
+    result = passages.from_legislation_search(leg(lone, as_of=None))
+    assert (result.passages[0].as_of, result.passages[0].text_status) == (None, "withheld")
+    assert_no_leak(result, "MUST-NOT-LEAK")
+
+
+def test_a_response_level_sign_of_a_date_covers_every_hit():
+    plain = {"law_id": "32099L0003", "text": "LATEST-TEXT-MUST-NOT-LEAK"}
+    for extra in ({"asOfReason": "fetch_failed"}, {"asOfResolved": True}, {"asOf": 0}):
+        result = passages.from_legislation_search(leg(plain, as_of=None, **extra))
+        assert result.withheld == 1, extra
+        assert_no_leak(result, "MUST-NOT-LEAK")
+
+
 # ── packaging ───────────────────────────────────────────────────────────
 
 
@@ -1125,6 +1580,7 @@ def test_public_names():
         "TextStatus",
         "UnresolvedPolicy",
         "format_citation",
+        "format_passage",
         "from_case_law_search",
         "from_document",
         "from_legislation_as_of",
@@ -1139,7 +1595,7 @@ def test_public_names():
 
 
 def test_module_imports_only_the_standard_library_and_the_sdk():
-    source = (ROOT / "src" / "lexapi" / "passages.py").read_text(encoding="utf-8")
+    source = pathlib.Path(passages.__file__).read_text(encoding="utf-8")
     roots = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -1147,15 +1603,7 @@ def test_module_imports_only_the_standard_library_and_the_sdk():
         elif isinstance(node, ast.ImportFrom):
             assert node.level == 0
             roots.add((node.module or "").split(".")[0])
-    assert roots == {
-        "__future__",
-        "collections",
-        "dataclasses",
-        "datetime",
-        "re",
-        "typing",
-        "lexapi",
-    }
+    assert roots == {"__future__", "collections", "dataclasses", "re", "typing", "lexapi"}
 
 
 def test_importing_the_module_loads_no_framework_and_nothing_new():
@@ -1168,8 +1616,8 @@ def test_importing_the_module_loads_no_framework_and_nothing_new():
         "frameworks = sorted(m for m in sys.modules\n"
         "    if m.split('.')[0] in ('langchain', 'langchain_core', 'llama_index')\n"
         "    or m.startswith(('langchain', 'llama_index', 'llama-index')))\n"
-        "third_party = sorted(m for m in new if 'site-packages' in\n"
-        "    (getattr(sys.modules[m], '__file__', None) or ''))\n"
+        "third_party = sorted(m for m in new if m.split('.')[0] != 'lexapi'\n"
+        "    and 'site-packages' in (getattr(sys.modules[m], '__file__', None) or ''))\n"
         "print('NEW', new)\n"
         "print('FRAMEWORKS', frameworks)\n"
         "print('THIRD_PARTY', third_party)\n"

@@ -46,9 +46,11 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `from_legislation_as_of`). On an `as_of` search, the text of a hit that is
   not resolved for the date is withheld by default (`text=None`, with the
   `as_of_reason`); `unresolved="drop"` or `"keep_labelled"` change that.
-  `format_citation(passage)` gives the citation as one line;
-  `restrict_to_celex(result, celex)` keeps the passages of given acts. No
-  request is made and no dependency is added.
+  `Passage.metadata()` gives the citation as a flat dictionary (never the
+  text), `Passage.id` a stable identifier, `format_citation(passage)` the
+  citation as one line and `format_passage(passage)` the content followed by
+  a `Source:` line; `restrict_to_celex(result, celex)` keeps the passages of
+  given acts. No request is made and no dependency is added.
 
 ### Fixed
 
