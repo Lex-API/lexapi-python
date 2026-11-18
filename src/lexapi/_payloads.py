@@ -1,7 +1,7 @@
 """Request body / query-param builders shared by the sync and async clients.
 
 ``None`` values are always omitted so the server's own defaults apply and
-older deployments never see parameters they don't know.
+older API versions never see parameters they don't know.
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ def semantic_search_body(
 ) -> dict[str, Any]:
     """Body for the semantic endpoints.
 
-    ``hyde`` is only sent when True (additive param — older deployments
+    ``hyde`` is only sent when True (additive param — older API versions
     never see it); ``include_text=True`` maps to ``include: ["text"]``;
     ``as_of`` (legislation only) is sent as ``asOf`` in ``YYYY-MM-DD`` form.
     """
@@ -227,8 +227,8 @@ def recent_documents_params(
 
     ``document_type`` and ``subdomain`` are single-valued: the endpoint builds
     one EUR-Lex query without the fan-out ``/search`` does, and EUR-Lex honours
-    only the first ``FM_CODED`` / ``DTS_SUBDOM`` (lex-api
-    ``server/utils/urlBuilder.js``). ``author`` lists are sent as repeated params.
+    only the first ``FM_CODED`` / ``DTS_SUBDOM``. ``author`` lists are sent as
+    repeated params.
     """
     return drop_none(
         {

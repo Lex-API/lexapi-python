@@ -1,4 +1,4 @@
-"""Export parameters for API 2.3.0 (lex-api #303): ``document_type_code``,
+"""Export parameters for API 2.3.0: ``document_type_code``,
 ``changed_since``, and client-side checks that mirror the server's 400s
 exactly (timezone-less datetime, non-positive / non-integer limit)."""
 

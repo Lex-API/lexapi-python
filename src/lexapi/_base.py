@@ -33,7 +33,7 @@ from lexapi.errors import (
 
 DEFAULT_BASE_URL = "https://lex-api.com/api/v1"
 
-#: Default response timeout in seconds (PLAN.md §1.6): the longest the SDK
+#: Default response timeout in seconds (SDK contract §1.6): the longest the SDK
 #: waits for the next bytes of a response — the response head, then each
 #: body chunk — on one attempt. It is an inactivity limit, not a deadline
 #: for the whole call. 95 s sits above the API's 90 s budget for one

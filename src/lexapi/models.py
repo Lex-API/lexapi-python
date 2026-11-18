@@ -1,6 +1,6 @@
 """Typed models over LexAPI response payloads.
 
-Design rules (PLAN.md §3):
+Design rules:
 
 - plain dataclasses, no runtime dependencies beyond httpx;
 - every model keeps the raw payload on ``.raw`` — the typed layer never
@@ -2697,7 +2697,7 @@ class NationalCoverageAvailability:
     documents: int | None
     #: Earliest decision year LexAPI holds (an int year, or ``None``) —
     #: NOT a date string. ``legislation.from_`` is currently always
-    #: ``None`` server-side (the coverage controller hardcodes it); the
+    #: ``None`` server-side; the
     #: field exists because ``caseLaw.from_`` (the subclass below) is the
     #: same field and IS populated.
     from_: int | None
@@ -3268,8 +3268,8 @@ class NationalDocumentResponse(APIResponse):
     """``GET /{jurisdiction}/documents/{id}`` — one national document.
 
     No ``success`` key (unlike the EU document endpoints) — the national
-    controller answers ``{"document": {...}}`` directly. 5 credits upfront,
-    settled to 1 (``CORPUS_HIT_WEIGHT``): every national read is a corpus
+    endpoint answers ``{"document": {...}}`` directly. 5 credits upfront,
+    settled to 1: every national read is a corpus
     read, never a live fetch.
     """
 
@@ -3332,7 +3332,7 @@ class NationalDocumentListResponse(APIResponse):
 @dataclass(frozen=True)
 class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     """A :class:`SemanticCaseLawResult` plus the national extras the
-    controller adds: ``document_id`` / ``jurisdiction`` (also mirrored into
+    API adds: ``document_id`` / ``jurisdiction`` (also mirrored into
     ``metadata.celex_id``), ``document`` (the matched decision as the
     listing returns it — a :class:`NationalDocument` summary with the same
     fields in every jurisdiction, whatever metadata the index carries;

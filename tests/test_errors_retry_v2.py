@@ -1,5 +1,5 @@
 """Error-envelope and retry fixes in 0.2.0, modelled on the bodies the API
-actually sends (server/middleware/*, server/controllers/*)."""
+actually sends."""
 
 import httpx
 import pytest

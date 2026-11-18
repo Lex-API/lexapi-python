@@ -1,11 +1,11 @@
-"""Export failure endings (PLAN.md §1.8): a stream is complete only when it
+"""Export failure endings (SDK contract §1.8): a stream is complete only when it
 ends with a ``_done`` trailer that does not say ``"complete": false``, and a
 line whose only key is ``_error`` is a failure signal, never a row.
 
-lex-api PR #303 briefly emitted ``{"_error": ...}`` then
-``{"_done": {"complete": false}}`` on a mid-stream failure; the server no
-longer does (it ends the body without a trailer), but a stream like that must
-never look complete or yield the error object as a document.
+The server ends a failed export without a trailer. A stream carrying
+``{"_error": ...}`` then ``{"_done": {"complete": false}}`` is handled
+defensively: it must never look complete or yield the error object as a
+document.
 """
 
 import asyncio
