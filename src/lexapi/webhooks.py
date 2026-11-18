@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from lexapi._payloads import drop_none, seg, webhook_create_body, webhook_update_body
+from lexapi._response import APIResponse
 from lexapi.models import (
     WebhookDeliveriesResponse,
     WebhookDelivery,
@@ -115,6 +116,12 @@ def verify_webhook(
                 f"webhook timestamp {stamp} is outside the {tolerance:g}s tolerance"
             )
     return event
+
+
+class _DeleteResponse(APIResponse):
+    """``DELETE /webhooks/{id}``: a 204 or an empty body is a result."""
+
+    _allow_empty = True
 
 
 class WebhooksResource:
@@ -215,7 +222,7 @@ class WebhooksResource:
         Returns ``None`` on success; re-deletes raise
         :class:`~lexapi.NotFoundError`.
         """
-        self._client._request("DELETE", f"/webhooks/{seg(webhook_id)}")
+        self._client._request("DELETE", f"/webhooks/{seg(webhook_id)}", cast=_DeleteResponse)
 
     def test(self, webhook_id: str) -> WebhookTestResponse:
         """POST /webhooks/{id}/test — synchronously deliver a ``webhook.test``
@@ -331,7 +338,7 @@ class AsyncWebhooksResource:
 
     async def delete(self, webhook_id: str) -> None:
         """DELETE /webhooks/{id} — see :meth:`WebhooksResource.delete`."""
-        await self._client._request("DELETE", f"/webhooks/{seg(webhook_id)}")
+        await self._client._request("DELETE", f"/webhooks/{seg(webhook_id)}", cast=_DeleteResponse)
 
     async def test(self, webhook_id: str) -> WebhookTestResponse:
         """POST /webhooks/{id}/test — see :meth:`WebhooksResource.test`."""

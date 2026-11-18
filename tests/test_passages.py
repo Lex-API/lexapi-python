@@ -248,6 +248,7 @@ def as_of_body(**overrides):
         "consolidatedAsOf": "2099-01-01",
         "baseCelex": "32099R0001",
         "consolidatedNote": NOTE,
+        "act": {"celex": "32099R0001"},
         "provenance": {"sourceUrl": URL_CONS},
         "credits": {"operation_weight": 4, "remaining": 96},
     }

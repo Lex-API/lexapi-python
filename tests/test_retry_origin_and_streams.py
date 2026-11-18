@@ -181,7 +181,7 @@ def test_async_read_only_posts_opt_in(call):
             calls["count"] += 1
             if calls["count"] == 1:
                 return httpx.Response(502, json={"error": "x"}, headers={"RateLimit-Limit": "1"})
-            return httpx.Response(200, json={"results": []})
+            return httpx.Response(200, json={"results": [], "document": {}})
 
         async with make(handler, AsyncLexAPI, retry=FAST_RO) as client:
             await call(client)

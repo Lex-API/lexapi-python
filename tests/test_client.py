@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from conftest import INFO_BODY
-from lexapi import APIResponse, LexAPI, LexAPIError, RateLimitedError
+from lexapi import APIResponse, InvalidResponseError, LexAPI, LexAPIError, RateLimitedError
 
 
 def make_client(handler, **kwargs) -> LexAPI:
@@ -141,7 +141,7 @@ def test_no_content_response():
         return httpx.Response(204)
 
     with make_client(handler) as client:
-        resp = client._request("DELETE", "/webhooks/whk_1")
-
-    assert isinstance(resp, APIResponse)
-    assert len(resp) == 0
+        assert client.webhooks.delete("whk_1") is None
+        # Only the webhook delete takes a 204 as a result.
+        with pytest.raises(InvalidResponseError):
+            client._request("DELETE", "/webhooks/whk_1", cast=APIResponse)

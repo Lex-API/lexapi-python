@@ -234,7 +234,8 @@ def test_opt_in_retries_app_origin_5xx_on_read_only_posts():
         lambda c: c.semantic_search("q"),
         lambda c: c.semantic_legislation_search("q"),
     ):
-        client, calls = counting(fail_then_ok(APP_502, {"results": []}), retry_config=config)
+        body = {"results": [], "document": {}}
+        client, calls = counting(fail_then_ok(APP_502, body), retry_config=config)
         with client:
             call(client)
         assert calls["count"] == 2

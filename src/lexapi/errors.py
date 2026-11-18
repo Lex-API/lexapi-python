@@ -62,12 +62,15 @@ class LexAPIError(Exception):
         details: ``error.details`` on the typed envelope, or the top-level
             ``details`` of a legacy validation body (e.g. the list of
             rejected webhook criteria), when present.
-        body: the raw decoded response body (``None`` if not JSON).
+        body: the parsed JSON response body (``None`` when the body is
+            empty, is not JSON, or is JSON ``null``).
         retry_after: seconds to wait before retrying, when the server said so.
-        body_excerpt: for a body that is not JSON, its first
-            characters as text (``None`` otherwise). Raw response text that
-            may contain document text: do not show it to a model or log it
-            by default. Never part of ``str(err)``, ``message`` or ``repr``.
+        body_excerpt: for a body that is neither JSON nor empty, its first
+            200 characters (code points), decoded as UTF-8 with invalid
+            bytes replaced, whatever charset the response names; ``None``
+            otherwise. Raw response text that may contain document text:
+            do not show it to a model or log it by default. Never part of
+            ``str(err)``, ``message`` or ``repr``.
     """
 
     default_code = "UNKNOWN"
@@ -581,17 +584,21 @@ class InternalServerError(LexAPIError):
 
 
 class InvalidResponseError(LexAPIError):
-    """A 2xx response that is not the documented shape: a body that is not
-    JSON (e.g. an HTML interstitial from a proxy), an empty body, JSON that
-    is not an object, ``success: false`` without an error, or a list field
-    that is missing, not a list, or holds items that are not objects.
-    Raised instead of returning an empty, "successful" result.
+    """A 2xx response that is not the documented shape (SDK contract §1.3):
+    no body (except on the webhook delete), a body that is not strict UTF-8
+    JSON (e.g. an HTML interstitial from a proxy), JSON that is not an
+    object, ``success: false`` without an error, a documented field that is
+    missing or of the wrong kind (e.g. ``document`` on a document read), or
+    a list field that is not a list of objects. Raised instead of returning
+    an empty, "successful" result: catch it to tell a malformed answer from
+    an empty one.
 
-    The message names what was expected and what arrived (status, content
-    type, length) and never quotes the body. For a body that is not JSON,
-    :attr:`body_excerpt` holds its first characters; for JSON, :attr:`body`
-    holds it. Both are raw response content that may contain document text:
-    do not show them to a model or log them by default.
+    The message names what was expected and what arrived (kind of JSON
+    value, field name, media type, byte length) and never quotes the body.
+    For a body that is not JSON, :attr:`body_excerpt` holds its first 200
+    characters; for JSON, :attr:`body` holds the parsed value. Both are raw
+    response content that may contain document text: do not show them to a
+    model or log them by default.
     """
 
     default_code = "INVALID_RESPONSE"

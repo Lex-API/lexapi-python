@@ -642,6 +642,10 @@ class SearchResponse(APIResponse):
 class DocumentResponse(APIResponse):
     """``POST /documentContent`` — one parsed document plus read-path headers."""
 
+    _required_fields = (("document", "object"),)
+    _optional_object_fields = ("document.content",)
+    _list_fields = ("document.content.articles",)
+
     @property
     def document(self) -> Document:
         return Document.from_dict(_dict(self._map, "document"))
@@ -2665,6 +2669,13 @@ class LegislationAsOfResponse(APIResponse):
     date: an act can be in force while some of its provisions apply later.
     """
 
+    _required_fields = (
+        ("document", "string"),
+        ("asOfResolved", "boolean"),
+        ("act", "object"),
+        ("provenance", "object"),
+    )
+
     @property
     def document(self) -> str | None:
         """CELEX of the act (the base act when a consolidated id was sent)."""
@@ -2849,6 +2860,8 @@ class DocumentVersionsResponse(APIResponse):
 
 class DocumentVersionResponse(APIResponse):
     """``GET /documents/{celex}/versions/{version}`` and ``/at/{date}``."""
+
+    _required_fields = (("document", "object"),)
 
     @property
     def celex(self) -> str | None:
@@ -3503,6 +3516,10 @@ class NationalDocumentResponse(APIResponse):
     settled to 1: every national read is a corpus
     read, never a live fetch.
     """
+
+    _required_fields = (("document", "object"),)
+    _optional_object_fields = ("document.content",)
+    _list_fields = ("document.content.articles",)
 
     @property
     def document(self) -> NationalDocument:

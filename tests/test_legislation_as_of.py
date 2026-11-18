@@ -16,6 +16,7 @@ from lexapi import (
     AsyncLexAPI,
     InvalidCelexError,
     InvalidParamsError,
+    InvalidResponseError,
     LegislationAsOfResponse,
     LexAPI,
     NotFoundError,
@@ -385,7 +386,11 @@ def test_unknown_future_reason_passes_through():
     ],
 )
 def test_missing_or_null_objects_do_not_crash(body):
-    for resp in call(body, "32016R0679", "2019-06-01")[:2]:
+    # The client rejects these answers (no document / act / provenance) ...
+    err = call_raises(InvalidResponseError, body, 200, "32016R0679", "2019-06-01")
+    assert err.message.startswith('Expected "')
+    # ... and the model itself still reads them without crashing.
+    for resp in [LegislationAsOfResponse(body)]:
         # Resolved only on a literal true.
         assert resp.as_of_resolved is (body.get("asOfResolved") is True)
         assert resp.as_of_reason is None

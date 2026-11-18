@@ -7,13 +7,14 @@ differ in how they send the request and how they sleep.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, TypeVar
 
 import httpx
 
 from lexapi._meta import user_agent
-from lexapi._response import APIResponse, header
+from lexapi._response import APIResponse
 from lexapi._retry import (
     DEFAULT_RETRY_CONFIG,
     RetryConfig,
@@ -84,33 +85,61 @@ def build_httpx_kwargs(
     }
 
 
-def decode_body(response: httpx.Response) -> Any:
-    """Decode the JSON body: ``{}`` for 204 / empty bodies, ``None`` when the
-    body is present but is not JSON."""
-    if response.status_code == 204 or not response.content:
-        return {}
-    try:
-        return response.json()
-    except ValueError:
-        return None
-
-
-#: Characters of a non-JSON body kept on ``body_excerpt`` (never in a message).
+#: Characters (code points) of a body that is not JSON kept on
+#: ``body_excerpt`` (never in a message).
 EXCERPT_CHARS = 200
+#: Bytes decoded for the excerpt: a code point takes at most four bytes.
+EXCERPT_BYTES = EXCERPT_CHARS * 4
 
 _MISSING: Any = object()
+#: Sentinel for a body that is not strict UTF-8 JSON (JSON ``null`` is ``None``).
+NOT_JSON: Any = object()
+
+_KIND_NAMES = {"object": "an object", "string": "a string", "boolean": "a boolean"}
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def parse_json_bytes(content: bytes) -> Any:
+    """Strict UTF-8 + RFC 8259 JSON (SDK contract §1.3), or :data:`NOT_JSON`.
+
+    One leading UTF-8 byte order mark is ignored; any invalid UTF-8 (an
+    encoded surrogate included), ``NaN`` / ``Infinity``, trailing data, or
+    nesting deeper than the parser supports is not JSON. Never raises.
+    """
+    try:
+        return json.loads(content.decode("utf-8-sig"), parse_constant=_reject_constant)
+    except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError
+        return NOT_JSON
+
+
+def decode_body(response: httpx.Response) -> Any:
+    """The parsed JSON body of a response; ``None`` when it is empty, is not
+    JSON, or is JSON ``null``."""
+    if not response.content:
+        return None
+    body = parse_json_bytes(response.content)
+    return None if body is NOT_JSON else body
+
+
+def _excerpt(content: bytes) -> str | None:
+    """The first 200 code points of a body, decoded as UTF-8 with
+    replacement whatever the charset (a byte order mark is kept);
+    ``None`` for an empty body."""
+    if not content:
+        return None
+    return content[:EXCERPT_BYTES].decode("utf-8", "replace")[:EXCERPT_CHARS]
 
 
 def _media_type(response: httpx.Response) -> str:
-    value = header(response.headers, "content-type")
-    media = value.split(";", 1)[0].strip()[:100] if value else ""
+    """The ``Content-Type`` before ``;``, trimmed of spaces and tabs, at
+    most 100 code points; header bytes read as latin-1."""
+    values = [v for k, v in response.headers.raw if k.lower() == b"content-type"]
+    value = b", ".join(values).decode("latin-1")
+    media = value.split(";", 1)[0].strip(" \t")[:100]
     return media or "no content type"
-
-
-def _excerpt(response: httpx.Response) -> str | None:
-    if not response.content:
-        return None
-    return response.text[:EXCERPT_CHARS]
 
 
 def _json_kind(value: Any) -> str:
@@ -138,14 +167,37 @@ def _lookup(body: dict[str, Any], path: str) -> Any:
     return value
 
 
-def shape_problem(body: dict[str, Any], cast: type[APIResponse]) -> str | None:
-    """What is wrong with a 2xx JSON object for ``cast``, or ``None``.
+def _is_kind(value: Any, kind: str) -> bool:
+    if kind == "object":
+        return isinstance(value, dict)
+    if kind == "string":
+        return isinstance(value, str)
+    return isinstance(value, bool)  # "boolean"
 
-    Checks only the documented list fields; unknown extra fields are fine.
-    """
+
+def shape_problem(body: dict[str, Any], cast: type[APIResponse]) -> str | None:
+    """What is wrong with a 2xx JSON object's documented fields for
+    ``cast``, or ``None``: required lists, then required fields, then
+    optional objects, then lists and their items (SDK contract §1.3).
+    Unknown extra fields are fine."""
+
+    def missing(path: str) -> str:
+        return f'Expected "{path}" in the response; it is missing'
+
     for path in cast._required_list_fields:
-        if _lookup(body, path) in (_MISSING, None):
-            return f'Expected "{path}" in the response; it is missing'
+        value = _lookup(body, path)
+        if value is _MISSING or value is None:
+            return missing(path)
+    for path, kind in cast._required_fields:
+        value = _lookup(body, path)
+        if value is _MISSING or value is None or (kind == "string" and value == ""):
+            return missing(path)
+        if not _is_kind(value, kind):
+            return f'Expected "{path}" to be {_KIND_NAMES[kind]}, got {_json_kind(value)}'
+    for path in cast._optional_object_fields:
+        value = _lookup(body, path)
+        if value is not _MISSING and value is not None and not isinstance(value, dict):
+            return f'Expected "{path}" to be an object, got {_json_kind(value)}'
     for path in cast._list_fields:
         value = _lookup(body, path)
         if value is _MISSING or value is None:
@@ -173,36 +225,32 @@ def _invalid(
         message,
         status=response.status_code,
         body=body,
-        body_excerpt=_excerpt(response) if excerpt else None,
+        body_excerpt=_excerpt(response.content) if excerpt else None,
     )
 
 
-def parse_success(response: httpx.Response, cast: type[R], *, allow_empty: bool | None = None) -> R:
-    """Wrap a 2xx response, or raise when it is not the documented shape.
+def parse_success(response: httpx.Response, cast: type[R]) -> R:
+    """Wrap a 2xx response, or raise when it is not the documented shape
+    (SDK contract §1.3, checks 1-6).
 
-    A 204 or an empty body is an empty result only where ``allow_empty``
-    (by default only for the untyped :class:`APIResponse`, i.e.
-    ``DELETE``). Otherwise the body must be a JSON object, must not say
-    ``success: false`` (unless ``cast._success_false_ok``), and its list
-    fields must be lists of objects. A violation raises
-    :class:`~lexapi.errors.InvalidResponseError`, or the mapped API error
-    when a ``success: false`` body carries the error envelope. No message
-    quotes the body.
+    1. A 204 (whatever it carries) or a body of zero bytes is an empty
+       result only where ``cast._allow_empty`` (the webhook delete).
+    2. The body must be strict UTF-8 JSON (:func:`parse_json_bytes`).
+    3. It must be a JSON object.
+    4. ``success: false`` raises the mapped API error when the body carries
+       the error envelope, else :class:`~lexapi.errors.InvalidResponseError`
+       (skipped where ``cast._success_false_ok``).
+    5-6. The documented fields (:func:`shape_problem`).
+
+    No message quotes the body.
     """
-    if allow_empty is None:
-        allow_empty = cast is APIResponse
     if response.status_code == 204 or not response.content:
-        if allow_empty:
+        if cast._allow_empty:
             return cast({}, response.headers)
         raise _invalid(response, "Expected JSON, got no body")
-    # Raised outside the ``except`` so the decode error (whose ``doc`` /
-    # ``object`` hold the whole body) is not kept on ``__context__``.
-    body: Any = _MISSING
-    try:
-        body = response.json()
-    except ValueError:  # JSONDecodeError and UnicodeDecodeError
-        pass
-    if body is _MISSING:
+    # NOT_JSON is returned, not raised, so no decode error is chained.
+    body = parse_json_bytes(response.content)
+    if body is NOT_JSON:
         raise _invalid(
             response,
             f"Expected JSON, got {_media_type(response)} that does not parse as JSON "
@@ -226,11 +274,15 @@ def process_response(response: httpx.Response, cast: type[R]) -> R:
 
     A 2xx that is not the documented shape (see :func:`parse_success`)
     raises :class:`~lexapi.errors.InvalidResponseError` — it is never
-    turned into an empty "successful" result.
+    turned into an empty "successful" result. A non-2xx body is parsed by
+    the same strict parser; one that is neither JSON nor empty is kept,
+    cut short, on ``body_excerpt`` only.
     """
     if response.is_success:
         return parse_success(response, cast)
-    body = decode_body(response)
+    content = response.content
+    parsed = parse_json_bytes(content) if content else NOT_JSON
+    body = None if parsed is NOT_JSON else parsed
     retry_after = None
     if not is_quota_exhausted(response.status_code, response.headers, body):
         retry_after = server_wait_hint(response.headers, body, response.status_code)
@@ -238,7 +290,7 @@ def process_response(response: httpx.Response, cast: type[R]) -> R:
         response.status_code,
         body,
         retry_after=retry_after,
-        body_excerpt=_excerpt(response) if body is None else None,
+        body_excerpt=_excerpt(content) if parsed is NOT_JSON else None,
     )
 
 
