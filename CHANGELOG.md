@@ -36,6 +36,19 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   has no such endpoint: a mistyped path, a method newer than the API, or a
   national route for a country that is not available. Always False on APIs
   before 2.27.0; there the message starts with "Unknown API endpoint".
+- **`lexapi.passages`**: cited passages for RAG frameworks. Turns the
+  responses of `semantic_legislation_search`, `semantic_search`,
+  `get_document` and `legislation_as_of` into immutable `Passage` objects (a
+  text with its CELEX number, the part matched, title, language, link,
+  consolidated-text labels and `as_of` labels), collected in a
+  `PassageResult` with the call's counts and credits
+  (`from_legislation_search`, `from_case_law_search`, `from_document`,
+  `from_legislation_as_of`). On an `as_of` search, the text of a hit that is
+  not resolved for the date is withheld by default (`text=None`, with the
+  `as_of_reason`); `unresolved="drop"` or `"keep_labelled"` change that.
+  `format_citation(passage)` gives the citation as one line;
+  `restrict_to_celex(result, celex)` keeps the passages of given acts. No
+  request is made and no dependency is added.
 
 ### Fixed
 
