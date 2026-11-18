@@ -4,6 +4,33 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (0.x: minors may break, documented here).
 
+## [Unreleased]
+
+### Added
+
+- **`client.legislation_as_of(document, as_of, *, provision=None, language=None)`**
+  (sync + async) — `POST /legislation/as-of`: the version of an EU
+  regulation, directive or decision listed for a date and, with
+  `provision`, one article, annex or recital range of it
+  (`LegislationAsOfResponse`: `document`, `language`, `as_of`,
+  `as_of_resolved`, `as_of_reason`, `as_of_version`, `act`
+  (`LegislationAsOfAct`), `provision` (`LegislationAsOfProvision`),
+  `consolidated`, `consolidated_as_of`, `base_celex`, `consolidated_note`,
+  `provenance`). An answer that cannot be established is a normal return
+  with `as_of_resolved == False` and an `as_of_reason`
+  (`AS_OF_LOOKUP_REASONS`), never an exception. 1 credit when no text is
+  fetched; when the provision's text has to be fetched, 4 (5 when it is
+  fetched live from EUR-Lex), whatever the answer, and 1 if the fetch fails
+  or finds no text. **Requires LexAPI API 2.26.0**;
+  on an older API the call raises `NotFoundError`.
+- `AsOfVersion.valid_until` / `.checked_at` (set by `legislation_as_of`).
+
+### Fixed
+
+- `AS_OF_REASONS` / `AsOfReason` now include `amendment_not_consolidated`,
+  which `semantic_legislation_search(as_of=...)` hits can carry since LexAPI
+  API 2.25.0. (The value was already passed through on `as_of_reason`.)
+
 ## [0.4.0] — 2026-11-11
 
 Syncs the citation graph with LexAPI API 2.10.0–2.13.0. **Requires LexAPI

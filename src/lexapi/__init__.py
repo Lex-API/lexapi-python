@@ -32,11 +32,13 @@ from lexapi.errors import (
 )
 from lexapi.export import AsyncExportStream, ExportStream
 from lexapi.models import (
+    AS_OF_LOOKUP_REASONS,
     AS_OF_REASONS,
     CITATION_PROVENANCES,
     CITATION_RESOLUTIONS,
     CITATION_TYPES,
     Article,
+    AsOfLookupReason,
     AsOfReason,
     AsOfSummary,
     AsOfVersion,
@@ -75,6 +77,9 @@ from lexapi.models import (
     DocumentVersionsResponse,
     GraphDocumentKind,
     InfoResponse,
+    LegislationAsOfAct,
+    LegislationAsOfProvision,
+    LegislationAsOfResponse,
     MatchedVersion,
     NationalArticle,
     NationalCaseLawCoverageAvailability,
@@ -145,8 +150,10 @@ from lexapi.webhooks import (
 
 __all__ = [
     "APIResponse",
+    "AS_OF_LOOKUP_REASONS",
     "AS_OF_REASONS",
     "Article",
+    "AsOfLookupReason",
     "AsOfReason",
     "AsOfSummary",
     "AsOfVersion",
@@ -201,6 +208,9 @@ __all__ = [
     "InvalidParamsError",
     "InvalidResponseError",
     "InvalidURLError",
+    "LegislationAsOfAct",
+    "LegislationAsOfProvision",
+    "LegislationAsOfResponse",
     "LexAPI",
     "LexAPIConnectionError",
     "LexAPIError",

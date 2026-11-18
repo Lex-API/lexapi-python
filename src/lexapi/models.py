@@ -28,13 +28,15 @@ from lexapi._response import APIResponse, header
 #: Why a semantic-legislation hit could not be answered for ``asOf``
 #: (``SemanticLegislationResult.as_of_reason``), copied from openapi.yaml.
 #: Typed as ``str`` on the model so a reason added by a newer API version
-#: never breaks parsing; compare against :data:`AS_OF_REASONS`.
+#: never breaks parsing; compare against :data:`AS_OF_REASONS`. For
+#: ``legislation_as_of``, use :data:`AS_OF_LOOKUP_REASONS`.
 AsOfReason = Literal[
     "not_yet_adopted",
     "not_yet_in_force",
     "no_longer_in_force",
     "in_force_dates_unknown",
     "not_in_language",
+    "amendment_not_consolidated",
     "text_unavailable",
     "article_not_in_version",
     "part_not_resolvable",
@@ -53,6 +55,38 @@ AsOfReason = Literal[
 
 #: Every documented ``asOfReason`` value.
 AS_OF_REASONS: tuple[str, ...] = AsOfReason.__args__  # type: ignore[attr-defined]
+
+#: Why ``POST /legislation/as-of`` could not answer
+#: (``LegislationAsOfResponse.as_of_reason``), copied from openapi.yaml.
+#: Typed as ``str`` on the model so a reason added by a newer API version
+#: never breaks parsing; compare against :data:`AS_OF_LOOKUP_REASONS`. For
+#: ``semantic_legislation_search(as_of=...)`` hits, use :data:`AS_OF_REASONS`.
+AsOfLookupReason = Literal[
+    "not_yet_adopted",
+    "not_yet_in_force",
+    "no_longer_in_force",
+    "in_force_dates_unknown",
+    "act_type_not_supported",
+    "version_list_unavailable",
+    "version_lookup_cap",
+    "not_in_language",
+    "amendment_not_consolidated",
+    "text_unavailable",
+    "article_not_in_version",
+    "provision_ambiguous",
+    "version_not_parsed",
+    "fetch_budget_exhausted",
+    "fetch_pending",
+    "fetch_capacity",
+    "fetch_failed",
+    "fetch_timeout",
+    "request_deadline",
+    "insufficient_credits",
+    "credit_check_failed",
+]
+
+#: Every documented ``asOfReason`` value of ``POST /legislation/as-of``.
+AS_OF_LOOKUP_REASONS: tuple[str, ...] = AsOfLookupReason.__args__  # type: ignore[attr-defined]
 
 #: ``textAvailability.reason`` values, copied from openapi.yaml.
 TextUnavailableReason = Literal[
@@ -2273,16 +2307,24 @@ class SemanticBaseAct:
 
 @dataclass(frozen=True)
 class AsOfVersion:
-    """The version an ``asOf`` hit's text comes from.
+    """The version an ``asOf`` answer's text comes from.
 
-    ``kind`` is ``consolidated`` or ``as_published``; ``date`` is the
-    consolidation date (``None`` for the act as published).
+    ``kind`` is ``consolidated`` or ``as_published``; ``date`` is the date
+    the consolidated version carries (``None`` for the act as published) —
+    it can be earlier than the act's entry into force.
+
+    ``valid_until`` and ``checked_at`` are set by
+    :meth:`~lexapi.LexAPI.legislation_as_of` only, each when known:
+    ``valid_until`` is the day before the next version listed for the act,
+    ``checked_at`` when the list of versions was read.
     """
 
     celex: str | None
     date: str | None
     kind: str | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
+    valid_until: str | None = None
+    checked_at: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AsOfVersion:
@@ -2291,6 +2333,8 @@ class AsOfVersion:
             date=_s(data, "date"),
             kind=_s(data, "kind"),
             raw=data,
+            valid_until=_s(data, "validUntil"),
+            checked_at=_s(data, "checkedAt"),
         )
 
 
@@ -2511,6 +2555,155 @@ class SemanticLegislationResponse(_SemanticResponseBase):
     def as_of_summary(self) -> AsOfSummary | None:
         value = _opt_dict(self._map, "asOfSummary")
         return AsOfSummary.from_dict(value) if value is not None else None
+
+
+@dataclass(frozen=True)
+class LegislationAsOfAct:
+    """What the Publications Office records about the act. A field is
+    ``None`` when it is not known.
+
+    ``in_force_today`` is about **today**; it says nothing about the date
+    asked for.
+    """
+
+    celex: str | None
+    date_of_document: str | None = None
+    entry_into_force: str | None = None
+    end_of_validity: str | None = None
+    in_force_today: bool | None = None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LegislationAsOfAct:
+        return cls(
+            celex=_s(data, "celex"),
+            date_of_document=_s(data, "dateOfDocument"),
+            entry_into_force=_s(data, "entryIntoForce"),
+            end_of_validity=_s(data, "endOfValidity"),
+            in_force_today=_b(data, "inForceToday"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class LegislationAsOfProvision:
+    """One article, annex or recital range of the version returned.
+
+    ``id`` is the provision as normalised (``art_17``, ``anx_III``,
+    ``rct_26-28``), ``number`` its heading in the text (``Article 17``;
+    ``None`` when the part has no heading of its own (recitals)), ``title``
+    its title when it has one.
+    """
+
+    id: str | None
+    text: str | None
+    number: str | None = None
+    title: str | None = None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LegislationAsOfProvision:
+        return cls(
+            id=_s(data, "id"),
+            text=_s(data, "text"),
+            number=_s(data, "number"),
+            title=_s(data, "title"),
+            raw=data,
+        )
+
+
+class LegislationAsOfResponse(APIResponse):
+    """``POST /legislation/as-of`` — the version of an EU act listed for a
+    date and, when asked for, one provision of it.
+
+    **Resolved or not.** ``as_of_resolved`` is ``True`` when the version —
+    and, with ``provision``, its text — was established: ``as_of_version``
+    names it and ``provision.text`` carries the text. Otherwise the answer
+    is still a successful response, with ``as_of_reason`` (one of
+    :data:`AS_OF_LOOKUP_REASONS`) and no ``provision``. Use a text only when
+    ``as_of_resolved`` is ``True``.
+
+    **Consolidated texts** have no legal force: when ``consolidated`` is
+    ``True``, ``base_celex`` names the authentic act, as published in the
+    Official Journal, and ``consolidated_note`` says so in words.
+
+    The answer does not say whether an individual provision applied on that
+    date: an act can be in force while some of its provisions apply later.
+    """
+
+    @property
+    def document(self) -> str | None:
+        """CELEX of the act (the base act when a consolidated id was sent)."""
+        return _s(self._map, "document")
+
+    @property
+    def language(self) -> str | None:
+        return _s(self._map, "language")
+
+    @property
+    def as_of(self) -> str | None:
+        """Echo of the date asked for (``YYYY-MM-DD``)."""
+        return _s(self._map, "asOf")
+
+    @property
+    def as_of_resolved(self) -> bool:
+        """``True`` only when the API answered ``asOfResolved: true``."""
+        return self._map.get("asOfResolved") is True
+
+    @property
+    def as_of_reason(self) -> str | None:
+        """Why the answer is unresolved (``None`` on a resolved one). A value
+        this SDK version does not know is passed through unchanged."""
+        return _s(self._map, "asOfReason")
+
+    @property
+    def as_of_version(self) -> AsOfVersion | None:
+        """The version listed for the date. ``None`` when none was
+        established. Can be present on an unresolved answer that asked for a
+        ``provision``."""
+        value = _opt_dict(self._map, "asOfVersion")
+        return AsOfVersion.from_dict(value) if value is not None else None
+
+    @property
+    def act(self) -> LegislationAsOfAct | None:
+        value = _opt_dict(self._map, "act")
+        return LegislationAsOfAct.from_dict(value) if value is not None else None
+
+    @property
+    def provision(self) -> LegislationAsOfProvision | None:
+        """The provision asked for, on a resolved answer; ``None`` when no
+        ``provision`` was requested or the answer is unresolved."""
+        if not self.as_of_resolved:
+            return None
+        value = _opt_dict(self._map, "provision")
+        return LegislationAsOfProvision.from_dict(value) if value is not None else None
+
+    @property
+    def consolidated(self) -> bool:
+        """``True`` when the resolved version is a consolidated version."""
+        return _b(self._map, "consolidated") or False
+
+    @property
+    def consolidated_as_of(self) -> str | None:
+        """Consolidated versions only — the consolidation date."""
+        return _s(self._map, "consolidatedAsOf")
+
+    @property
+    def base_celex(self) -> str | None:
+        """Consolidated versions only — the act; cite it as the authentic
+        source."""
+        return _s(self._map, "baseCelex")
+
+    @property
+    def consolidated_note(self) -> str | None:
+        """Consolidated versions only — says the text is not the authentic
+        one."""
+        return _s(self._map, "consolidatedNote")
+
+    @property
+    def provenance(self) -> dict[str, Any] | None:
+        """The raw ``provenance`` block: publisher, ``sourceUrl``, licence."""
+        return _opt_dict(self._map, "provenance")
 
 
 class ResolveResponse(APIResponse):
