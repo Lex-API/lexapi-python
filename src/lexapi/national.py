@@ -91,7 +91,7 @@ def _semantic_case_law_body(
     )
     # hyde is accepted but never changes billing or behaviour here — the
     # national index never rewrites (the response always answers
-    # hyde: false). Sent only when True so older deployments never see a
+    # hyde: false). Sent only when True so older API versions never see a
     # param they don't know.
     if hyde:
         body["hyde"] = True

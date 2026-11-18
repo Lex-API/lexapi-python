@@ -1,6 +1,6 @@
 """Typed models over LexAPI response payloads.
 
-Design rules (PLAN.md §3):
+Design rules:
 
 - plain dataclasses, no runtime dependencies beyond httpx;
 - every model keeps the raw payload on ``.raw`` — the typed layer never
@@ -494,7 +494,7 @@ class SearchResponse(APIResponse):
 
     Truncation/partial signals are attributes, never hidden: ``truncated``
     (tier-capped, more pages exist), ``partial`` (an upstream page fetch
-    timed out), ``post_filtered_by`` (controller-side post-filter dropped
+    timed out), ``post_filtered_by`` (server-side post-filter dropped
     rows), plus the ``X-Warning`` header via ``.warning``.
     """
 
@@ -542,7 +542,7 @@ class SearchResponse(APIResponse):
 
     @property
     def post_filtered_by(self) -> str | None:
-        """Comma-joined dimensions a controller-side post-filter fired on."""
+        """Comma-joined dimensions a server-side post-filter fired on."""
         return _s(self._map, "postFilteredBy")
 
     @property
@@ -2697,7 +2697,7 @@ class NationalCoverageAvailability:
     documents: int | None
     #: Earliest decision year LexAPI holds (an int year, or ``None``) —
     #: NOT a date string. ``legislation.from_`` is currently always
-    #: ``None`` server-side (the coverage controller hardcodes it); the
+    #: ``None`` server-side; the
     #: field exists because ``caseLaw.from_`` (the subclass below) is the
     #: same field and IS populated.
     from_: int | None
@@ -3268,8 +3268,8 @@ class NationalDocumentResponse(APIResponse):
     """``GET /{jurisdiction}/documents/{id}`` — one national document.
 
     No ``success`` key (unlike the EU document endpoints) — the national
-    controller answers ``{"document": {...}}`` directly. 5 credits upfront,
-    settled to 1 (``CORPUS_HIT_WEIGHT``): every national read is a corpus
+    endpoint answers ``{"document": {...}}`` directly. 5 credits upfront,
+    settled to 1: every national read is a corpus
     read, never a live fetch.
     """
 
@@ -3332,7 +3332,7 @@ class NationalDocumentListResponse(APIResponse):
 @dataclass(frozen=True)
 class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     """A :class:`SemanticCaseLawResult` plus the national extras the
-    controller adds: ``document_id`` / ``jurisdiction`` (also mirrored into
+    API adds: ``document_id`` / ``jurisdiction`` (also mirrored into
     ``metadata.celex_id``), ``document`` (the matched decision as the
     listing returns it — a :class:`NationalDocument` summary with the same
     fields in every jurisdiction, whatever metadata the index carries;
@@ -3373,10 +3373,9 @@ class NationalSemanticLegislationResult(SemanticLegislationResult):
     ``valid_from``, ``valid_to`` and ``law_type`` — ``None`` when the index
     has nothing for the unit (which of them it has differs by jurisdiction).
 
-    Quirk straight from the server: unlike every camelCase field elsewhere
-    in this SDK, these index fields are the server's own snake_case wire
-    names (``in_force`` / ``valid_from`` / ``valid_to`` / ``law_type``) —
-    do not "fix" this, it would stop matching the API.
+    Unlike the camelCase fields elsewhere in this SDK, these index fields
+    have snake_case wire names (``in_force`` / ``valid_from`` /
+    ``valid_to`` / ``law_type``), mirrored here as sent.
 
     ``in_force`` comes from the semantic index, as of today (``None`` when
     unknown). LexAPI's own corpus row only ever forces it to ``False`` (and

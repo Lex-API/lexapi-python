@@ -552,7 +552,7 @@ class AsyncLexAPI:
                     handle(row["celex"], row.get("parsedContent"))
                 print(stream.done, stream.truncated)
 
-        Filters (requires lex-api API 2.3.0; list values are sent
+        Filters (requires API 2.3.0; list values are sent
         comma-separated and ORed):
 
         - ``document_type``: the stored label, matched exactly ignoring case
@@ -655,7 +655,7 @@ class AsyncLexAPI:
         ``read_only`` marks a POST that changes nothing (eligible for
         ``RetryConfig.retry_read_only_posts``); ``free`` marks a 0-credit
         operation, for which any transport failure or 5xx is billing-safe to
-        retry (PLAN.md §1.2).
+        retry (SDK contract §1.2).
         """
         request_kwargs: dict[str, Any] = {"params": params, "json": json}
         request_kwargs.update(self._timeout_kwargs(timeout))

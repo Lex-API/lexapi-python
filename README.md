@@ -43,7 +43,7 @@ if results.truncated:
 if results.partial:
     print("partial answer:", results.partial_reason)
 if results.post_filtered_by:
-    print("controller post-filter fired on:", results.post_filtered_by)
+    print("server-side post-filter fired on:", results.post_filtered_by)
 print(results.source)  # "soap" | "cellar" | "corpus" | None (EUR-Lex result pages)
 print(results.cache)  # "hit" | "miss" | "bypass" — 60-minute result cache, same price
 
@@ -629,7 +629,8 @@ read-only POSTs (search, document reads, resolve, semantic search) on an
 app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
 Every wait, server-directed ones included, is clamped to `backoff_cap`
-(default 30 s): a cap below the server's requested wait shortens it.
+(default 30 s): a cap below the server's requested wait shortens it. The full
+rules are in the [SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md).
 
 ```python
 from lexapi import LexAPI, RetryConfig
@@ -665,12 +666,11 @@ client.with_options(timeout=30, max_retries=0).semantic_legislation_search(
 
 `timeout` is the longest the SDK waits for the next bytes of a response — the
 response head, then each body chunk — on one attempt; it is not a deadline
-for the whole call. The 95 s default sits above the API's 90 s budget for one
-upstream EUR-Lex fetch, so that common timeout comes back as the server's
-typed `TimeoutError` (504, refunded), and below Cloudflare's 100 s limit
-(beyond which you get a 524). A request needing several upstream fetches can
-still run past it and raise a local `RequestTimeoutError`; values above ~100 s
-buy nothing on the public endpoint.
+for the whole call. The 95 s default sits above the API's 90 s deadline on
+document reads, so that timeout comes back as a typed, refunded 504; the CDN
+ends any wait at 100 s. A request can still run past the timeout and raise a
+local `RequestTimeoutError`; values above ~100 s buy nothing on the public
+endpoint.
 
 ## Development
 

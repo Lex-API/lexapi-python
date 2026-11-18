@@ -58,9 +58,10 @@ class LexAPI:
             ``https://lex-api.com/api/v1``).
         timeout: per-attempt response timeout in seconds — the longest wait
             for the next bytes of a response (its head, then each body chunk);
-            not a deadline for the whole call. Default 95: above the API's
-            90 s budget for one upstream EUR-Lex fetch, below Cloudflare's
-            100 s limit. Or a full ``httpx.Timeout``.
+            not a deadline for the whole call. The 95 s default sits above the
+            API's 90 s deadline on document reads, so that timeout comes back
+            as a typed, refunded 504; the CDN ends any wait at 100 s. Or a
+            full ``httpx.Timeout``.
         connect_timeout: connect timeout in seconds (TCP + TLS, and the wait
             for a pooled connection); ignored when ``timeout`` is an
             ``httpx.Timeout``.
@@ -579,7 +580,7 @@ class LexAPI:
                     handle(row["celex"], row.get("parsedContent"))
                 print(stream.done, stream.truncated)
 
-        Filters (requires lex-api API 2.3.0; list values are sent
+        Filters (requires API 2.3.0; list values are sent
         comma-separated and ORed):
 
         - ``document_type``: the stored label, matched exactly ignoring case
@@ -682,7 +683,7 @@ class LexAPI:
         ``read_only`` marks a POST that changes nothing (eligible for
         ``RetryConfig.retry_read_only_posts``); ``free`` marks a 0-credit
         operation, for which any transport failure or 5xx is billing-safe to
-        retry (PLAN.md §1.2).
+        retry (SDK contract §1.2).
         """
         request_kwargs: dict[str, Any] = {"params": params, "json": json}
         request_kwargs.update(self._timeout_kwargs(timeout))

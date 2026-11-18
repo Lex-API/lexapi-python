@@ -1,5 +1,5 @@
 """Legislation semantic search: asOf, consolidated-text merge labels, and
-the new per-hit / response fields (API #284, lex-api PR #298)."""
+the new per-hit / response fields."""
 
 import asyncio
 import datetime as dt
@@ -255,7 +255,7 @@ def test_unknown_future_reason_is_kept():
 
 
 def test_invalid_as_of_is_typed_400():
-    # The controller answers in the legacy shape; the credit middleware refunds it.
+    # The API answers in the legacy shape and refunds the call.
     client, _ = capture_client(
         {"error": "Invalid asOf", "message": "asOf cannot be in the future"}, status=400
     )

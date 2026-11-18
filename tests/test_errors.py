@@ -77,7 +77,7 @@ def test_legacy_bare_error_derives_code_from_status():
 
 
 def test_legacy_error_string_is_text_not_a_code():
-    # PLAN §1.3: a string `error` is human text; the code comes from the status.
+    # SDK contract §1.3: a string `error` is human text; the code comes from the status.
     err = error_from_response(429, {"error": "RATE_LIMITED", "message": "Slow down"})
     assert isinstance(err, RateLimitedError)
     assert err.code == "RATE_LIMITED"
