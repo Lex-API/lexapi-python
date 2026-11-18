@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import pickle
 from typing import Any, Callable
 
 import httpx
@@ -226,7 +227,7 @@ def test_success_false_with_error_envelope_raises_the_mapped_error(family, mode)
 def test_empty_body_raises(family, mode, status):
     with pytest.raises(InvalidResponseError) as info:
         run(family, mode, raw(status, b"", None))
-    assert info.value.message == "Expected JSON, got an empty body"
+    assert info.value.message == "Expected JSON, got no body"
     assert info.value.status == status
 
 
@@ -477,3 +478,110 @@ def test_complete_semantic_body_still_withholds_unresolved_text():
             client.semantic_legislation_search("own funds", as_of="2099-01-01")
         )
     assert all(SENTINEL not in (p.text or "") for p in result.passages)
+
+
+# ── exception objects hold no full body ─────────────────────────────────
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(
+    "content",
+    [TRUNCATED_JSON.encode(), b'{"text": "\xff\xfe ' + SENTINEL.encode() + b'"}'],
+    ids=["unparsable", "undecodable"],
+)
+def test_decode_error_is_not_chained(mode, content):
+    err = raises_invalid("semantic_legislation", mode, raw(200, content, "application/json"))
+    assert err.__context__ is None
+    assert err.__cause__ is None
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_body_excerpt_is_the_first_200_characters(mode):
+    content = "<html>" + "x" * 194 + SENTINEL + "y" * 500
+    err = raises_invalid("keyword_search", mode, raw(200, content, "text/html"))
+    assert err.body_excerpt == content[:200]
+    assert SENTINEL not in (err.body_excerpt or "")
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_wrong_shape_keeps_the_parsed_body(mode):
+    body = {"success": True, "results": "x", "extra": SENTINEL}
+    err = raises_invalid("keyword_search", mode, as_json(body))
+    assert err.body == body
+    assert err.body_excerpt is None
+    err = raises_invalid("keyword_search", mode, as_json([1, 2]))
+    assert err.body == [1, 2]
+
+
+@pytest.mark.parametrize("content", [b"", b'{"success": true, "results": []}'])
+def test_204_is_no_body_with_or_without_content(content):
+    with make_client(raw(204, content, "application/json")) as client:
+        with pytest.raises(InvalidResponseError) as info:
+            client.search("own funds")
+        assert info.value.message == "Expected JSON, got no body"
+        assert info.value.status == 204
+        assert client.webhooks.delete("w1") is None
+
+
+# ── only string codes and messages are read ─────────────────────────────
+
+ODD_ENVELOPES = [
+    {"success": False, "error": {"code": {"x": 1}, "message": {"text": SENTINEL}}},
+    {"success": False, "error": {"code": ["NOT_FOUND"], "message": [SENTINEL]}},
+    {"success": False, "error": {"code": "", "message": ""}},
+    {"success": False, "error": "x", "code": {"x": 1}, "message": {"text": SENTINEL}},
+    {"success": False, "error": {}, "code": [1], "message": {"text": SENTINEL}},
+]
+
+
+@pytest.mark.parametrize("body", ODD_ENVELOPES)
+@pytest.mark.parametrize("status", [200, 404])
+def test_non_string_code_or_message_counts_as_absent(status, body):
+    with make_client(as_json(body, status=status)) as client:
+        with pytest.raises(LexAPIError) as info:
+            client.get_info()
+    err = info.value
+    assert_no_sentinel(err)
+    expected_code = "NOT_FOUND" if status == 404 else "INTERNAL"
+    assert err.code == expected_code
+    if body["error"] == "x":
+        assert err.message == "x"
+    else:
+        assert err.message == f"HTTP {status}"
+
+
+def test_non_string_legacy_fields_count_as_absent():
+    body = {"error": ["x"], "code": {"a": 1}, "message": {"text": SENTINEL}}
+    with make_client(as_json(body, status=429)) as client:
+        with pytest.raises(RateLimitedError) as info:
+            client.get_info()
+    assert info.value.message == "HTTP 429"
+    assert info.value.code == "RATE_LIMITED"
+
+
+# ── pickling ─────────────────────────────────────────────────────────────
+
+
+def test_errors_survive_a_pickle_round_trip():
+    body = {"success": False, "error": {"code": "NOT_FOUND", "message": "gone"}}
+    with make_client(as_json(body, status=404)) as client:
+        with pytest.raises(NotFoundError) as info:
+            client.get_info()
+    copy = pickle.loads(pickle.dumps(info.value))
+    assert type(copy) is NotFoundError
+    assert copy.args == info.value.args == ("[NOT_FOUND] gone (HTTP 404)",)
+    assert str(copy) == str(info.value)
+    assert (copy.code, copy.message, copy.status, copy.body) == ("NOT_FOUND", "gone", 404, body)
+    err = raises_invalid("keyword_search", "sync", raw(200, HTML, "text/html"))
+    copy = pickle.loads(pickle.dumps(err))
+    assert copy.args == err.args and copy.body_excerpt == err.body_excerpt
+
+
+def test_empty_legacy_error_string_is_not_an_envelope():
+    body = {"error": "", "message": "Readable reason"}
+    with make_client(as_json(body, status=400)) as client:
+        with pytest.raises(InvalidParamsError) as info:
+            client.get_info()
+    assert info.value.message == "Readable reason"
+    err = raises_invalid("keyword_search", "sync", as_json(dict(body, success=False)))
+    assert err.message == "Response reported success: false without an error"

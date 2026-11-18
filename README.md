@@ -727,11 +727,10 @@ where the endpoint always sends it, is not a list, or holds items that are not
 objects. It is raised so that such an answer is never read as an empty result.
 Unknown extra fields are accepted.
 
-No error message quotes the response body: for a body that is not JSON, the
-message gives the status, content type and length, and the first characters
-are on `err.body_excerpt`. That excerpt (like `err.body`) is raw response
-content and may contain document text; do not show it to a model or log it by
-default.
+`InvalidResponseError` does not quote the response body in its message. For a
+body that is not JSON, the first 200 characters are on `err.body_excerpt`.
+That excerpt (like `err.body`) is raw response content and may contain
+document text; do not show it to a model or log it by default.
 
 ### Retries
 

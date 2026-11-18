@@ -143,10 +143,10 @@ def shape_problem(body: dict[str, Any], cast: type[APIResponse]) -> str | None:
 
     Checks only the documented list fields; unknown extra fields are fine.
     """
-    for path in cast.required_list_fields:
+    for path in cast._required_list_fields:
         if _lookup(body, path) in (_MISSING, None):
             return f'Expected "{path}" in the response; it is missing'
-    for path in cast.list_fields:
+    for path in cast._list_fields:
         value = _lookup(body, path)
         if value is _MISSING or value is None:
             continue
@@ -183,7 +183,7 @@ def parse_success(response: httpx.Response, cast: type[R], *, allow_empty: bool 
     A 204 or an empty body is an empty result only where ``allow_empty``
     (by default only for the untyped :class:`APIResponse`, i.e.
     ``DELETE``). Otherwise the body must be a JSON object, must not say
-    ``success: false`` (unless ``cast.success_false_ok``), and its list
+    ``success: false`` (unless ``cast._success_false_ok``), and its list
     fields must be lists of objects. A violation raises
     :class:`~lexapi.errors.InvalidResponseError`, or the mapped API error
     when a ``success: false`` body carries the error envelope. No message
@@ -194,19 +194,24 @@ def parse_success(response: httpx.Response, cast: type[R], *, allow_empty: bool 
     if response.status_code == 204 or not response.content:
         if allow_empty:
             return cast({}, response.headers)
-        raise _invalid(response, "Expected JSON, got an empty body")
+        raise _invalid(response, "Expected JSON, got no body")
+    # Raised outside the ``except`` so the decode error (whose ``doc`` /
+    # ``object`` hold the whole body) is not kept on ``__context__``.
+    body: Any = _MISSING
     try:
         body = response.json()
-    except ValueError:
+    except ValueError:  # JSONDecodeError and UnicodeDecodeError
+        pass
+    if body is _MISSING:
         raise _invalid(
             response,
             f"Expected JSON, got {_media_type(response)} that does not parse as JSON "
             f"({len(response.content)} bytes)",
             excerpt=True,
-        ) from None
+        )
     if not isinstance(body, dict):
         raise _invalid(response, f"Expected a JSON object, got {_json_kind(body)}", body=body)
-    if body.get("success") is False and not cast.success_false_ok:
+    if body.get("success") is False and not cast._success_false_ok:
         if _has_error_envelope(body):
             raise error_from_response(response.status_code, body)
         raise _invalid(response, "Response reported success: false without an error", body=body)
