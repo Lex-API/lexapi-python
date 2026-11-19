@@ -24,6 +24,7 @@ Two distinct "timeout" errors exist by design:
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from lexapi.models import InForceLookup, SnapshotCandidate
@@ -395,6 +396,8 @@ class CreditsExhaustedError(LexAPIError):
         value = self.details.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
         return int(value)
 
     @property
@@ -460,6 +463,8 @@ class NationalAllowanceExhaustedError(LexAPIError):
             return None
         value = self.details.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if isinstance(value, float) and not math.isfinite(value):
             return None
         return int(value)
 
@@ -650,6 +655,8 @@ class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
         """The server-side budget that expired, in milliseconds."""
         value = _field(self, "timeoutMs")
         if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if isinstance(value, float) and not math.isfinite(value):
             return None
         return int(value)
 

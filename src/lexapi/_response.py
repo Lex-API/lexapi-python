@@ -26,6 +26,7 @@ figures still show the pre-refund pool and the next call reflects it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -35,6 +36,8 @@ import httpx
 
 def _opt_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     return int(value)
 

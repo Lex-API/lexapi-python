@@ -155,6 +155,9 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   accept an integer, or a float with an integral value; a non-integral or
   non-finite number (`2.9`, `1e999`) is now `None`. Before, `2.9` was read
   as `2` and `1e999` raised `OverflowError`.
+- A non-finite number (`1e999`) in the `credits` / `usage` / `subscription`
+  blocks, in the 402 figures or in `TimeoutError.timeout_ms` now reads as
+  `None` instead of raising `OverflowError`; other values read as before.
 - `InvalidResponseError` no longer quotes the response body in its message;
   the excerpt is on `body_excerpt`.
 - The excerpt is decoded as UTF-8 with replacement whatever charset the
