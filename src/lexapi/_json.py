@@ -26,11 +26,14 @@ MAX_DEPTH = 512
 
 GUARDED = sys.version_info < (3, 12)
 
-#: Recursion levels kept free for the parser's own calls.
-_RESERVED = 20
+#: Recursion levels kept free below the limit for the parser's own calls.
+RESERVED = 5
 
-_NOT_BRACKETS = bytes(c for c in range(256) if c not in b"[]{}")
-_STEPS = bytearray(range(256))
+#: Bytes of bracket-and-quote text handled per step of the depth scan.
+_CHUNK = 1 << 16
+
+_NOT_KEPT = bytes(c for c in range(256) if c not in b'[]{}"')
+_STEPS = bytearray(256)
 _STEPS[ord("[")] = _STEPS[ord("{")] = 1
 _STEPS[ord("]")] = _STEPS[ord("}")] = 255  # -1 as a signed byte
 _STEP_TABLE = bytes(_STEPS)
@@ -42,14 +45,26 @@ def nesting_depth(data: bytes) -> int:
     """The deepest nesting of arrays and objects in a JSON text, ignoring
     brackets inside strings (an unterminated string runs to the end).
 
-    Linear: escaped backslashes, then escaped quotes, are removed, so every
-    quote left opens or closes a string; the text outside strings is every
-    other piece between quotes.
+    Linear in time, and in memory a small multiple of the text: escaped
+    backslashes, then escaped quotes, are removed, so every quote left opens
+    or closes a string; only quotes and brackets are kept; the rest is read
+    in fixed-size chunks, where the text outside strings is every other
+    piece between quotes.
     """
-    unescaped = data.replace(b"\\\\", b"").replace(b'\\"', b"")
-    outside = b"".join(unescaped.split(b'"')[::2])
-    steps = outside.translate(None, _NOT_BRACKETS).translate(_STEP_TABLE)
-    return max(accumulate(memoryview(steps).cast("b")), default=0)
+    kept = data.replace(b"\\\\", b"").replace(b'\\"', b"").translate(None, _NOT_KEPT)
+    depth = peak = 0
+    inside = False
+    for start in range(0, len(kept), _CHUNK):
+        pieces = kept[start : start + _CHUNK].split(b'"')
+        outside = b"".join(pieces[1::2] if inside else pieces[0::2])
+        if len(pieces) % 2 == 0:  # an odd number of quotes in this chunk
+            inside = not inside
+        del pieces
+        steps = memoryview(outside.translate(_STEP_TABLE)).cast("b")
+        if len(steps):
+            peak = max(peak, max(accumulate(steps, initial=depth)))
+            depth += sum(steps)
+    return peak
 
 
 def _stack_depth() -> int:
@@ -64,11 +79,15 @@ def _stack_depth() -> int:
 def too_deep(text: Text) -> bool:
     """True when ``text`` must not be handed to the parser: it nests deeper
     than :data:`MAX_DEPTH`, or deeper than the recursion limit leaves room
-    for here (only checked where :data:`GUARDED`)."""
+    for here, less :data:`RESERVED` (only checked where :data:`GUARDED`).
+    A text without brackets is never refused."""
     if not GUARDED:
         return False
     data = text.encode("utf-8", "surrogatepass") if isinstance(text, str) else bytes(text)
-    room = min(MAX_DEPTH, sys.getrecursionlimit() - _stack_depth() - _RESERVED)
-    if data.count(b"[") + data.count(b"{") <= room:
+    brackets = data.count(b"[") + data.count(b"{")
+    if brackets == 0:
+        return False
+    room = min(MAX_DEPTH, sys.getrecursionlimit() - _stack_depth() - RESERVED)
+    if brackets <= room:
         return False
     return nesting_depth(data) > room

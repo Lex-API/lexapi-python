@@ -133,7 +133,8 @@ def _int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if abs(value) <= _MAX_SAFE_INTEGER else None
+        number: int = value
+        return number if abs(number) <= _MAX_SAFE_INTEGER else None
     # ``is_integer()`` is False for ``inf`` and ``nan``.
     if isinstance(value, float) and value.is_integer() and abs(value) <= _MAX_SAFE_INTEGER:
         return int(value)

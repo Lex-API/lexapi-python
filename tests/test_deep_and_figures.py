@@ -421,3 +421,134 @@ def test_a_response_body_is_parsed_once(monkeypatch):
         with pytest.raises(RateLimitedError):
             client.get_info()
     assert calls["n"] == 1
+
+
+# ── webhook body encoding ────────────────────────────────────────────────
+
+ENCODINGS = ["utf-16-le", "utf-16-be", "utf-16", "utf-32-le", "utf-32-be", "utf-32"]
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+@pytest.mark.parametrize("deep", [False, True])
+def test_a_webhook_body_that_is_not_utf8_is_not_json(encoding, deep):
+    text = '{"event": "webhook.test", "data": ' + ("[" * 5000 + "]" * 5000 if deep else "1") + "}"
+    body = text.encode(encoding)  # "utf-16" / "utf-32" add a byte order mark
+    with pytest.raises(WebhookSignatureError, match="not JSON"):
+        verify_webhook(body, compute_signature(body, "s"), "s", tolerance=None)
+
+
+def test_a_webhook_body_with_a_utf8_byte_order_mark_is_read():
+    body = b'\xef\xbb\xbf{"event": "webhook.test"}'
+    assert verify_webhook(body, compute_signature(body, "s"), "s", tolerance=None) == {
+        "event": "webhook.test"
+    }
+
+
+ENCODING_SCRIPT = textwrap.dedent(
+    """
+    import sys
+    from lexapi import WebhookSignatureError, compute_signature, verify_webhook
+
+    if int(sys.argv[1]):
+        sys.setrecursionlimit(int(sys.argv[1]))
+
+    def at(n, f):
+        return f() if n == 0 else at(n - 1, f)
+
+    text = '{"a": ' + "[" * 100_000 + "]" * 100_000 + "}"
+    for encoding in ("utf-16-le", "utf-16-be", "utf-16", "utf-32-le", "utf-32-be", "utf-32"):
+        body = text.encode(encoding)
+        signature = compute_signature(body, "s")
+        def check(body=body, signature=signature):
+            try:
+                verify_webhook(body, signature, "s", tolerance=None)
+            except WebhookSignatureError:
+                return "ok"
+        assert at(min(950, sys.getrecursionlimit() - 50), check) == "ok"
+    print("survived")
+    """
+)
+
+
+@pytest.mark.skipif(not GUARDED, reason="the parser has its own C-stack limit from 3.12")
+@pytest.mark.parametrize("recursion_limit", [0, 200_000])
+def test_deep_webhook_bodies_in_other_encodings_never_abort(recursion_limit):
+    run = subprocess.run(
+        [sys.executable, "-c", ENCODING_SCRIPT, str(recursion_limit)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert run.returncode == 0, (run.returncode, run.stderr[-1500:])
+    assert run.stdout.strip() == "survived"
+
+
+# ── the refusal boundary ─────────────────────────────────────────────────
+
+
+def _pinned(monkeypatch, limit, frames):
+    from lexapi import _json
+
+    monkeypatch.setattr(_json, "GUARDED", True)
+    monkeypatch.setattr(_json.sys, "getrecursionlimit", lambda: limit)
+    monkeypatch.setattr(_json, "_stack_depth", lambda: frames)
+    return _json
+
+
+@pytest.mark.parametrize("limit", [1000, 3000])
+@pytest.mark.parametrize("depth", [10, 300])
+def test_the_refusal_boundary_is_limit_minus_depth_minus_the_reserve(monkeypatch, limit, depth):
+    # Shallow brackets in front make the scan run (more brackets than room).
+    text = b"[]" * 600 + b"[" * depth + b"]" * depth
+    boundary = limit - depth - 5  # the reserve is 5
+    module = _pinned(monkeypatch, limit, boundary)
+    assert module.RESERVED == 5
+    assert module.too_deep(text) is False
+    module = _pinned(monkeypatch, limit, boundary + 1)
+    assert module.too_deep(text) is True
+
+
+def test_depth_512_is_parsed_and_513_refused(monkeypatch):
+    module = _pinned(monkeypatch, 100_000, 10)
+    for prefix in (b"", b"[]" * 600):  # with and without the scan
+        assert module.too_deep(prefix + b"[" * 512 + b"]" * 512) is False
+        assert module.too_deep(prefix + b"[" * 513 + b"]" * 513) is True
+
+
+@pytest.mark.parametrize("frames", [990, 1000, 5000])
+def test_a_text_without_brackets_is_never_refused(monkeypatch, frames):
+    module = _pinned(monkeypatch, 1000, frames)
+    for text in (b'"x"', b"123", b"", "true", b'"[" ' * 3):
+        if b"[" not in (text if isinstance(text, bytes) else text.encode()):
+            assert module.too_deep(text) is False
+
+
+def test_the_depth_scan_memory_stays_a_small_multiple_of_the_text():
+    import tracemalloc
+
+    from lexapi._json import nesting_depth
+
+    for data in (b'"' * 5_000_000, b'""' * 2_500_000, b'"[{x}]"' * 700_000):
+        tracemalloc.start()
+        nesting_depth(data)
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert peak <= 3 * len(data), (peak, len(data))
+
+
+def test_timeouts_accept_any_real_number():
+    import decimal
+    import fractions
+
+    from lexapi import LexAPI
+
+    for value, expected in [
+        (decimal.Decimal("2.5"), 2.5),
+        (fractions.Fraction(5, 2), 2.5),
+        (decimal.Decimal("Infinity"), 2_147_483.647),
+    ]:
+        client = LexAPI("k", base_url="http://127.0.0.1:9/api/v1", timeout=value)
+        assert client._http.timeout.read == expected
+        client.close()
+    with pytest.raises(ValueError):
+        LexAPI("k", base_url="http://127.0.0.1:9/api/v1", timeout=decimal.Decimal("NaN"))

@@ -130,7 +130,13 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 - **Timeouts.** `timeout` and `connect_timeout` longer than the timers
   support (`inf` included) are clamped to 2**31 - 1 milliseconds (about 24.8
   days); `nan`, a negative value or a non-number raises `ValueError` when the
-  client is created (`None` still means no limit).
+  client is created (`None` still means no limit). Any real number is
+  accepted (`int`, `float`, `Decimal`, numpy numbers).
+- **Webhook bodies are strict UTF-8.** `verify_webhook` decodes the body as
+  UTF-8 (one leading byte order mark allowed) before parsing it, like every
+  response body; a body in another encoding (UTF-16, UTF-32) raises
+  `WebhookSignatureError` ("not JSON"). It used to be handed to the parser
+  as bytes, which guessed the encoding.
 - **Unusable figures read as absent.** An integer header (`RateLimit-*`,
   `X-National-*`, `X-Corpus-Version`, `X-Export-*`, the batch and post-filter
   counts) must be ASCII digits (leading zeros allowed) with a value up to
@@ -139,22 +145,25 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   finite floats still truncate. A float field must be a finite number; a
   `bool` case-law `score` is now `None` (it was `1.0` / `0.0`).
 - **Iterators raise when the server stops advancing.**
-  `citations.iter_cited_by` / `iter_cites`, `webhooks.iter_deliveries` and
-  `national.iter_documents` yield every page as it arrives. A walk ends at an
-  empty page; at a page shorter than the echoed `limit` (when that is a
-  positive integer; else than the requested page size); once the offset
-  reaches a usable `total` / `totalEdges`; or after a page whose `hasMore` is
-  not `true`, whose `nextCursor` is absent or empty, or whose list is empty.
-  It raises `InvalidResponseError` when the server hands back a cursor
-  already sent in the walk (or, when the walk would continue, one that is not
-  a string), or echoes an `offset` other than the one requested. On answers
-  without those position signals only, it also raises on the third page in a
-  row that repeats the page before (edge pages, compared as JSON values) or
-  brings no unseen delivery id. Pages already yielded stay valid; the page
-  that showed the stall is on `err.body`. A `page_size` (or national `limit`)
-  that is not a positive integer raises `ValueError` before any request. An
-  edge group whose `citationCount` is not a count advances by the length of
-  its edge list.
+  `citations.iter_cited_by` / `iter_cites` yield every document group,
+  `webhooks.iter_deliveries` every delivery and `national.iter_documents`
+  every page, as the pages arrive. Edge walks end at an empty page, at a page
+  shorter than the echoed `limit` (when that is a positive integer; else than
+  the requested page size) or once the offset reaches a usable `totalEdges`;
+  they raise `InvalidResponseError` when the server echoes an `offset` other
+  than the one requested, and, only on answers with neither a usable
+  `totalEdges` nor an echoed `offset`, on the third page in a row equal to the
+  page before (compared as JSON values). Delivery walks end at an empty page
+  or once the offset reaches a usable `total`; only without a usable `total`
+  (whatever else is echoed), they raise on the third page in a row that has
+  readable ids and none unseen. National walks end after a page whose
+  `hasMore` is not `true`, whose `nextCursor` is absent or empty, or whose
+  list is empty; they raise on a cursor already sent in the walk, or one that
+  is not a string while the walk would continue. Pages already yielded stay
+  valid; the page that showed the stall is on `err.body`. A `page_size` (or
+  national `limit`) that is not a positive integer raises `ValueError` before
+  any request. An edge group whose `citationCount` is not a count advances by
+  the length of its edge list.
 - A `2xx` answer that is not the documented shape now raises
   `InvalidResponseError`; before, it could be read as an empty result. To tell
   a malformed answer from an empty result, catch `InvalidResponseError`. This
@@ -206,7 +215,8 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   it was read in local time.
 - On Python older than 3.12, a response body, error body, export line or
   webhook body nested deeper than 512 levels, or deeper than the recursion
-  limit leaves room for where it is parsed, is refused before it is parsed
+  limit leaves room for where it is parsed (less a small reserve; a text
+  without brackets is never refused), is refused before it is parsed
   (not JSON: `InvalidResponseError`, an error without a body, an invalid
   export line, `WebhookSignatureError`). Such a body could abort the
   interpreter. Each response body is parsed at most once (the retry decision

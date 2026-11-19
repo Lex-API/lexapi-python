@@ -314,17 +314,28 @@ print(with_national.include_national)  # present once honoured; None while no ju
 national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
 ```
 
-**Page iterators** (`citations.iter_cited_by` / `iter_cites`,
-`webhooks.iter_deliveries`, `national.iter_documents`) yield every page as it
-arrives. A walk ends at an empty page; at a page shorter than the echoed
-`limit` (when that is a positive integer; else than the requested page size);
-once the offset reaches `total` / `total_edges`; or after a page without a
-next cursor. It raises `InvalidResponseError` when the server shows it is not
-advancing: it echoes another `offset` than the one asked for, or hands back a
-cursor already sent. Only on answers that carry neither a total nor an echoed
-`offset`, it also raises on the third page in a row that repeats the page
-before it (for deliveries: brings no delivery not seen yet). Everything yielded before stays
-valid; the page that showed the stall is not yielded and is on `err.body`.
+**Page iterators.** `citations.iter_cited_by` / `iter_cites` yield every
+document group, `webhooks.iter_deliveries` every delivery and
+`national.iter_documents` every page, as the pages arrive.
+
+- **Edge walks** (`iter_cited_by`, `iter_cites`) end at an empty page, at a
+  page shorter than the echoed `limit` (when that is a positive integer; else
+  than the requested `page_size`), or once the offset reaches `total_edges`.
+  They raise `InvalidResponseError` when the server echoes another `offset`
+  than the one asked for, and — only on answers that carry neither
+  `totalEdges` nor an echoed `offset` — on the third page in a row equal to
+  the page before.
+- **Deliveries** (`iter_deliveries`) end at an empty page or once the offset
+  reaches `total`. Only when the answer has no usable `total` (whatever else
+  it echoes), the walk raises on the third page in a row that brings no
+  delivery not seen yet.
+- **National documents** (`iter_documents`) end after a page without a next
+  cursor (or with `has_more` not true, or no results), and raise when the
+  server hands back a cursor already sent in the walk, or one that is not a
+  string while the walk would continue.
+
+Everything yielded before an error stays valid; the page that showed the
+stall is not yielded and is on `err.body`.
 
 Every edge says where it comes from (`provenance`) and how its target was
 identified (`resolution`, national edges only); every node carries `id`,

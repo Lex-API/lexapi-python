@@ -29,7 +29,8 @@ def usable_number(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if 0 <= value <= MAX_SAFE_INTEGER else None
+        number: int = value
+        return number if 0 <= number <= MAX_SAFE_INTEGER else None
     if isinstance(value, float) and value.is_integer() and 0 <= value <= MAX_SAFE_INTEGER:
         return int(value)
     return None
@@ -39,7 +40,8 @@ def check_page_size(name: str, value: Any) -> int:
     """A caller's page size: a positive integer, else :class:`ValueError`."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{name} must be a positive integer, got {value!r}")
-    return value
+    size: int = value
+    return size
 
 
 def stalled(body: Any, reason: str) -> InvalidResponseError:

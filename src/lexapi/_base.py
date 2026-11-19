@@ -7,8 +7,10 @@ differ in how they send the request and how they sleep.
 
 from __future__ import annotations
 
+import decimal
 import json
 import math
+import numbers
 import os
 from typing import Any, TypeVar
 
@@ -77,16 +79,17 @@ MAX_TIMEOUT_SECONDS = 2_147_483.647
 
 
 def _timeout_seconds(name: str, value: Any) -> float | None:
-    """A timeout in seconds: a number >= 0, or ``None`` for no limit (as
+    """A timeout in seconds: a real number >= 0 (``int``, ``float``,
+    ``Decimal``, numpy numbers, ...), or ``None`` for no limit (as
     httpx reads it). A longer one than the timers support (``inf``
     included) is clamped to :data:`MAX_TIMEOUT_SECONDS`; ``nan``, a negative
     value or a non-number is a ``ValueError``."""
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (numbers.Real, decimal.Decimal)):
         raise ValueError(f"{name} must be a number of seconds, got {value!r}")
     try:
-        seconds = float(value)
+        seconds = float(value)  # also a Decimal or a numpy number
     except OverflowError:  # an integer too large for a double
         seconds = math.inf
     if math.isnan(seconds) or seconds < 0:

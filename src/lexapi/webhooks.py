@@ -100,10 +100,13 @@ def verify_webhook(
         raise WebhookSignatureError("invalid webhook signature")
     body = _as_bytes(payload)
     try:
-        if too_deep(body):
+        # Strict UTF-8 (one leading byte order mark allowed), as for every
+        # response body: the parser never picks an encoding itself.
+        text = body.decode("utf-8-sig")
+        if too_deep(text):
             raise ValueError("nested too deeply")
-        event = json.loads(body)
-    except (ValueError, RecursionError) as exc:
+        event = json.loads(text)
+    except (ValueError, RecursionError) as exc:  # UnicodeDecodeError is a ValueError
         raise WebhookSignatureError("webhook body is not JSON") from exc
     if not isinstance(event, dict):
         raise WebhookSignatureError("webhook body is not a JSON object")
