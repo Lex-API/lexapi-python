@@ -18,7 +18,6 @@ import re
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
-from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal
 
 from lexapi._json import strict_loads, too_deep
@@ -153,11 +152,11 @@ _TIMESTAMP = re.compile(
 )
 
 
-def _signed_time(stamp: Any) -> Fraction | None:
-    """Microseconds since the epoch of a signed ``timestamp``, exactly (any
-    number of fraction digits), or ``None`` when it is not a string in the
-    required form or names a time that does not exist (years 0001–9999).
-    Exact arithmetic keeps the window edge free of float drift."""
+def _signed_time(stamp: Any) -> int | None:
+    """Whole microseconds since the epoch of a signed ``timestamp`` (fraction
+    digits beyond the sixth are ignored: truncated, not rounded), or ``None``
+    when it is not a string in the required form or names a time that does
+    not exist (years 0001–9999)."""
     if not isinstance(stamp, str):
         return None
     match = _TIMESTAMP.fullmatch(stamp)
@@ -174,18 +173,24 @@ def _signed_time(stamp: Any) -> Fraction | None:
     except ValueError:
         return None
     seconds = calendar.timegm(when.timetuple()) - offset_minutes * 60
-    sub = Fraction(int(fraction), 10 ** len(fraction)) if fraction else Fraction(0)
-    return seconds * 1_000_000 + sub * 1_000_000
+    micros = int((fraction or "")[:6].ljust(6, "0"))
+    return seconds * 1_000_000 + micros
 
 
-def _within(distance_us: Fraction, tolerance: float) -> bool:
+def _micros(seconds: float) -> int:
+    """Seconds to whole microseconds, rounded to the nearest (halves up)."""
+    return math.floor(seconds * 1_000_000 + 0.5)
+
+
+def _within(distance_us: int, tolerance: float) -> bool:
     """Whether a distance in microseconds is inside the window (the edge
-    included). An infinite window holds everything, a negative one nothing."""
+    included); the window is rounded to the nearest microsecond. An
+    infinite window holds everything, a negative one nothing."""
     if tolerance < 0:
         return False
     if math.isinf(tolerance):
         return True
-    return distance_us <= round(tolerance * 1_000_000)
+    return distance_us <= _micros(tolerance)
 
 
 def verify_webhook(
@@ -242,7 +247,7 @@ def verify_webhook(
             raise WebhookSignatureError(
                 f"unparseable webhook timestamp {stamp!r}", "stale_timestamp"
             )
-        current = round((time.time() if now is None else now) * 1_000_000)
+        current = _micros(time.time() if now is None else now)
         if not _within(abs(current - sent), tolerance):
             raise WebhookSignatureError(
                 f"webhook timestamp {stamp} is outside the {tolerance:g}s tolerance",

@@ -134,8 +134,9 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   but not a JSON object is `malformed_body`. The signed `timestamp` must be
   `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by `Z` or `±HH:MM` (the same on
   every Python version) and name a real date and time in years 0001–9999;
-  the distance to now is computed exactly (no float drift) and the window's
-  edge is included.
+  the timestamp is read to the microsecond (fraction digits beyond the
+  sixth are ignored), `now` and the window are rounded to the nearest
+  microsecond, and the window's edge is included.
   `tolerance=nan` raises `ValueError`.
 - **Quota 429s.** A 429 with the code `QUOTA_EXHAUSTED` (top-level, or
   `error.code` on the typed envelope) is a `RateLimitedError` with

@@ -768,7 +768,7 @@ def test_the_edge_holds_without_float_drift():
 
 
 @pytest.mark.parametrize("millis, tol_ms", [(2, 2), (3, 5), (5, 2)])
-def test_the_edge_matches_exact_arithmetic(millis, tol_ms):
+def test_the_edge_holds_in_integer_microseconds(millis, tol_ms):
     import json
 
     stamp = f"2026-11-19T10:00:00.{millis:03d}Z"
@@ -778,17 +778,45 @@ def test_the_edge_matches_exact_arithmetic(millis, tol_ms):
     verify_webhook(body, sig, "s", tolerance=tol_ms / 1000, now=now)
 
 
-def test_fraction_digits_beyond_microseconds_count():
+@pytest.mark.parametrize(
+    "stamp, ok",
+    [
+        # now = 10:05:00 with a 300 s window: the edges are 10:00:00 and 10:10:00
+        ("2026-11-19T10:00:00Z", True),  # exactly the window, in the past
+        ("2026-11-19T09:59:59.999999Z", False),  # 1 µs past the edge
+        ("2026-11-19T09:59:59.9999999Z", False),  # digits after the sixth ignored
+        ("2026-11-19T10:10:00Z", True),  # exactly the window, in the future
+        ("2026-11-19T10:10:00.000001Z", False),  # 1 µs past the edge
+        ("2026-11-19T10:10:00.0000009Z", True),  # truncated, not rounded
+        ("2026-11-19T10:10:00.000000999Z", True),
+    ],
+)
+def test_the_timestamp_is_read_to_the_microsecond(stamp, ok):
     import json
 
-    # 0.9 µs past the edge fails; exactly the edge passes.
-    for stamp, ok in (
-        ("2026-11-19T10:05:00.0000009Z", False),
-        ("2026-11-19T10:05:00.000000000Z", True),
-    ):
-        body = json.dumps({"timestamp": stamp}).encode()
-        sig = compute_signature(body, "s")
-        if ok:
-            verify_webhook(body, sig, "s", tolerance=300, now=NOW)
-        else:
-            assert _reason(body, sig, tolerance=300) == "stale_timestamp"
+    body = json.dumps({"timestamp": stamp}).encode()
+    sig = compute_signature(body, "s")
+    now = NOW + 300  # 10:05:00
+    if ok:
+        verify_webhook(body, sig, "s", tolerance=300, now=now)
+    else:
+        assert _reason(body, sig, tolerance=300, now=now) == "stale_timestamp"
+
+
+@pytest.mark.parametrize(
+    "now_offset, tolerance, ok",
+    [
+        (0.000001, 0.0000005, True),  # now 1 µs after; the window rounds up to 1 µs
+        (0.000001, 0.0000004, False),  # the window rounds down to 0 µs
+        (0.000001, 0.000001, True),
+        (0.000002, 0.000001, False),
+        (-0.000001, 0.000001, True),  # the other side of now
+        (-0.000002, 0.000001, False),
+    ],
+)
+def test_now_and_the_window_round_to_the_nearest_microsecond(now_offset, tolerance, ok):
+    # BODY is signed at exactly NOW (10:00:00Z).
+    if ok:
+        verify_webhook(BODY, SIG, "s", tolerance=tolerance, now=NOW + now_offset)
+    else:
+        assert _reason(BODY, SIG, tolerance=tolerance, now=NOW + now_offset) == "stale_timestamp"
