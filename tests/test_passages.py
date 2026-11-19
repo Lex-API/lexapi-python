@@ -1712,3 +1712,115 @@ def test_no_dependency_was_added():
     ]
     assert 'requires-python = ">=3.9"' in text
     assert "langchain" not in text.lower() and "llama" not in text.lower()
+
+
+# ── blank text is no text ───────────────────────────────────────────────
+
+BLANKS = ["", "   ", "\n\t ", " 　", "​", "﻿‍⁠", " ‌ ­ "]
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+def test_blank_legislation_text_is_absent(blank):
+    hit = without_as_of(hit_as_published())
+    hit["text"] = blank
+    (p,) = passages.from_legislation_search(leg(hit, as_of=None)).passages
+    assert p.text is None
+    assert p.text_status == "absent"
+    assert p.has_text is False
+    assert p.content() == "[No text returned for CELEX 32099R0002 art_5.]"
+    assert p.metadata()["text_status"] == "absent"
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+def test_blank_text_of_a_resolved_hit_is_absent(blank):
+    hit = hit_as_published()
+    hit["text"] = blank
+    (p,) = passages.from_legislation_search(leg(hit), as_of="2099-06-01").passages
+    assert (p.text, p.text_status, p.has_text) == (None, "absent", False)
+    assert p.as_of_resolved is True
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+def test_blank_text_of_an_unresolved_hit_is_treated_as_a_missing_text(blank):
+    hit = hit_unresolved()
+    hit["text"] = blank
+    withheld = passages.from_legislation_search(leg(hit)).passages[0]
+    assert (withheld.text, withheld.text_status, withheld.has_text) == (None, "withheld", False)
+    kept = passages.from_legislation_search(leg(hit), unresolved="keep_labelled").passages[0]
+    assert (kept.text, kept.has_text) == (None, False)
+    assert kept.text_status == "not_established_for_date"
+    assert kept.content() == "[No text returned for CELEX 32099L0003 art_12.]"
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+def test_blank_case_law_text_is_absent(blank):
+    hit = dict(CASE_HIT, text=blank)
+    (p,) = passages.from_case_law_search(SemanticSearchResponse(case_body(hit))).passages
+    assert (p.text, p.text_status, p.has_text) == (None, "absent", False)
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+def test_blank_article_of_a_document_is_absent(blank):
+    body = document_body(
+        content={
+            "articles": [
+                {"id": "art_1", "number": "Article 1", "content": blank},
+                {"id": "art_2", "number": "Article 2", "content": SYN + "article two"},
+            ]
+        }
+    )
+    first, second = passages.from_document(DocumentResponse(body)).passages
+    assert (first.text, first.text_status, first.has_text) == (None, "absent", False)
+    assert (second.text_status, second.has_text) == ("provided", True)
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+def test_blank_full_text_of_a_document_gives_no_passage(blank):
+    body = document_body(celex="62099CJ9901", content={"fullText": blank})
+    assert passages.from_document(DocumentResponse(body)).passages == ()
+
+
+@pytest.mark.parametrize("blank", BLANKS)
+def test_blank_provision_text_of_an_as_of_answer_is_absent(blank):
+    body = as_of_body(provision={"id": "art_17", "number": "Article 17", "text": blank})
+    (p,) = passages.from_legislation_as_of(LegislationAsOfResponse(body)).passages
+    assert (p.text, p.text_status, p.has_text) == (None, "absent", False)
+
+
+@pytest.mark.parametrize("text", ["a", " x ", "​x", "§ 1"])
+def test_text_with_a_visible_character_is_provided_unchanged(text):
+    hit = without_as_of(hit_as_published())
+    hit["text"] = text
+    (p,) = passages.from_legislation_search(leg(hit, as_of=None)).passages
+    assert (p.text, p.text_status, p.has_text) == (text, "provided", True)
+
+
+def _format_code_points():
+    import unicodedata
+
+    return [chr(c) for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == "Cf"]
+
+
+def test_every_format_character_of_this_python_is_blank():
+    from lexapi.passages import _present
+
+    chars = _format_code_points()
+    assert chars  # the running Python knows Cf characters
+    for ch in chars:
+        assert _present(ch) is None, f"U+{ord(ch):04X}"
+        assert _present(" " + ch + "\n") is None, f"U+{ord(ch):04X}"
+    assert _present("".join(chars)) is None
+
+
+def test_tag_characters_are_blank():
+    from lexapi.passages import _present
+
+    for code in range(0xE0020, 0xE0080):
+        assert _present(chr(code)) is None, f"U+{code:04X}"
+    assert _present(chr(0xE0001)) is None
+
+
+def test_hand_built_passages_are_not_normalised():
+    for blank in ("", "  ", "\u200b"):
+        p = Passage(kind="legislation", celex="32099R0002", text=blank, text_status="provided")
+        assert (p.text, p.text_status, p.has_text, p.content()) == (blank, "provided", True, blank)

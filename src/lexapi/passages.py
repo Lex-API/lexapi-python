@@ -19,6 +19,14 @@ The rules it applies:
   ``consolidated=True`` and, when the API names it, ``base_celex``: the act
   as published in the Official Journal, which is the one to cite.
 - **Nothing is guessed.** A field the API did not send is ``None``.
+- **Blank text is no text.** In every converter, a text that is empty or
+  holds only whitespace or invisible format characters (such as a zero-width
+  space) is treated as a text the API did not send: ``text`` is ``None``, ``has_text`` is
+  ``False`` and ``text_status`` is ``"absent"`` (or the date status, as for
+  a missing text, on a hit not established for ``as_of``).
+- **EU responses only.** The converters take the EU search, document and
+  ``legislation_as_of`` responses named below. National responses
+  (``client.national.*``) have a different shape and are not supported.
 
 Example::
 
@@ -133,6 +141,16 @@ _CONSOLIDATED_CELEX = re.compile(r"^0\d{4}[A-Z]{1,2}\d{4}.*-\d{8}$")
 # Body keys that show a date was asked for.
 _AS_OF_KEYS = ("asOf", "asOfResolved", "asOfReason")
 
+# A text that is empty or holds only whitespace and Unicode format
+# characters (general category Cf: zero-width space, joiners, byte order
+# mark, soft hyphen, directional marks, tags, ...).
+_BLANK = re.compile(
+    r"[\s\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u180e"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb"
+    r"\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3"
+    r"\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f]*"
+)
+
 # Fields of a passage that go into its metadata as they are.
 _METADATA_FIELDS = (
     "kind",
@@ -172,6 +190,11 @@ class Passage:
 
     Immutable. ``celex`` is always set; every other field is ``None`` when
     the API did not send it.
+
+    The converters never produce a blank ``text`` (see the module notes). A
+    passage built by hand is taken as given and not normalised: ``text``,
+    ``text_status``, :attr:`has_text` and :meth:`content` reflect exactly
+    what was passed.
 
     ``celex`` is the CELEX number of the document the text is from, which can
     be a consolidated text. :attr:`cite_celex` is the number to cite.
@@ -267,7 +290,7 @@ class Passage:
 
     @property
     def has_text(self) -> bool:
-        """``True`` when ``text`` holds a text."""
+        """``True`` when ``text`` holds a text (``text is not None``)."""
         return self.text is not None
 
     @property
@@ -397,7 +420,9 @@ def from_legislation_search(
 
     A date counts as asked when ``as_of`` is given here, or the response or
     the hit carries any of ``asOf``, ``asOfResolved`` or ``asOfReason``.
-    Pass the ``as_of`` you sent to have every hit checked against it: a hit
+    Pass the ``as_of`` you sent (a ``date`` or a ``YYYY-MM-DD`` string; a
+    ``datetime`` is cut to its own calendar date, not converted to UTC) to
+    have every hit checked against it: a hit
     that does not echo that date as resolved is treated as unresolved. Search
     with ``include_text=True`` to get full texts.
     """
@@ -468,7 +493,7 @@ def from_document(response: DocumentResponse) -> PassageResult:
     if content is not None:
         if content.articles:
             out.extend(_document_passage(document, article) for article in content.articles)
-        elif content.full_text is not None:
+        elif _present(content.full_text) is not None:
             out.append(_document_passage(document, None))
     return PassageResult(passages=tuple(out), **_credits(response))
 
@@ -502,7 +527,7 @@ def from_legislation_as_of(
         return PassageResult(passages=(), as_of=as_of, dropped=1, **credits)
     version = response.as_of_version
     answered = response.provision if resolved else None
-    text = answered.text if answered is not None else None
+    text = _present(answered.text) if answered is not None else None
     celex = version.celex if resolved and version is not None and version.celex else document
     consolidated = response.consolidated or _is_consolidated_celex(celex)
     status: TextStatus = "withheld" if not resolved else ("absent" if text is None else "provided")
@@ -628,6 +653,13 @@ def format_passage(passage: Passage) -> str:
 # ── internals ───────────────────────────────────────────────────────────
 
 
+def _present(text: str | None) -> str | None:
+    """``text``, or ``None`` when it is ``None`` or blank (see ``_BLANK``)."""
+    if text is None or _BLANK.fullmatch(text):
+        return None
+    return text
+
+
 def _check_policy(unresolved: str) -> None:
     if unresolved not in _POLICIES:
         raise ValueError(f"unresolved must be one of {', '.join(_POLICIES)}; got {unresolved!r}")
@@ -709,7 +741,7 @@ def _legislation_hit(
     if not_established and policy == "drop":
         return None
 
-    text, snippet = hit.text, hit.snippet
+    text, snippet = _present(hit.text), hit.snippet
     status: TextStatus = "absent" if text is None else "provided"
     if not_established:
         if policy == "keep_labelled":
@@ -747,11 +779,12 @@ def _legislation_hit(
 
 
 def _case_law_hit(hit: SemanticCaseLawResult) -> Passage:
+    text = _present(hit.text)
     return Passage(
         kind="case_law",
         celex=hit.celex or "",
-        text=hit.text,
-        text_status="absent" if hit.text is None else "provided",
+        text=text,
+        text_status="absent" if text is None else "provided",
         snippet=hit.snippet,
         title=hit.case_name,
         language=hit.language,
@@ -769,7 +802,9 @@ def _case_law_hit(hit: SemanticCaseLawResult) -> Passage:
 def _document_passage(document: Document, article: Article | None) -> Passage:
     celex = document.celex or ""
     content = document.content
-    text = article.content if article is not None else (content.full_text if content else None)
+    text = _present(
+        article.content if article is not None else (content.full_text if content else None)
+    )
     html = document.urls.get("html")
     return Passage(
         kind="document_read",

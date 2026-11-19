@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
-from lexapi._payloads import drop_none, seg
+from lexapi._payloads import DateLike, drop_none, iso_date, seg
 from lexapi.models import (
     NationalCoverageResponse,
     NationalDocumentListResponse,
@@ -108,6 +108,7 @@ def _semantic_legislation_body(
     language: str | None,
     include_text: bool,
     filters: dict[str, Any] | None,
+    as_of: DateLike | None,
 ) -> dict[str, Any]:
     body = drop_none(
         {
@@ -116,6 +117,7 @@ def _semantic_legislation_body(
             "limit": limit,
             "language": language,
             "filters": filters,
+            "asOf": iso_date(as_of),
         }
     )
     if include_text:
@@ -300,15 +302,33 @@ class NationalResource:
         language: str | None = None,
         include_text: bool = False,
         filters: dict[str, Any] | None = None,
+        as_of: DateLike | None = None,
     ) -> NationalSemanticLegislationResponse:
         """``POST /{jurisdiction}/legislation/semantic`` — national
         legislation semantic search. ``filters`` honours ``id``/``law_id``,
         ``inForce``/``in_force``, ``documentType``/``law_type``,
-        ``language`` and ``jurisdiction``. No ``hyde``, no ``as_of`` — both
-        are EU-only. ``filters["jurisdiction"]`` must equal the path's
+        ``language`` and ``jurisdiction``. No ``hyde`` (EU case law only).
+        ``filters["jurisdiction"]`` must equal the path's
         jurisdiction when given (or be omitted). ``language`` (top-level or
         in ``filters``) must be one this jurisdiction is indexed in; any
         other value is a 400.
+
+        Args:
+            as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), sent as
+                ``asOf`` (API 2.29.0; 1800-01-01 to today UTC). Pass a
+                ``date`` or a ``YYYY-MM-DD`` string; a ``datetime`` is cut to
+                its own calendar date, not converted to UTC. Labels each
+                hit for that date (``as_of_resolved``, ``as_of_reason``,
+                ``as_of_version``). The search runs over today's texts only:
+                a provision repealed or replaced since the date cannot be
+                found, and the text is never swapped for an earlier one. A
+                hit is resolved only when the publisher's dates, as of
+                LexAPI's last recorded read of the act (``checked_at``), show
+                today's wording already applied on the date; an unresolved
+                hit keeps today's wording, which is not established as the
+                text for the date. LexAPI holds such dates for Austria and
+                Spain. ``in_force`` and the ``inForce`` filter are still
+                about today. An invalid date is a 400 (nothing charged).
 
         5 credits flat. Below BUSINESS, counts against the monthly
         national-call allowance. Raises
@@ -328,6 +348,7 @@ class NationalResource:
                 language=language,
                 include_text=include_text,
                 filters=filters,
+                as_of=as_of,
             ),
             cast=NationalSemanticLegislationResponse,
             read_only=True,
@@ -446,6 +467,7 @@ class AsyncNationalResource:
         language: str | None = None,
         include_text: bool = False,
         filters: dict[str, Any] | None = None,
+        as_of: DateLike | None = None,
     ) -> NationalSemanticLegislationResponse:
         """``POST /{jurisdiction}/legislation/semantic`` — see
         :meth:`NationalResource.legislation_semantic_search`."""
@@ -459,6 +481,7 @@ class AsyncNationalResource:
                 language=language,
                 include_text=include_text,
                 filters=filters,
+                as_of=as_of,
             ),
             cast=NationalSemanticLegislationResponse,
             read_only=True,

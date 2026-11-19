@@ -41,7 +41,8 @@ def seg(value: object) -> str:
 def iso_date(value: DateLike | None) -> str | None:
     """Normalise a date argument to ``YYYY-MM-DD`` (strings pass through as-is).
 
-    A :class:`datetime.datetime` is reduced to its date part; the server
+    A :class:`datetime.datetime` is cut to its own calendar date, not
+    converted to UTC; the server
     validates the string form and answers 400 on a malformed one.
     """
     if value is None:
@@ -171,12 +172,15 @@ def semantic_search_body(
     include_text: bool = False,
     filters: dict[str, Any] | None = None,
     as_of: DateLike | None = None,
+    in_force: bool | None = None,
 ) -> dict[str, Any]:
     """Body for the semantic endpoints.
 
     ``hyde`` is only sent when True (additive param — older API versions
     never see it); ``include_text=True`` maps to ``include: ["text"]``;
-    ``as_of`` (legislation only) is sent as ``asOf`` in ``YYYY-MM-DD`` form.
+    ``as_of`` (legislation only) is sent as ``asOf`` in ``YYYY-MM-DD`` form;
+    ``in_force`` (legislation only) is sent as the top-level ``inForce``
+    when not ``None``, ``False`` included.
     """
     body = drop_none(
         {
@@ -186,6 +190,7 @@ def semantic_search_body(
             "language": language,
             "filters": filters,
             "asOf": iso_date(as_of),
+            "inForce": in_force,
         }
     )
     if hyde:
