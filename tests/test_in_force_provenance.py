@@ -1,15 +1,21 @@
 """In-force labels (API 2.19.0), provenance (API 2.20.0) and the semantic
 result caps on /info (API 2.24.0) on the answers the SDK already models."""
 
+import asyncio
+import json
+
+import httpx
 import pytest
 
 from lexapi import (
+    AsyncLexAPI,
     Document,
     DocumentBatchResponse,
     DocumentMetadataResponse,
     DocumentResponse,
     FieldProvenance,
     InfoResponse,
+    LexAPI,
     Provenance,
     SemanticLegislationResponse,
     SemanticSearchResponse,
@@ -268,3 +274,76 @@ def test_info_caps_zero_and_absent():
     older = SubscriptionInfo.from_dict({"tier": "FREE"})
     assert older is not None
     assert (older.max_semantic_results, older.max_semantic_legislation_results) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (4, 4),
+        (4.0, 4),
+        (2.9, None),
+        (1e999, None),
+        (float("-inf"), None),
+        ("4", None),
+        (True, None),
+    ],
+)
+def test_document_version_integer_rule(raw, expected):
+    resp = DocumentResponse({"success": True, "document": {"celex": "32016R0679", "version": raw}})
+    assert resp.document.version == expected
+
+
+def test_field_provenance_editorial_enrichment_and_translation():
+    fp = FieldProvenance.from_dict(
+        {"editorial_enrichment": ["attribution"], "machine_generated_translation": ["title"]}
+    )
+    assert fp.editorial_enrichment == ["attribution"]
+    assert fp.machine_generated_translation == ["title"]
+    assert fp.official_source_text == []
+
+
+LOOPBACK = "http://127.0.0.1:9/api/v1"
+
+
+def _legislation_call(mode, **kwargs):
+    seen = []
+
+    def handler(request):
+        assert request.url.host == "127.0.0.1"
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json=legislation_body(inForceFilter={"removedNotInForce": 3, "removedUnknown": 0}),
+        )
+
+    transport = httpx.MockTransport(handler)
+    if mode == "sync":
+        with LexAPI("lex_test_key", base_url=LOOPBACK, max_retries=0, transport=transport) as c:
+            resp = c.semantic_legislation_search("erasure", **kwargs)
+    else:
+
+        async def run():
+            async with AsyncLexAPI(
+                "lex_test_key", base_url=LOOPBACK, max_retries=0, transport=transport
+            ) as c:
+                return await c.semantic_legislation_search("erasure", **kwargs)
+
+        resp = asyncio.run(run())
+    (request,) = seen
+    assert request.url.path == "/api/v1/legislation/semantic"
+    return resp, json.loads(request.content)
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("value", [True, False])
+def test_in_force_is_sent_top_level(mode, value):
+    resp, body = _legislation_call(mode, in_force=value, filters={"language": "en"})
+    assert body == {"query": "erasure", "filters": {"language": "en"}, "inForce": value}
+    assert resp.in_force_filter is not None
+    assert resp.in_force_filter.removed_not_in_force == 3
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_in_force_omitted_sends_nothing(mode):
+    _, body = _legislation_call(mode)
+    assert body == {"query": "erasure"}

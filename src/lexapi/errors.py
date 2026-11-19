@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from lexapi.models import InForceLookup, VersionCandidate
+from lexapi.models import InForceLookup, SnapshotCandidate
 
 #: Fallback mapping used when the body carries no typed ``error.code``
 #: (legacy bare ``{"error": "..."}`` shape, or non-JSON bodies). 520-524 are
@@ -219,9 +219,7 @@ class NotFoundError(LexAPIError):
     def reason(self) -> str | None:
         """``error.details.reason`` (``unknown_endpoint``, ``before_tracking``,
         ``boundary_unknown``, or a value added later); ``None`` when absent."""
-        if not isinstance(self.details, dict):
-            return None
-        value = self.details.get("reason")
+        value = self._detail("reason")
         return value if isinstance(value, str) else None
 
     @property
@@ -248,7 +246,7 @@ class NotFoundError(LexAPIError):
     def tracked_since(self) -> str | None:
         """``details.trackedSince``: when the document entered the corpus
         (``before_tracking``)."""
-        value = self.details.get("trackedSince") if isinstance(self.details, dict) else None
+        value = self._detail("trackedSince")
         return value if isinstance(value, str) else None
 
     @property
@@ -259,21 +257,34 @@ class NotFoundError(LexAPIError):
         return InForceLookup.parse(self.details)
 
     @property
-    def candidates(self) -> list[VersionCandidate]:
+    def candidates(self) -> list[SnapshotCandidate]:
         """``details.candidates`` (``boundary_unknown``): the versions the date
         could fall in, at most 10 (see :attr:`candidates_truncated`); can be
-        empty. ``[]`` when absent."""
-        value = self.details.get("candidates") if isinstance(self.details, dict) else None
-        if not isinstance(value, list):
-            return []
-        return [VersionCandidate.from_dict(item) for item in value if isinstance(item, dict)]
+        empty. Only objects with an integer ``version`` are kept. ``[]`` when
+        absent."""
+        return self._candidates()[:_MAX_CANDIDATES]
 
     @property
     def candidates_truncated(self) -> bool:
-        """True when there were more than the :attr:`candidates` listed."""
-        if not isinstance(self.details, dict):
-            return False
-        return self.details.get("candidatesTruncated") is True
+        """True when ``details.candidatesTruncated`` is ``true``, or when more
+        than 10 candidates were sent: there are more than those listed."""
+        return (
+            self._detail("candidatesTruncated") is True or len(self._candidates()) > _MAX_CANDIDATES
+        )
+
+    def _detail(self, key: str) -> Any:
+        return self.details.get(key) if isinstance(self.details, dict) else None
+
+    def _candidates(self) -> list[SnapshotCandidate]:
+        value = self._detail("candidates")
+        if not isinstance(value, list):
+            return []
+        parsed = (SnapshotCandidate.parse(item) for item in value)
+        return [item for item in parsed if item is not None]
+
+
+#: The most candidates ``NotFoundError.candidates`` returns.
+_MAX_CANDIDATES = 10
 
 
 def _usage_resets_at(body: Any) -> str | None:

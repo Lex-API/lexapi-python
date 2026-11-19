@@ -134,6 +134,10 @@ for hit in laws.results:
     if hit.consolidated:  # merged hit: consolidated text + the authentic act's own match
         print("  consolidated as of", hit.consolidated_as_of, "— cite", hit.base_celex)
         print("  ", hit.consolidated_note)
+
+# Only acts known to be in force today (sent as the top-level inForce)
+current = client.semantic_legislation_search("right to be forgotten", in_force=True)
+print(current.in_force_filter.removed_not_in_force, current.in_force_filter.removed_unknown)
 ```
 
 | Field (documents and legislation hits) | Meaning |
@@ -142,7 +146,7 @@ for hit in laws.results:
 | `provenance` (`Provenance`) | `publisher`, `source_url`, `source_identifier`, `retrieved_at`, `content_hash`, `version_identifier`, `language`, `licence`; `None` values are not known. On search hits `retrieved_at` and `content_hash` are `None` (API 2.20.0) |
 | `field_provenance` (`FieldProvenance`) | Which fields are the publisher's text (`official_source_text`) and which were derived (API 2.20.0) |
 | `Document.version` | LexAPI's snapshot number of the text |
-| `SemanticLegislationResponse.in_force_filter` | With `filters={"inForce": True}`: `removed_not_in_force`, `removed_unknown` |
+| `SemanticLegislationResponse.in_force_filter` | With `semantic_legislation_search(..., in_force=True)` (sent as the top-level `inForce`, not in `filters`): `removed_not_in_force`, `removed_unknown` |
 | `get_info().subscription_info.max_semantic_results` / `.max_semantic_legislation_results` | The most results one semantic search returns on your plan (API 2.24.0) |
 
 #### The text in force on a date (`as_of`)
@@ -151,7 +155,7 @@ for hit in laws.results:
 import datetime
 
 laws = client.semantic_legislation_search("own funds requirements", as_of="2019-06-01")
-# as_of also accepts a datetime.date
+# pass a date or a YYYY-MM-DD string; a datetime is cut to its own calendar date, not converted to UTC
 print(laws.as_of, laws.as_of_summary.live_fetches, laws.as_of_summary.unresolved)
 for hit in laws.results:
     if hit.as_of_resolved:
@@ -170,7 +174,8 @@ is fetched live (at most 3 per request by default) and settles at 4 (Cellar),
 5 (browser), 1 (no text) or 0 (failed / timed out). A fetch the pool can't
 cover is skipped (`as_of_reason == "insufficient_credits"`) — only the search
 itself can raise `CreditsExhaustedError`. An invalid date is a 400
-(`InvalidParamsError`, refunded).
+(`InvalidParamsError`, refunded). Pass a `date` or a `YYYY-MM-DD` string; a
+`datetime` is cut to its own calendar date, not converted to UTC.
 
 #### One act on a date (`legislation_as_of`)
 
@@ -475,7 +480,7 @@ from lexapi import NationalAsOfVersion
 hits = client.national.legislation_semantic_search(
     "AT",
     "Recht auf Auskunft über eigene Daten",
-    as_of="2020-06-01",  # or a datetime.date
+    as_of="2020-06-01",  # or a date; a datetime is cut to its own calendar date (no UTC conversion)
 )
 print(hits.as_of, hits.as_of_summary.unresolved)
 for hit in hits.results:
@@ -706,7 +711,7 @@ except NotFoundError as err:
 | `VersionEntry.fetched_at` | When the version's text arrived at LexAPI; for a version without `observed_from` (possible for snapshots stored before API 2.28.0) the last fetch of its text, which is not when the version began |
 | `VersionEntry.observed_until` | `get_document_at_date` only: when the next version's text arrived; `None` for the current version |
 | `kind`, `date_in_future`, `in_force_lookup` | `get_document_at_date` only: always `"observation_snapshot"`; True for a date after today (UTC), answered with the current version; a pointer to `legislation_as_of` for an EU act it resolves |
-| `NotFoundError.reason` | `"before_tracking"` (`.before_tracking`, `.tracked_since`, `.in_force_lookup`) or `"boundary_unknown"` (`.boundary_unknown`, `.candidates` of `VersionCandidate`: `version`, `fetched_at`, `observed_from`; at most 10, `.candidates_truncated` beyond; can be empty) |
+| `NotFoundError.reason` | `"before_tracking"` (`.before_tracking`, `.tracked_since`, `.in_force_lookup`) or `"boundary_unknown"` (`.boundary_unknown`, `.candidates` of `SnapshotCandidate`: `version`, `fetched_at`, `observed_from`; at most 10, `.candidates_truncated` beyond; can be empty) |
 
 `get_document_at_date` returns the snapshot LexAPI held at the end of that day
 (UTC) — LexAPI's fetch history, not the law in force on the date. Each call

@@ -17,7 +17,7 @@ from lexapi import (
     LexAPI,
     NotFoundError,
     Provenance,
-    VersionCandidate,
+    SnapshotCandidate,
     VersionEntry,
 )
 
@@ -316,7 +316,7 @@ def test_boundary_unknown(mode):
     assert err.tracked_since is None
     assert err.in_force_lookup is None
     first, second = err.candidates  # the non-object entry is skipped
-    assert first == VersionCandidate(
+    assert first == SnapshotCandidate(
         version=1,
         fetched_at="2026-05-02T10:00:00.000Z",
         observed_from=None,
@@ -353,6 +353,21 @@ def test_not_found_without_details_has_no_reason():
         ["reason", "before_tracking"],
         "before_tracking",
         {"reason": 1, "trackedSince": 2, "candidates": "x", "candidatesTruncated": "true"},
+        {"candidates": {"version": 1}, "candidatesTruncated": 1},
+        {
+            "inForceLookup": "POST /api/v1/legislation/as-of",
+            "candidates": [
+                {"version": float("inf")},
+                {"version": float("nan")},
+                {"version": 1e999},
+                {"version": 2.9},
+                {"version": "3"},
+                {"version": True},
+                {"version": None},
+                {},
+                5,
+            ],
+        },
     ],
 )
 def test_malformed_details_never_raise(details):
@@ -381,3 +396,52 @@ def test_not_found_details_survive_pickle():
     again = pickle.loads(pickle.dumps(err))
     assert again.boundary_unknown is True
     assert [c.version for c in again.candidates] == [1, 2]
+
+
+def test_candidate_version_rule_and_string_fields():
+    err = NotFoundError(
+        "x",
+        details={
+            "reason": "boundary_unknown",
+            "candidates": [
+                {"version": 4.0, "fetchedAt": 7, "observedFrom": ["x"]},
+                {"version": 5, "fetchedAt": "2026-05-02T10:00:00.000Z"},
+            ],
+        },
+    )
+    first, second = err.candidates
+    assert (first.version, first.fetched_at, first.observed_from) == (4, None, None)
+    assert type(first.version) is int
+    assert (second.version, second.fetched_at) == (5, "2026-05-02T10:00:00.000Z")
+
+
+def test_at_most_ten_candidates_and_truncation():
+    items = [{"version": n} for n in range(1, 13)]
+    err = NotFoundError("x", details={"reason": "boundary_unknown", "candidates": items})
+    assert [c.version for c in err.candidates] == list(range(1, 11))
+    assert err.candidates_truncated is True  # more than 10 were kept
+    ten = NotFoundError("x", details={"candidates": items[:10]})
+    assert len(ten.candidates) == 10 and ten.candidates_truncated is False
+    # Items dropped by the version rule do not count towards the cut.
+    mixed = NotFoundError("x", details={"candidates": [{"version": 2.5}] * 5 + items[:10]})
+    assert len(mixed.candidates) == 10 and mixed.candidates_truncated is False
+    flagged = NotFoundError("x", details={"candidates": items[:2], "candidatesTruncated": True})
+    assert flagged.candidates_truncated is True
+
+
+def test_in_force_lookup_fields_are_strings_or_none():
+    err = NotFoundError("x", details={"inForceLookup": {"method": 1, "path": None}})
+    assert err.in_force_lookup is not None
+    assert (err.in_force_lookup.method, err.in_force_lookup.path) == (None, None)
+
+
+@pytest.mark.parametrize("value", [True, "true", 1, None, False])
+def test_date_in_future_only_for_literal_true(value):
+    body = dict(AT_DATE_BODY, dateInFuture=value)
+    assert DocumentVersionResponse(body).date_in_future is (value is True)
+
+
+def test_version_numbers_follow_the_integer_rule():
+    for raw, expected in [(3, 3), (3.0, 3), (2.9, None), (1e999, None), (float("nan"), None)]:
+        entry = VersionEntry.from_dict({"version": raw})
+        assert entry.version == expected

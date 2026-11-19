@@ -103,6 +103,11 @@ NationalAsOfReason = Literal[
 #: Every documented national ``asOfReason`` value.
 NATIONAL_AS_OF_REASONS: tuple[str, ...] = NationalAsOfReason.__args__  # type: ignore[attr-defined]
 
+#: ``notInForceReason`` values (``Document.not_in_force_reason``,
+#: ``SemanticLegislationResult.not_in_force_reason``), copied from
+#: openapi.yaml. The attributes are typed ``str`` for forward compatibility.
+NotInForceReason = Literal["no_longer_in_force", "not_yet_in_force"]
+
 #: ``textAvailability.reason`` values, copied from openapi.yaml.
 TextUnavailableReason = Literal[
     "not_in_language",
@@ -118,11 +123,21 @@ def _s(data: dict[str, Any], key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _i(data: dict[str, Any], key: str) -> int | None:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+def _int(value: Any) -> int | None:
+    """An ``int`` (not a ``bool``), or a finite float with an integral value
+    (``3.0``); anything else (``2.9``, ``inf``, ``nan``, strings) is ``None``."""
+    if isinstance(value, bool):
         return None
-    return int(value)
+    if isinstance(value, int):
+        return value
+    # ``is_integer()`` is False for ``inf`` and ``nan``.
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def _i(data: dict[str, Any], key: str) -> int | None:
+    return _int(data.get(key))
 
 
 def _b(data: dict[str, Any], key: str) -> bool | None:
@@ -2523,13 +2538,19 @@ class AsOfVersion:
 class NationalAsOfVersion(AsOfVersion):
     """``asOfVersion`` on a resolved national legislation hit
     (``kind == "current_unit"``, API 2.29.0): the publisher's dates for the
-    unit's current wording. A field is ``None`` when not known.
+    unit's current wording.
 
-    - ``valid_from`` / ``valid_to`` (``YYYY-MM-DD``): the publisher's dates
-      for today's wording; ``valid_to`` is ``None`` when open.
-    - ``source_id``: the publisher's id of the provision.
-    - ``checked_at`` (``YYYY-MM-DD``): the day of the last read of the act
-      that LexAPI recorded. LexAPI may have checked the act since without
+    - ``valid_from`` (``YYYY-MM-DD``): the publisher's start date of today's
+      wording, on or before ``as_of``. Always set on a ``current_unit``
+      version; the attribute is optional only because of the dataclass
+      layout.
+    - ``valid_to`` (``YYYY-MM-DD``): its last day in force; ``None`` when
+      open.
+    - ``source_id``: the publisher's id of the provision; ``None`` when not
+      known.
+    - ``checked_at``: here a day (``YYYY-MM-DD``), not a timestamp as on the
+      EU version: the day of the last read of the act that LexAPI recorded
+      (``None`` when not known). LexAPI may have checked the act since without
       finding a change. Dates and wording are as of that read; a change the
       publisher made after it is not reflected.
 
@@ -2597,8 +2618,8 @@ class AsOfSummary:
 @dataclass(frozen=True)
 class InForceFilter:
     """``inForceFilter`` on a legislation search sent with
-    ``filters={"inForce": True}`` (API 2.19.0): the hits the filter removed
-    that would otherwise have been seen."""
+    ``in_force=True`` (API 2.19.0): the hits the filter removed that would
+    otherwise have been seen."""
 
     #: Removed because their act is not in force today.
     removed_not_in_force: int | None
@@ -2824,7 +2845,7 @@ class SemanticLegislationResponse(_SemanticResponseBase):
 
     @property
     def in_force_filter(self) -> InForceFilter | None:
-        """Set when the request filtered on ``inForce: true`` (API 2.19.0)."""
+        """Set when the search was sent with ``in_force=True`` (API 2.19.0)."""
         value = _opt_dict(self._map, "inForceFilter")
         return InForceFilter.from_dict(value) if value is not None else None
 
@@ -3082,22 +3103,29 @@ class VersionEntry:
 
 
 @dataclass(frozen=True)
-class VersionCandidate:
+class SnapshotCandidate:
     """A version a date could fall in, on the ``boundary_unknown`` 404 of
     :meth:`~lexapi.LexAPI.get_document_at_date`
     (:attr:`~lexapi.NotFoundError.candidates`). Read it with
     :meth:`~lexapi.LexAPI.get_document_version`. ``fetched_at`` can be the
     last fetch of the version's text, later than the date asked."""
 
-    version: int | None
+    version: int
     fetched_at: str | None
     observed_from: str | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> VersionCandidate:
+    def parse(cls, data: Any) -> SnapshotCandidate | None:
+        """``None`` unless ``data`` is an object whose ``version`` is an
+        integer (an ``int``, or a finite float with an integral value)."""
+        if not isinstance(data, dict):
+            return None
+        version = _int(data.get("version"))
+        if version is None:
+            return None
         return cls(
-            version=_i(data, "version"),
+            version=version,
             fetched_at=_s(data, "fetchedAt"),
             observed_from=_s(data, "observedFrom"),
             raw=data,
@@ -3914,7 +3942,10 @@ class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     API 2.8.0), ``valid_to`` / ``in_force`` (only present when the source
     recorded an end of validity) and ``attribution`` (always show it next to
     the content). Which index fields (``court``, ``case_number``, …) are
-    filled depends on the national source — prefer ``document``."""
+    filled depends on the national source — prefer ``document``.
+
+    ``provenance`` is an EU attribute and always ``None`` on a national hit;
+    the provenance of the hit's document is on ``document.raw``."""
 
     document_id: str | None = None
     document: NationalDocument | None = None
@@ -3970,6 +4001,10 @@ class NationalSemanticLegislationResult(SemanticLegislationResult):
     :data:`NATIONAL_AS_OF_REASONS`). LexAPI holds such dates for Austria and
     Spain; for the other countries every hit is ``asof_not_available``.
     The EU consolidated-text and ``matched_version`` fields do not apply.
+
+    ``not_in_force_reason``, ``end_of_validity``, ``entry_into_force`` and
+    ``provenance`` are EU attributes and always ``None`` on a national hit;
+    the provenance of the hit's document is on ``document.raw``.
     """
 
     document_id: str | None = None

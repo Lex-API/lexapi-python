@@ -315,7 +315,9 @@ class NationalResource:
 
         Args:
             as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), sent as
-                ``asOf`` (API 2.29.0; 1800-01-01 to today UTC). Labels each
+                ``asOf`` (API 2.29.0; 1800-01-01 to today UTC). Pass a
+                ``date`` or a ``YYYY-MM-DD`` string; a ``datetime`` is cut to
+                its own calendar date, not converted to UTC. Labels each
                 hit for that date (``as_of_resolved``, ``as_of_reason``,
                 ``as_of_version``). The search runs over today's texts only:
                 a provision repealed or replaced since the date cannot be

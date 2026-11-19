@@ -19,9 +19,9 @@ The rules it applies:
   ``consolidated=True`` and, when the API names it, ``base_celex``: the act
   as published in the Official Journal, which is the one to cite.
 - **Nothing is guessed.** A field the API did not send is ``None``.
-- **Blank text is no text.** A text that is empty or holds only whitespace
-  or invisible format characters (such as a zero-width space) is treated as
-  a text the API did not send: ``text`` is ``None``, ``has_text`` is
+- **Blank text is no text.** In every converter, a text that is empty or
+  holds only whitespace or invisible format characters (such as a zero-width
+  space) is treated as a text the API did not send: ``text`` is ``None``, ``has_text`` is
   ``False`` and ``text_status`` is ``"absent"`` (or the date status, as for
   a missing text, on a hit not established for ``as_of``).
 - **EU responses only.** The converters take the EU search, document and
@@ -191,6 +191,11 @@ class Passage:
     Immutable. ``celex`` is always set; every other field is ``None`` when
     the API did not send it.
 
+    The converters never produce a blank ``text`` (see the module notes). A
+    passage built by hand is taken as given and not normalised: ``text``,
+    ``text_status``, :attr:`has_text` and :meth:`content` reflect exactly
+    what was passed.
+
     ``celex`` is the CELEX number of the document the text is from, which can
     be a consolidated text. :attr:`cite_celex` is the number to cite.
     """
@@ -285,8 +290,8 @@ class Passage:
 
     @property
     def has_text(self) -> bool:
-        """``True`` when ``text`` holds a text (not ``None`` and not blank)."""
-        return _present(self.text) is not None
+        """``True`` when ``text`` holds a text (``text is not None``)."""
+        return self.text is not None
 
     @property
     def id(self) -> str:
@@ -415,7 +420,9 @@ def from_legislation_search(
 
     A date counts as asked when ``as_of`` is given here, or the response or
     the hit carries any of ``asOf``, ``asOfResolved`` or ``asOfReason``.
-    Pass the ``as_of`` you sent to have every hit checked against it: a hit
+    Pass the ``as_of`` you sent (a ``date`` or a ``YYYY-MM-DD`` string; a
+    ``datetime`` is cut to its own calendar date, not converted to UTC) to
+    have every hit checked against it: a hit
     that does not echo that date as resolved is treated as unresolved. Search
     with ``include_text=True`` to get full texts.
     """

@@ -504,6 +504,7 @@ class LexAPI:
         include_text: bool = False,
         filters: dict[str, Any] | None = None,
         as_of: DateLike | None = None,
+        in_force: bool | None = None,
     ) -> SemanticLegislationResponse:
         """POST /legislation/semantic — embedding-based EU legislation search.
 
@@ -517,13 +518,22 @@ class LexAPI:
 
         Args:
             as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01 to
-                today UTC. Each hit answers with the version in force on that
+                today UTC. Pass a ``date`` or a ``YYYY-MM-DD`` string; a
+                ``datetime`` is cut to its own calendar date, not converted to
+                UTC. Each hit answers with the version in force on that
                 date — the act as published before its first consolidation,
                 otherwise the consolidated version in force — after checking
                 the act was in force then. Hits that cannot be answered keep
                 their latest text with ``as_of_resolved=False`` and an
                 ``as_of_reason``. A malformed or out-of-range date is a 400
                 (refunded).
+            in_force: sent as the top-level ``inForce`` when not ``None``
+                (API 2.19.0). ``True`` returns only hits whose act is known to
+                be in force today (UTC); hits not in force and hits with an
+                unknown status are removed and counted in the response's
+                ``in_force_filter``, so the page can come back shorter than
+                ``limit``. ``False`` filters nothing. About today, also with
+                ``as_of``.
 
         **Cost:** 5 credits for the search. With ``as_of``, each version the
         corpus doesn't hold is fetched live (at most 3 per request by
@@ -543,6 +553,7 @@ class LexAPI:
             include_text=include_text,
             filters=filters,
             as_of=as_of,
+            in_force=in_force,
         )
         return self._request(
             "POST",
@@ -575,8 +586,9 @@ class LexAPI:
                 (:class:`~lexapi.InvalidCelexError`). For an ELI or a URL,
                 call :meth:`resolve` first.
             as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01
-                to today UTC. A ``datetime`` is sent as its own calendar
-                date; for today pass ``datetime.now(timezone.utc).date()``.
+                to today UTC. Pass a ``date`` or a ``YYYY-MM-DD`` string; a
+                ``datetime`` is cut to its own calendar date, not converted to
+                UTC. For today pass ``datetime.now(timezone.utc).date()``.
             provision: a whole article (``art_17``, ``17``, ``Article 17``),
                 an annex by its numeral or letter (``anx_III``), or recitals
                 (``rct_26``, ``rct_26-28``, at most 50). Paragraphs and

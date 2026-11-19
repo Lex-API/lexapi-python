@@ -56,10 +56,10 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   replaced (`None` otherwise); may contain document text, so do not show it to
   a model or log it by default. `LexAPIError(...)` and `error_from_response`
   take it as a keyword argument.
-
 - **`national.legislation_semantic_search(..., as_of=...)`** (sync + async,
-  API 2.29.0): a date (`YYYY-MM-DD` or a `datetime.date`, sent as `asOf`)
-  that labels each hit. The search runs over today's texts only and the text
+  API 2.29.0): a date (`YYYY-MM-DD` or a `datetime.date`, sent as `asOf`;
+  a `datetime` is cut to its own calendar date, not converted to UTC) that
+  labels each hit. The search runs over today's texts only and the text
   is never swapped. A hit is resolved only when the publisher's dates, as of
   LexAPI's last recorded read of the act (`checked_at`), show today's wording
   already applied on the date; an unresolved hit keeps today's wording, which
@@ -69,7 +69,9 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `NationalAsOfReason`: `provision_amended_since`, `no_longer_in_force`,
   `provision_dates_unknown`, `asof_not_available`) and `as_of_version`, a
   `NationalAsOfVersion` (a subclass of `AsOfVersion`: `kind ==
-  "current_unit"`, `valid_from`, `valid_to`, `source_id`, `checked_at`).
+  "current_unit"`, `valid_from`, `valid_to`, `source_id`, `checked_at`);
+  a version of another kind stays an `AsOfVersion`, with everything on
+  `.raw`.
 - **Version snapshots** (API 2.28.0): `VersionEntry.observed_from` (when the
   version began; `None` when LexAPI has no record of it) and, on
   `get_document_at_date`, `VersionEntry.observed_until` and the response's
@@ -79,7 +81,7 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   date.
 - **`NotFoundError.reason`**, `.before_tracking` / `.tracked_since` /
   `.in_force_lookup`, and `.boundary_unknown` / `.candidates`
-  (`VersionCandidate`: `version`, `fetched_at`, `observed_from`) /
+  (`SnapshotCandidate`: `version`, `fetched_at`, `observed_from`) /
   `.candidates_truncated`: why `get_document_at_date` has no snapshot for the
   date (API 2.28.0). `unknown_endpoint` is unchanged.
 - **In force today** (API 2.19.0): `in_force`, `not_in_force_reason`,
@@ -93,6 +95,17 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `SemanticSearchResponse.field_provenance`; `Document.version`.
 - `SubscriptionInfo.max_semantic_results` /
   `.max_semantic_legislation_results` (`get_info`, API 2.24.0).
+- **`semantic_legislation_search(..., in_force=...)`** (sync + async, API
+  2.19.0): sent as the top-level `inForce` when not `None` (`False`
+  included). `True` returns only hits whose act is known to be in force
+  today; the removed hits are counted in `in_force_filter`. `NotInForceReason`
+  lists the `not_in_force_reason` values.
+- `lexapi.passages`: in every converter, a text that is empty or holds only
+  whitespace or invisible format characters (such as a zero-width space)
+  counts as no text: `text` is `None`, `has_text` is False and
+  `text_status` is `"absent"` (on a hit not established for `as_of`, the
+  date status, as for a missing text). A blank `fullText` of a document read
+  gives no passage. A `Passage` built by hand is not normalised.
 
 ### Changed
 
@@ -123,6 +136,14 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
   Unknown extra fields are still accepted. The full list per endpoint is in
   `docs/sdk-contract.md` §1.3.
+- **Construct models by keyword.** New fields on `SemanticLegislationResult`
+  and `SemanticCaseLawResult` (in-force labels, `provenance`,
+  `field_provenance`) come before the fields that
+  `NationalSemanticLegislationResult` and `NationalSemanticCaseLawResult` add,
+  and `NationalSemanticLegislationResult.in_force` now takes the position of
+  the base class's field. Code that built these two national models with
+  positional arguments must use keywords; on Python 3.9 the dataclass layout
+  cannot keep the old order. Attribute names and types are unchanged.
 - An error (non-2xx) body is read by the same strict parser: one that is not
   strict UTF-8 JSON is treated as not JSON — `err.body` is `None`, the message
   is `HTTP <status>`, the code comes from the status, and a `retryAfter` in it
@@ -130,6 +151,10 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Fixed
 
+- Integer fields of the response models (for example `Document.version`)
+  accept an integer, or a float with an integral value; a non-integral or
+  non-finite number (`2.9`, `1e999`) is now `None`. Before, `2.9` was read
+  as `2` and `1e999` raised `OverflowError`.
 - `InvalidResponseError` no longer quotes the response body in its message;
   the excerpt is on `body_excerpt`.
 - The excerpt is decoded as UTF-8 with replacement whatever charset the
@@ -143,16 +168,6 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   raises `TypeError` or puts that value in the message: it counts as absent.
 - A `LexAPIError` survives a pickle round trip with its message unchanged
   (before, the `[CODE]` prefix was added twice).
-- `lexapi.passages`: a text that is empty or holds only whitespace or
-  invisible format characters (such as a zero-width space) is now no text:
-  `text` is `None`, `has_text` is False and `text_status` is `"absent"` (on
-  a hit not established for `as_of`, the date status, as for a missing
-  text). Before, `text: ""` or `"   "` counted as a text. A blank `fullText`
-  of a document read gives no passage.
-- `national.legislation_semantic_search` hits parsed `asOfVersion` into the
-  EU model, without its national fields; it is now a `NationalAsOfVersion`
-  when `kind` is `current_unit` (other kinds stay an `AsOfVersion`, with
-  everything on `.raw`).
 - `AS_OF_REASONS` / `AsOfReason` now include `amendment_not_consolidated`,
   which `semantic_legislation_search(as_of=...)` hits can carry since LexAPI
   API 2.25.0. (The value was already passed through on `as_of_reason`.)

@@ -1517,9 +1517,8 @@ def test_has_text():
         leg(hit_consolidated(), hit_unresolved())
     ).passages
     assert (cons.has_text, unresolved.has_text) == (True, False)
-    for blank in ("", "  \n", "\u200b"):
-        empty = Passage(kind="legislation", celex="32099R0002", text=blank, text_status="provided")
-        assert empty.has_text is False
+    empty = Passage(kind="legislation", celex="32099R0002", text="", text_status="provided")
+    assert empty.has_text is True and empty.content() == ""
 
 
 # ── the act to cite ─────────────────────────────────────────────────────
@@ -1794,3 +1793,34 @@ def test_text_with_a_visible_character_is_provided_unchanged(text):
     hit["text"] = text
     (p,) = passages.from_legislation_search(leg(hit, as_of=None)).passages
     assert (p.text, p.text_status, p.has_text) == (text, "provided", True)
+
+
+def _format_code_points():
+    import unicodedata
+
+    return [chr(c) for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == "Cf"]
+
+
+def test_every_format_character_of_this_python_is_blank():
+    from lexapi.passages import _present
+
+    chars = _format_code_points()
+    assert chars  # the running Python knows Cf characters
+    for ch in chars:
+        assert _present(ch) is None, f"U+{ord(ch):04X}"
+        assert _present(" " + ch + "\n") is None, f"U+{ord(ch):04X}"
+    assert _present("".join(chars)) is None
+
+
+def test_tag_characters_are_blank():
+    from lexapi.passages import _present
+
+    for code in range(0xE0020, 0xE0080):
+        assert _present(chr(code)) is None, f"U+{code:04X}"
+    assert _present(chr(0xE0001)) is None
+
+
+def test_hand_built_passages_are_not_normalised():
+    for blank in ("", "  ", "\u200b"):
+        p = Passage(kind="legislation", celex="32099R0002", text=blank, text_status="provided")
+        assert (p.text, p.text_status, p.has_text, p.content()) == (blank, "provided", True, blank)
