@@ -45,13 +45,12 @@ when iteration finishes, on ``close()``/``aclose()``, or on context exit.
 from __future__ import annotations
 
 import datetime as _dt
-import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any
 
 import httpx
 
-from lexapi._json import too_deep
+from lexapi._json import strict_loads, too_deep
 from lexapi._payloads import DateLike, drop_none, iso_date
 from lexapi._response import header, parse_header_int
 from lexapi.errors import IncompleteExportError, LexAPIConnectionError, RequestTimeoutError
@@ -179,6 +178,7 @@ class _ExportStreamBase:
         self.done: dict[str, Any] | None = None
         #: Body lines that were not JSON objects (e.g. a half-written last line).
         self.invalid_lines = 0
+        self._first_line = True
         #: Document rows yielded so far.
         self.rows_read = 0
         #: A server ``_error`` line, if one arrived (never yielded as a row).
@@ -257,22 +257,37 @@ class _ExportStreamBase:
     def _header_int(self, name: str) -> int | None:
         return parse_header_int(header(self.headers, name))
 
-    def _classify(self, line: str) -> tuple[str, dict[str, Any]] | None:
-        """Sort a raw NDJSON line into ("meta"|"done"|"row", payload)."""
-        line = line.strip()
+    def _classify(self, raw: bytes) -> tuple[str, dict[str, Any]] | None:
+        """Sort a raw NDJSON line into ("meta"|"done"|"row", payload).
+
+        A line is read as strict UTF-8 whatever charset the response names
+        (one byte order mark at the start of the stream is ignored); a line
+        that is not UTF-8 is an invalid line."""
+        first = self._first_line
+        self._first_line = False
+        try:
+            # Only spaces, tabs and carriage returns are trimmed (contract §1.8).
+            line = raw.decode("utf-8-sig" if first else "utf-8").strip(" \t\r")
+        except UnicodeDecodeError:
+            self.invalid_lines += 1
+            return None
         if not line:
             return None
         try:
             if too_deep(line):
                 raise ValueError("nested too deeply")
-            row = json.loads(line)
+            # Strict JSON: NaN / Infinity are not JSON.
+            row = strict_loads(line)
         except (ValueError, RecursionError):  # RecursionError: nested too deeply
             self.invalid_lines += 1
             return None
         if not isinstance(row, dict):
             self.invalid_lines += 1
             return None
-        if self.meta is None and self.done is None and "_meta" in row:
+        if "_meta" in row:
+            # Never a row; it sets the exposed _meta only as the first line.
+            if not first:
+                return None
             self.meta = _envelope(row, "_meta")
             return ("meta", self.meta)
         if "_done" in row:
@@ -286,19 +301,55 @@ class _ExportStreamBase:
         return ("row", row)
 
 
+def _split_lines(chunks: Iterable[bytes]) -> Iterator[bytes]:
+    """The lines of a byte stream (``\\n``-separated; a trailing ``\\r`` is
+    removed with the rest of the whitespace when the line is read)."""
+    pending: list[bytes] = []
+    for chunk in chunks:
+        pieces = chunk.split(b"\n")
+        if len(pieces) == 1:
+            pending.append(chunk)
+            continue
+        pending.append(pieces[0])
+        yield b"".join(pending)
+        yield from pieces[1:-1]
+        pending = [pieces[-1]] if pieces[-1] else []
+    if pending:
+        yield b"".join(pending)
+
+
+async def _asplit_lines(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Async twin of :func:`_split_lines`."""
+    pending: list[bytes] = []
+    async for chunk in chunks:
+        pieces = chunk.split(b"\n")
+        if len(pieces) == 1:
+            pending.append(chunk)
+            continue
+        pending.append(pieces[0])
+        yield b"".join(pending)
+        for piece in pieces[1:-1]:
+            yield piece
+        pending = [pieces[-1]] if pieces[-1] else []
+    if pending:
+        yield b"".join(pending)
+
+
 class ExportStream(_ExportStreamBase):
     """Iterator over export document rows (one dict per corpus row)."""
 
     def __init__(self, response: httpx.Response) -> None:
         super().__init__(response)
-        self._lines: Iterator[str] | None = None
+        self._lines: Iterator[bytes] | None = None
 
-    def _line_iter(self) -> Iterator[str]:
+    def _line_iter(self) -> Iterator[bytes]:
         if self._lines is None:
-            self._lines = self._response.iter_lines()
+            # Bytes, not httpx's text lines: the charset a response names is
+            # not used to read the stream (see _classify).
+            self._lines = _split_lines(self._response.iter_bytes())
         return self._lines
 
-    def _lines_checked(self) -> Iterator[str]:
+    def _lines_checked(self) -> Iterator[bytes]:
         # Pull with next() rather than `yield from`: read_meta() abandons this
         # generator after one line, and `yield from` would close the shared
         # underlying line iterator along with it.
@@ -374,14 +425,14 @@ class AsyncExportStream(_ExportStreamBase):
 
     def __init__(self, response: httpx.Response) -> None:
         super().__init__(response)
-        self._lines: AsyncIterator[str] | None = None
+        self._lines: AsyncIterator[bytes] | None = None
 
-    def _line_iter(self) -> AsyncIterator[str]:
+    def _line_iter(self) -> AsyncIterator[bytes]:
         if self._lines is None:
-            self._lines = self._response.aiter_lines()
+            self._lines = _asplit_lines(self._response.aiter_bytes())
         return self._lines
 
-    async def _lines_checked(self) -> AsyncIterator[str]:
+    async def _lines_checked(self) -> AsyncIterator[bytes]:
         lines = self._line_iter()  # pulled manually — see ExportStream._lines_checked
         while True:
             try:

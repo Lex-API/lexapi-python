@@ -8,7 +8,6 @@ differ in how they send the request and how they sleep.
 from __future__ import annotations
 
 import decimal
-import json
 import math
 import numbers
 import os
@@ -16,7 +15,7 @@ from typing import Any, TypeVar
 
 import httpx
 
-from lexapi._json import too_deep
+from lexapi._json import strict_loads, too_deep
 from lexapi._meta import user_agent
 from lexapi._response import APIResponse
 from lexapi._retry import (
@@ -129,10 +128,6 @@ NOT_JSON: Any = object()
 _KIND_NAMES = {"object": "an object", "string": "a string", "boolean": "a boolean"}
 
 
-def _reject_constant(name: str) -> Any:
-    raise ValueError(f"{name} is not JSON")
-
-
 def parse_json_bytes(content: bytes) -> Any:
     """Strict UTF-8 + RFC 8259 JSON (SDK contract §1.3), or :data:`NOT_JSON`.
 
@@ -143,7 +138,7 @@ def parse_json_bytes(content: bytes) -> Any:
     if too_deep(content):
         return NOT_JSON
     try:
-        return json.loads(content.decode("utf-8-sig"), parse_constant=_reject_constant)
+        return strict_loads(content.decode("utf-8-sig"))
     except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError
         return NOT_JSON
 
@@ -340,6 +335,7 @@ def process_response(response: httpx.Response, cast: type[R]) -> R:
         body,
         retry_after=retry_after,
         body_excerpt=_excerpt(content) if parsed is NOT_JSON else None,
+        quota=quota,
     )
     if isinstance(error, RateLimitedError):
         error.__dict__["_quota_exhausted"] = quota  # the retry decision's answer

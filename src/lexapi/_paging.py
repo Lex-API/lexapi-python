@@ -37,9 +37,10 @@ def usable_number(value: Any) -> int | None:
 
 
 def check_page_size(name: str, value: Any) -> int:
-    """A caller's page size: a positive integer, else :class:`ValueError`."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    """A caller's page size: a positive integer up to 2**53 - 1, else
+    :class:`ValueError`."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_SAFE_INTEGER:
+        raise ValueError(f"{name} must be a positive integer up to 2**53 - 1, got {value!r}")
     size: int = value
     return size
 

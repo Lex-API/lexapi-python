@@ -28,10 +28,17 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   subscription payment failed and was not completed in time, so API requests
   are refused until it succeeds. `.billing_url` is where to pay the open
   invoice, `.access_ended_at` when access ended (`None` when not known).
-  Never retried. This code was raised as the base `LexAPIError` before;
-  `except LexAPIError` still catches it. It is not a `TierForbiddenError`; on
-  an API before 2.27.0 a failed payment is still a code-less 403 raised as
-  `TierForbiddenError`.
+  Never retried, on any status (a 429 included; the error's own code
+  decides, not a stray top-level `code` beside a typed `error`). It
+  derives from
+  `TierForbiddenError`: on an API before 2.27.0 a failed payment is a
+  code-less 403 raised as `TierForbiddenError`, so `except
+  TierForbiddenError` handlers keep catching it; put a `PaymentPastDueError`
+  clause first to tell the two apart.
+- **`WebhookSignatureError.reason`**: which check failed —
+  `missing_secret`, `missing_signature`, `invalid_signature`,
+  `malformed_body` or `stale_timestamp`. `verify_webhook` runs them in that
+  order.
 - **`NotFoundError.unknown_endpoint`**: True when the API (2.27.0 or later)
   has no such endpoint: a mistyped path, a method newer than the API, or a
   national route for a country that is not available. Always False on APIs
@@ -109,6 +116,41 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Changed
 
+- **Export lines.** A line ends at a line feed (`\n`) only. Lines are read
+  as strict UTF-8 whatever charset the response names (one byte order mark
+  at the very start is ignored); only spaces, tabs and carriage returns are
+  trimmed; a line must be one strict JSON object (`NaN` / `Infinity` make it
+  invalid). A line that is not UTF-8 is now an invalid line (before: its
+  bad bytes were replaced and the row was yielded). A line with a `_meta`
+  key is never a row; it sets `meta` only as the first line, and a later
+  one is skipped.
+- **Webhook verification.** The signature header is trimmed of spaces,
+  tabs, carriage returns and line feeds only, and must then be exactly 64
+  hex digits. An empty secret, or a `str` secret that cannot be encoded as
+  UTF-8, raises `WebhookSignatureError` (`reason="missing_secret"`) from
+  every helper; the error never holds the secret. A secret that is neither
+  `str` nor bytes-like raises `TypeError`. A missing or empty header is now
+  `"missing webhook signature"` (`missing_signature`). A body that is JSON
+  but not a JSON object is `malformed_body`. The signed `timestamp` must be
+  `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by `Z` or `±HH:MM` (the same on
+  every Python version) and name a real date and time in years 0001–9999;
+  the timestamp is read to the microsecond (fraction digits beyond the
+  sixth are ignored), `now` and the window are rounded to the nearest
+  microsecond, and the window's edge is included.
+  `tolerance=nan` raises `ValueError`.
+- **Quota 429s.** A 429 with the code `QUOTA_EXHAUSTED` (top-level, or
+  `error.code` on the typed envelope) is a `RateLimitedError` with
+  `quota_exhausted`, whatever other code the body carries; its code is
+  `QUOTA_EXHAUSTED` unless the body's code is `RATE_LIMITED`. The shape test
+  for servers before API 2.4.0 applies only when the code is `RATE_LIMITED`
+  (sent or derived from the status), and only on a 429: `quota_exhausted` is
+  false on every other error unless the code is `QUOTA_EXHAUSTED`, which
+  sets it on any status.
+- **520 and 524 are retried only on free GETs.** An app-origin 520 or 524
+  (the response carries `X-LexAPI-Version` or `RateLimit-Limit`) on a billed
+  GET was retried since 0.4.0; it is no longer, as for a proxy's 520 / 524.
+- **Page sizes** (`page_size`, the national `limit`) must be at most
+  2**53 - 1.
 - **Retry hints are read strictly.** `Retry-After` and `RateLimit-Reset`
   numbers must be plain ASCII decimals (`5`, `2.5`; no sign, exponent, `nan`
   or `inf`); a `Retry-After` date must be an IMF-fixdate or RFC 850 date in
@@ -209,6 +251,22 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Fixed
 
+- `verify_webhook` refuses `NaN`, `Infinity` and `-Infinity` in the body as
+  "not JSON" (`WebhookSignatureError`, `malformed_body`), like every other
+  JSON the SDK reads.
+- An export stream that declares `charset=utf-16` or `utf-32` (or any other
+  charset) no longer raises a raw `UnicodeError`: lines are read as UTF-8,
+  so a stream that really is UTF-16/32 has no readable line, ends without a
+  `_done` trailer and raises `IncompleteExportError`.
+- An export row whose string holds a raw U+2028, U+2029 or U+0085 is no
+  longer lost: 0.4.0 split the line there, counted both halves as invalid
+  and still reported the export complete. A lone carriage return, vertical
+  tab or form feed is no longer a line break either.
+- A `str` payload that cannot be encoded as UTF-8 (a lone surrogate) has no
+  bytes to verify: `verify_signature` returns `False` and `verify_webhook`
+  fails with `invalid_signature` (never `malformed_body`), instead of raising
+  `UnicodeEncodeError`. `compute_signature` given such a payload raises
+  `UnicodeEncodeError` and returns no signature.
 - A `Retry-After`, `RateLimit-Reset` or `retryAfter` hint that is negative or
   not finite (`nan`, `inf`, a number too large for a float) no longer makes a
   call raise `ValueError` or `OverflowError`, never makes the async client

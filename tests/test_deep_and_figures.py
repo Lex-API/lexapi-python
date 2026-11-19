@@ -386,13 +386,13 @@ def test_a_response_body_is_parsed_once(monkeypatch):
     from lexapi import LexAPI, RateLimitedError, _base
 
     calls = {"n": 0}
-    real = _base.json.loads
+    real = _base.strict_loads
 
     def counting(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(_base.json, "loads", counting)
+    monkeypatch.setattr(_base, "strict_loads", counting)
 
     def handler(request):
         return httpx.Response(429, json={"error": "x", "code": "RATE_LIMITED"})

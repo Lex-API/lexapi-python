@@ -18,10 +18,11 @@ out of stack before any check runs; that cannot be detected from here.
 
 from __future__ import annotations
 
+import json
 import sys
 from itertools import accumulate
 from types import FrameType
-from typing import Union
+from typing import Any, Union
 
 #: The deepest nesting handed to the parser, on every Python version.
 MAX_DEPTH = 512
@@ -42,6 +43,16 @@ _STEPS[ord("]")] = _STEPS[ord("}")] = 255  # -1 as a signed byte
 _STEP_TABLE = bytes(_STEPS)
 
 Text = Union[str, bytes, bytearray, memoryview]
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")  # NaN, Infinity, -Infinity
+
+
+#: Parse one strict JSON text (RFC 8259: no ``NaN`` / ``Infinity``, nothing
+#: after the value) from a ``str``. One decoder for the whole module, so a
+#: hot path (export lines) does not build a decoder per call.
+strict_loads = json.JSONDecoder(parse_constant=_reject_constant).decode
 
 
 def nesting_depth(data: bytes) -> int:
