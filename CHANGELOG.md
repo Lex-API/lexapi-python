@@ -29,9 +29,8 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   are refused until it succeeds. `.billing_url` is where to pay the open
   invoice, `.access_ended_at` when access ended (`None` when not known).
   Never retried. This code was raised as the base `LexAPIError` before;
-  `except LexAPIError` still catches it. It is not a `TierForbiddenError`; on
-  an API before 2.27.0 a failed payment is still a code-less 403 raised as
-  `TierForbiddenError`.
+  `except LexAPIError` still catches it. On an API before 2.27.0 a failed
+  payment is still a code-less 403 raised as `TierForbiddenError`.
 - **`NotFoundError.unknown_endpoint`**: True when the API (2.27.0 or later)
   has no such endpoint: a mistyped path, a method newer than the API, or a
   national route for a country that is not available. Always False on APIs
@@ -109,6 +108,12 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Changed
 
+- **`PaymentPastDueError` derives from `TierForbiddenError`.** A failed
+  payment (403 `PAYMENT_PAST_DUE`, API 2.27.0) raises `PaymentPastDueError`,
+  a subclass of `TierForbiddenError`: in 0.4.0 the API's earlier past-due 403
+  (no code) surfaced as `TierForbiddenError`, so `except TierForbiddenError`
+  handlers keep catching it. Put a `PaymentPastDueError` clause first to tell
+  the two apart.
 - **Retry hints are read strictly.** `Retry-After` and `RateLimit-Reset`
   numbers must be plain ASCII decimals (`5`, `2.5`; no sign, exponent, `nan`
   or `inf`); a `Retry-After` date must be an IMF-fixdate or RFC 850 date in
@@ -209,6 +214,16 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Fixed
 
+- `verify_webhook` refuses `NaN`, `Infinity` and `-Infinity` in the body as
+  "not JSON" (`WebhookSignatureError`), like every other JSON the SDK reads.
+- `verify_signature` / `verify_webhook` given a `str` payload with a lone
+  surrogate (which has no UTF-8 form) fail verification (`False` /
+  `WebhookSignatureError`) instead of raising `UnicodeEncodeError`.
+- Export lines are read as strict UTF-8 whatever charset the response's
+  `Content-Type` names (one byte order mark at the start is ignored); a line
+  that is not UTF-8 is an invalid line. A stream declaring `charset=utf-16`
+  or `utf-32` raised a raw `UnicodeError`; a stream that is not UTF-8 now
+  ends without a readable `_done` and raises `IncompleteExportError`.
 - A `Retry-After`, `RateLimit-Reset` or `retryAfter` hint that is negative or
   not finite (`nan`, `inf`, a number too large for a float) no longer makes a
   call raise `ValueError` or `OverflowError`, never makes the async client

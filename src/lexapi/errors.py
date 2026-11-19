@@ -351,7 +351,7 @@ class TierForbiddenError(LexAPIError):
     default_code = "TIER_FORBIDDEN"
 
 
-class PaymentPastDueError(LexAPIError):
+class PaymentPastDueError(TierForbiddenError):
     """403 ``PAYMENT_PAST_DUE`` — a subscription payment failed and was not
     completed in time, so API requests are refused until the payment
     succeeds. Pay the open invoice in the dashboard (:attr:`billing_url`).
@@ -360,7 +360,9 @@ class PaymentPastDueError(LexAPIError):
     Legacy-shape body with top-level ``accessEndedAt`` and ``billingUrl``;
     both attributes read ``details`` first, then the raw ``body``. Before
     API 2.27.0 a failed payment was refused at once with a 403 without a
-    code, raised as :class:`TierForbiddenError`.
+    code, raised as :class:`TierForbiddenError`; this class derives from it,
+    so ``except TierForbiddenError`` keeps catching a failed payment. Catch
+    ``PaymentPastDueError`` first to tell the two apart.
     """
 
     default_code = "PAYMENT_PAST_DUE"

@@ -100,7 +100,8 @@ def test_payment_past_due_is_exported_and_registered():
     assert CODE_TO_ERROR["PAYMENT_PAST_DUE"] is PaymentPastDueError
     assert PaymentPastDueError.default_code == "PAYMENT_PAST_DUE"
     assert issubclass(PaymentPastDueError, LexAPIError)
-    assert not issubclass(PaymentPastDueError, TierForbiddenError)
+    # A subclass, so `except TierForbiddenError` keeps catching a failed payment.
+    assert issubclass(PaymentPastDueError, TierForbiddenError)
 
 
 @pytest.mark.parametrize("raised", RAISED)
@@ -108,7 +109,7 @@ def test_legacy_shaped_past_due_body(raised):
     err, calls = raised(403, PAST_DUE_BODY)
     assert type(err) is PaymentPastDueError
     assert isinstance(err, LexAPIError)
-    assert not isinstance(err, TierForbiddenError)
+    assert isinstance(err, TierForbiddenError)
     assert err.code == "PAYMENT_PAST_DUE"
     assert err.status == 403
     assert err.message.startswith("Payment past due: Your subscription payment failed")
@@ -346,3 +347,43 @@ def test_unknown_endpoint_true_only_from_details():
     in_details = error_from_response(404, body)
     assert isinstance(in_details, NotFoundError)
     assert in_details.unknown_endpoint is True
+
+
+@pytest.mark.parametrize("raised", RAISED)
+def test_except_tier_forbidden_still_catches_a_failed_payment(raised):
+    err, _ = raised(403, PAST_DUE_BODY)
+    try:
+        raise err
+    except PaymentPastDueError as caught:  # the specific clause first
+        assert caught.billing_url == PAST_DUE_BODY["billingUrl"]
+    try:
+        raise err
+    except TierForbiddenError as caught:  # a 0.4.0 handler
+        assert caught.code == "PAYMENT_PAST_DUE"
+        assert caught.status == 403
+
+
+def test_the_factory_picks_the_specific_class_for_either_envelope():
+    from lexapi.errors import error_from_response
+
+    typed = {"success": False, "error": {"code": "PAYMENT_PAST_DUE", "message": "x"}}
+    for body in (PAST_DUE_BODY, typed):
+        err = error_from_response(403, body)
+        assert type(err) is PaymentPastDueError
+        assert err.code == "PAYMENT_PAST_DUE"
+    assert type(error_from_response(403, {"error": "x", "code": "TIER_FORBIDDEN"})) is (
+        TierForbiddenError
+    )
+
+
+def test_pickle_and_repr_keep_the_class_and_fields():
+    import pickle
+
+    from lexapi.errors import error_from_response
+
+    err = error_from_response(403, PAST_DUE_BODY)
+    again = pickle.loads(pickle.dumps(err))
+    assert type(again) is PaymentPastDueError and isinstance(again, TierForbiddenError)
+    assert again.billing_url == err.billing_url and again.access_ended_at == err.access_ended_at
+    assert str(again) == str(err)
+    assert repr(err).startswith("PaymentPastDueError(")

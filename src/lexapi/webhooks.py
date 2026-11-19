@@ -44,6 +44,10 @@ class WebhookSignatureError(ValueError):
     """A delivery failed verification (bad signature, or a stale timestamp)."""
 
 
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")  # NaN, Infinity, -Infinity
+
+
 def _as_bytes(value: bytes | bytearray | memoryview | str) -> bytes:
     if isinstance(value, str):
         return value.encode("utf-8")
@@ -72,7 +76,10 @@ def verify_signature(
     candidate = signature.strip().lower()
     if not candidate.isascii():  # never a hex digest; compare_digest(str) would raise
         return False
-    expected = compute_signature(payload, secret)
+    try:
+        expected = compute_signature(payload, secret)
+    except UnicodeEncodeError:  # a str payload with a lone surrogate: not a body
+        return False
     return hmac.compare_digest(expected.encode("ascii"), candidate.encode("ascii"))
 
 
@@ -105,7 +112,7 @@ def verify_webhook(
         text = body.decode("utf-8-sig")
         if too_deep(text):
             raise ValueError("nested too deeply")
-        event = json.loads(text)
+        event = json.loads(text, parse_constant=_reject_constant)
     except (ValueError, RecursionError) as exc:  # UnicodeDecodeError is a ValueError
         raise WebhookSignatureError("webhook body is not JSON") from exc
     if not isinstance(event, dict):

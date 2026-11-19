@@ -796,7 +796,7 @@ from lexapi import (
     RateLimitedError,  # 429 — .retry_after; code QUOTA_EXHAUSTED / .quota_exhausted / .resets_at on legacy quotas
     CreditsExhaustedError,  # 402 CREDITS_EXHAUSTED — .resets_at, .operation, .weight, .available
     TierForbiddenError,  # 403 TIER_FORBIDDEN — .upgrade_url on legacy tier gates
-    PaymentPastDueError,  # 403 PAYMENT_PAST_DUE — .billing_url, .access_ended_at
+    PaymentPastDueError,  # 403 PAYMENT_PAST_DUE (a TierForbiddenError) — .billing_url, .access_ended_at
     UpstreamError,  # 502 UPSTREAM_ERROR
     TimeoutError,  # 504 TIMEOUT (server-side upstream timeout, retry-safe)
     AuthenticationError,  # 401 — missing/invalid/deactivated key
@@ -820,10 +820,11 @@ except LexAPIError as err:
 
 `PaymentPastDueError`: a subscription payment failed and was not completed in
 time; pay the open invoice in the dashboard (`err.billing_url`). It is not
-retryable. Before API 2.27.0 a failed payment was refused at once with a 403
-without a code, raised as `TierForbiddenError`. A handler that treated
-`TierForbiddenError` as a failed payment needs a `PaymentPastDueError` clause on
-API 2.27.0 and later.
+retryable. It is a subclass of `TierForbiddenError`: before API 2.27.0 a failed
+payment was refused at once with a 403 without a code, raised as
+`TierForbiddenError`, so an `except TierForbiddenError` handler keeps catching
+it. To tell a failed payment from a plan gate, put the `PaymentPastDueError`
+clause before the `TierForbiddenError` one.
 
 A JSON body (or export line, or webhook body) nested deeper than 512 levels
 is refused before it is parsed, on every Python version, and counts as not
