@@ -259,23 +259,30 @@ class WebhooksResource:
         later pages by one. Each delivery is therefore yielded at most once
         (deduplicated on ``id``); deliveries created after the walk began may
         be missed, and pruned ones (history is kept 30 days) can shift a row
-        past a page boundary. Webhook reads cost no credits.
+        past a page boundary. The walk also stops at a page that adds no new
+        delivery id. Webhook reads cost no credits.
         """
         offset = 0
         seen: set[str] = set()
         while True:
             page = self.deliveries(webhook_id, limit=page_size, offset=offset)
             deliveries = page.deliveries
+            new_ids = 0
             for delivery in deliveries:
                 key = delivery.id
                 if key is not None:
                     if key in seen:
                         continue
                     seen.add(key)
+                    new_ids += 1
                 yield delivery
             offset += len(deliveries)
             total = page.total
             if not deliveries or (total is not None and offset >= total):
+                return
+            if new_ids == 0:
+                # A page with no new delivery id: the server is not paging
+                # (e.g. it ignores ``offset``), so another page would repeat.
                 return
 
 
@@ -368,14 +375,20 @@ class AsyncWebhooksResource:
         while True:
             page = await self.deliveries(webhook_id, limit=page_size, offset=offset)
             deliveries = page.deliveries
+            new_ids = 0
             for delivery in deliveries:
                 key = delivery.id
                 if key is not None:
                     if key in seen:
                         continue
                     seen.add(key)
+                    new_ids += 1
                 yield delivery
             offset += len(deliveries)
             total = page.total
             if not deliveries or (total is not None and offset >= total):
+                return
+            if new_ids == 0:
+                # A page with no new delivery id: the server is not paging
+                # (e.g. it ignores ``offset``), so another page would repeat.
                 return

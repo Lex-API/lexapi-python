@@ -18,6 +18,7 @@ are surfaced as attributes — never silently dropped.
 
 from __future__ import annotations
 
+import math
 import sys
 import warnings
 from dataclasses import dataclass, field
@@ -145,11 +146,20 @@ def _b(data: dict[str, Any], key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _f(data: dict[str, Any], key: str) -> float | None:
-    value = data.get(key)
+def _float(value: Any) -> float | None:
+    """A JSON number as a finite float; ``None`` for a ``bool``, a
+    non-number, a non-finite float, or an integer too large for a float."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _f(data: dict[str, Any], key: str) -> float | None:
+    return _float(data.get(key))
 
 
 def _opt_dict(data: dict[str, Any], key: str) -> dict[str, Any] | None:
@@ -2456,7 +2466,7 @@ class SemanticCaseLawResult:
         metadata = _dict(data, "metadata")
         score = data.get("score")
         return cls(
-            score=float(score) if isinstance(score, (int, float)) else None,
+            score=_float(score) if isinstance(score, (int, float)) else None,
             text=_s(data, "text"),
             case_id=_s(data, "case_id"),
             case_name=_s(data, "case_name"),

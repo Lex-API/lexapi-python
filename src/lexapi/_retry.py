@@ -40,7 +40,9 @@ Wait resolution (server-directed wins, clamped to ``backoff_cap``):
 4. exponential backoff with full jitter.
 
 Numeric hints are delta-seconds; a value above 1e12 is read as epoch
-milliseconds and above 1e9 as epoch seconds and converted to a delta.
+milliseconds and above 1e9 as epoch seconds and converted to a delta. A
+negative, non-finite (``nan``, ``inf``) or unconvertible hint counts as
+absent, so the wait falls back to the next source or to backoff.
 
 A 429 that reports an exhausted *quota* is never retried — it cannot
 succeed before ``resetsAt``. It is recognised by the body's top-level
@@ -53,6 +55,7 @@ carries, or, from older servers, by the legacy shape: a ``usage`` block with
 from __future__ import annotations
 
 import email.utils
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -126,8 +129,9 @@ def compute_backoff(attempt: int, config: RetryConfig) -> float:
 
 
 def _delta_from_number(value: float) -> float | None:
-    """A numeric hint as delta-seconds, converting epoch ms / s defensively."""
-    if value < 0:
+    """A numeric hint as delta-seconds, converting epoch ms / s defensively.
+    A negative or non-finite value (``nan``, ``inf``) is absent."""
+    if not math.isfinite(value) or value < 0:
         return None
     if value > EPOCH_MILLIS_THRESHOLD:
         return max(0.0, value / 1000.0 - time.time())
@@ -175,7 +179,11 @@ def _body_retry_after(body: Any) -> float | None:
         raw = details.get("retryAfter") if isinstance(details, dict) else None
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
-    return _delta_from_number(float(raw))
+    try:
+        seconds = float(raw)
+    except OverflowError:  # an integer too large for a float
+        return None
+    return _delta_from_number(seconds)
 
 
 def _is_national_semantic_unavailable(status: int, body: Any) -> bool:

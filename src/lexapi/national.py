@@ -219,8 +219,10 @@ class NationalResource:
     ) -> Iterator[NationalDocumentListResponse]:
         """Walk every page of :meth:`list_documents` via ``cursor`` (reaches
         past the 1,000-row ``page`` ceiling). Each page is a separate billed
-        call. Stops after a page with ``has_more=False`` or an empty page.
+        call. Stops after a page with ``has_more=False`` or an empty page,
+        and when the API hands back a cursor already used.
         """
+        used: set[str] = set()
         while True:
             page = self.list_documents(
                 jurisdiction,
@@ -233,6 +235,10 @@ class NationalResource:
             yield page
             if not page.has_more or not page.next_cursor or not page.results:
                 return
+            if page.next_cursor == cursor or page.next_cursor in used:
+                return  # a cursor already used: the next page would repeat
+            if cursor is not None:
+                used.add(cursor)
             cursor = page.next_cursor
 
     def semantic_search(
@@ -413,6 +419,7 @@ class AsyncNationalResource:
         include_repealed: bool | None = None,
     ) -> AsyncIterator[NationalDocumentListResponse]:
         """Async twin of :meth:`NationalResource.iter_documents`."""
+        used: set[str] = set()
         while True:
             page = await self.list_documents(
                 jurisdiction,
@@ -425,6 +432,10 @@ class AsyncNationalResource:
             yield page
             if not page.has_more or not page.next_cursor or not page.results:
                 return
+            if page.next_cursor == cursor or page.next_cursor in used:
+                return  # a cursor already used: the next page would repeat
+            if cursor is not None:
+                used.add(cursor)
             cursor = page.next_cursor
 
     async def semantic_search(

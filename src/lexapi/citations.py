@@ -76,6 +76,12 @@ def _graph_params(
     )
 
 
+def _repeats(groups: list[CitationDocumentGroup], previous: list[dict[str, Any]] | None) -> bool:
+    """True when a page holds exactly the groups of the page before: the
+    server is not paging (e.g. it ignores ``offset``), so the walk stops."""
+    return previous is not None and bool(groups) and [g.raw for g in groups] == previous
+
+
 def _page_done(rows: int, page_size: int, offset: int, total_edges: int | None) -> bool:
     """Edge pages are full until the last one (paging is over edge rows);
     ``total_edges``, when sent, ends the walk without an extra empty page."""
@@ -231,10 +237,11 @@ class CitationsResource:
         boundary is yielded once per page it appears in (merge on ``id`` if
         you need one entry per document). Edges extracted while you iterate
         can shift between pages. Each page is a separate billed call (1
-        credit); the walk stops at the first short page or once ``offset``
-        reaches ``total_edges``.
+        credit); the walk stops at the first short page, once ``offset``
+        reaches ``total_edges``, or at a page that repeats the one before.
         """
         offset = 0
+        previous: list[dict[str, Any]] | None = None
         while True:
             page = self.cited_by(
                 celex,
@@ -247,7 +254,11 @@ class CitationsResource:
                 limit=page_size,
                 offset=offset,
             )
-            yield from page.cited_by
+            groups = page.cited_by
+            if _repeats(groups, previous):
+                return
+            previous = [group.raw for group in groups]
+            yield from groups
             rows = page.edge_count
             offset += rows
             if _page_done(rows, page_size, offset, page.total_edges):
@@ -269,6 +280,7 @@ class CitationsResource:
         :meth:`iter_cited_by` for the paging caveat). 1 credit per page.
         Does not take ``unresolved``; call :meth:`cites` for that."""
         offset = 0
+        previous: list[dict[str, Any]] | None = None
         while True:
             page = self.cites(
                 celex,
@@ -281,7 +293,11 @@ class CitationsResource:
                 limit=page_size,
                 offset=offset,
             )
-            yield from page.cites
+            groups = page.cites
+            if _repeats(groups, previous):
+                return
+            previous = [group.raw for group in groups]
+            yield from groups
             rows = page.edge_count
             offset += rows
             if _page_done(rows, page_size, offset, page.total_edges):
@@ -580,6 +596,7 @@ class AsyncCitationsResource:
     ) -> AsyncIterator[CitationDocumentGroup]:
         """Async twin of :meth:`CitationsResource.iter_cited_by`."""
         offset = 0
+        previous: list[dict[str, Any]] | None = None
         while True:
             page = await self.cited_by(
                 celex,
@@ -592,7 +609,11 @@ class AsyncCitationsResource:
                 limit=page_size,
                 offset=offset,
             )
-            for group in page.cited_by:
+            groups = page.cited_by
+            if _repeats(groups, previous):
+                return
+            previous = [group.raw for group in groups]
+            for group in groups:
                 yield group
             rows = page.edge_count
             offset += rows
@@ -613,6 +634,7 @@ class AsyncCitationsResource:
     ) -> AsyncIterator[CitationDocumentGroup]:
         """Async twin of :meth:`CitationsResource.iter_cites`."""
         offset = 0
+        previous: list[dict[str, Any]] | None = None
         while True:
             page = await self.cites(
                 celex,
@@ -625,7 +647,11 @@ class AsyncCitationsResource:
                 limit=page_size,
                 offset=offset,
             )
-            for group in page.cites:
+            groups = page.cites
+            if _repeats(groups, previous):
+                return
+            previous = [group.raw for group in groups]
+            for group in groups:
                 yield group
             rows = page.edge_count
             offset += rows

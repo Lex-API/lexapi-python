@@ -269,7 +269,7 @@ class _ExportStreamBase:
             return None
         try:
             row = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: nested too deeply
             self.invalid_lines += 1
             return None
         if not isinstance(row, dict):

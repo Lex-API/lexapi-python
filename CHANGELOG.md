@@ -151,6 +151,21 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Fixed
 
+- A number too large for a float in a float field (`score`, the national
+  coverage rates and bounds) reads as `None` instead of raising
+  `OverflowError`; so does a non-finite one.
+- A `retryAfter` body field, a `Retry-After` header or a `RateLimit-Reset`
+  header that is negative, non-finite (`nan`, `inf`) or too large for a float
+  counts as absent: the error is raised with `retry_after=None`, and a retry
+  waits the normal backoff. Before, such a value could raise `OverflowError`
+  or `ValueError`, set `retry_after` to `nan`, or make the async client wait
+  forever. A large finite wait is still capped by `RetryConfig.backoff_cap`.
+- A deeply nested NDJSON line in an export is counted in `invalid_lines`
+  like any other malformed line, instead of raising `RecursionError`.
+- `webhooks.iter_deliveries` stops at a page that adds no new delivery id,
+  `national.iter_documents` at a cursor it has already used, and
+  `citations.iter_cited_by` / `iter_cites` at a page that repeats the one
+  before, instead of requesting the same page forever.
 - Integer fields of the response models (for example `Document.version`)
   accept an integer, or a float with an integral value; a non-integral or
   non-finite number (`2.9`, `1e999`) is now `None`, and such an item of
