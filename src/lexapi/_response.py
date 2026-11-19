@@ -27,6 +27,7 @@ figures still show the pre-refund pool and the next call reflects it.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -52,13 +53,24 @@ def header(headers: httpx.Headers, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _header_int(value: str | None) -> int | None:
+_HEADER_INT = re.compile(r"[0-9]{1,16}")
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+
+def parse_header_int(value: str | None) -> int | None:
+    """An integer header: ASCII digits only after trimming spaces and tabs,
+    at most 2**53 - 1; anything else (``+5``, ``-5``, ``1_000``, ``1e3``, a
+    long digit run) is absent."""
     if value is None:
         return None
-    try:
-        return int(value)
-    except ValueError:
+    text = value.strip(" \t")
+    if not _HEADER_INT.fullmatch(text):
         return None
+    number = int(text)
+    return number if number <= _MAX_SAFE_INTEGER else None
+
+
+_header_int = parse_header_int
 
 
 @dataclass(frozen=True)

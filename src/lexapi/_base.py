@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 
 import httpx
 
+from lexapi._json import too_deep
 from lexapi._meta import user_agent
 from lexapi._response import APIResponse
 from lexapi._retry import (
@@ -109,6 +110,8 @@ def parse_json_bytes(content: bytes) -> Any:
     encoded surrogate included), ``NaN`` / ``Infinity``, trailing data, or
     nesting deeper than the parser supports is not JSON. Never raises.
     """
+    if too_deep(content):
+        return NOT_JSON
     try:
         return json.loads(content.decode("utf-8-sig"), parse_constant=_reject_constant)
     except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError

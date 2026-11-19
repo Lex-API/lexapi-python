@@ -54,11 +54,12 @@ carries, or, from older servers, by the legacy shape: a ``usage`` block with
 
 from __future__ import annotations
 
-import email.utils
 import math
 import random
+import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -118,14 +119,38 @@ class RetryConfig:
     )
     retry_read_only_posts: bool = False
 
+    def __post_init__(self) -> None:
+        for name in ("backoff_base", "backoff_cap"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be a finite number of seconds >= 0, got {value!r}")
+
 
 DEFAULT_RETRY_CONFIG = RetryConfig()
+
+#: The longest single sleep (2**31 - 1 milliseconds), so that no sleep call
+#: receives a value the platform cannot represent.
+MAX_SLEEP_SECONDS = 2_147_483.647
+
+
+def clamp_wait(seconds: float, config: RetryConfig) -> float:
+    """A wait as passed to a sleep call: within ``[0, backoff_cap]`` and
+    never above :data:`MAX_SLEEP_SECONDS`."""
+    if not math.isfinite(seconds) or seconds < 0:
+        return 0.0
+    return min(seconds, config.backoff_cap, MAX_SLEEP_SECONDS)
 
 
 def compute_backoff(attempt: int, config: RetryConfig) -> float:
     """Exponential backoff with full jitter: ``U(0, min(cap, base * 2**attempt))``."""
-    ceiling = min(config.backoff_cap, config.backoff_base * (2**attempt))
-    return random.uniform(0, ceiling)
+    growth = 2.0 ** min(attempt, 1000)  # stays finite for any attempt count
+    ceiling = min(config.backoff_cap, config.backoff_base * growth)
+    return clamp_wait(random.uniform(0, ceiling), config)
 
 
 def _delta_from_number(value: float) -> float | None:
@@ -140,25 +165,110 @@ def _delta_from_number(value: float) -> float | None:
     return value
 
 
-def parse_retry_after(value: str) -> float | None:
-    """Parse a ``Retry-After`` header: delta-seconds or HTTP-date.
+_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+_WKDAY = r"(mon|tue|wed|thu|fri|sat|sun)"
+_WEEKDAY = r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+_MONTH = r"(" + "|".join(_MONTHS) + r")"
+_TIME = r"([0-9]{2}):([0-9]{2}):([0-9]{2})"
+_ZONE = r"(?:gmt|utc|\+0000)"
+#: IMF-fixdate: ``Sun, 06 Nov 1994 08:49:37 GMT``.
+_IMF = re.compile(rf"{_WKDAY}, ([0-9]{{2}}) {_MONTH} ([0-9]{{4}}) {_TIME} {_ZONE}", re.I)
+#: RFC 850: ``Sunday, 06-Nov-94 08:49:37 GMT``.
+_RFC850 = re.compile(rf"{_WEEKDAY}, ([0-9]{{2}})-{_MONTH}-([0-9]{{2}}) {_TIME} {_ZONE}", re.I)
+#: asctime: ``Sun Nov  6 08:49:37 1994`` (day space- or zero-padded), UTC.
+_ASCTIME = re.compile(rf"{_WKDAY} {_MONTH} ( [0-9]|[0-9]{{2}}) {_TIME} ([0-9]{{4}})", re.I)
 
-    Empty or unparseable values return ``None`` (treated as absent).
+
+def _trim(value: str) -> str:
+    return value.strip(" \t")
+
+
+def _header_number(value: str) -> float | None:
+    """A header's numeric value: ASCII ``[0-9]+(.[0-9]+)?`` after trimming
+    spaces and tabs, and finite; anything else (a sign, an exponent, ``.5``,
+    ``5.``, ``nan``, ``inf``, other digits) is not a number."""
+    text = _trim(value)
+    if not _NUMBER.fullmatch(text):
+        return None
+    number = float(text)
+    return number if math.isfinite(number) else None
+
+
+def _timestamp(year: int, month: int, day: int, hh: int, mm: int, ss: int) -> float | None:
+    """Seconds since the epoch for a UTC date, ``None`` for an impossible one."""
+    try:
+        when = datetime(year, month, day, hh, mm, ss, tzinfo=timezone.utc)
+    except ValueError:  # 30 Feb, hour 24, minute or second 60, day 00, year 0
+        return None
+    return when.timestamp()
+
+
+def _rfc850_year(yy: int, rest: tuple[int, ...], now: float) -> int:
+    """RFC 9110 §5.6.7: a two-digit year more than 50 years in the future is
+    read as the most recent such year in the past."""
+    today = datetime.fromtimestamp(now, tz=timezone.utc)
+    year = today.year // 100 * 100 + yy
+    limit = (today.year + 50, today.month, today.day, today.hour, today.minute, today.second)
+    if (year, *rest) > limit:
+        year -= 100
+    return year
+
+
+def parse_http_date(value: str, now: float | None = None) -> float | None:
+    """An HTTP-date (IMF-fixdate, RFC 850 or asctime; case-insensitive) as
+    seconds since the epoch, or ``None``. The weekday name is not checked
+    against the date; an asctime date is read as UTC."""
+    text = _trim(value)
+    current = time.time() if now is None else now
+    m = _IMF.fullmatch(text)
+    if m:
+        _, day, mon, year, hh, mm, ss = m.groups()
+        return _timestamp(
+            int(year), _MONTHS.index(mon.lower()) + 1, int(day), int(hh), int(mm), int(ss)
+        )
+    m = _RFC850.fullmatch(text)
+    if m:
+        _, day, mon, yy, hh, mm, ss = m.groups()
+        month = _MONTHS.index(mon.lower()) + 1
+        rest = (month, int(day), int(hh), int(mm), int(ss))
+        return _timestamp(_rfc850_year(int(yy), rest, current), *rest)
+    m = _ASCTIME.fullmatch(text)
+    if m:
+        _, mon, day, hh, mm, ss, year = m.groups()
+        return _timestamp(
+            int(year), _MONTHS.index(mon.lower()) + 1, int(day), int(hh), int(mm), int(ss)
+        )
+    return None
+
+
+def parse_retry_after(value: str) -> float | None:
+    """Parse a ``Retry-After`` header: delta-seconds or an HTTP-date.
+
+    A value that is neither counts as absent (``None``). A date in the past
+    is a wait of 0; the wait to a date is rounded to the nearest second.
     """
-    value = value.strip()
-    if not value:
+    seconds = _header_number(value)
+    if seconds is not None:
+        return _delta_from_number(seconds)
+    now = time.time()
+    when = parse_http_date(value, now)
+    if when is None:
+        return None
+    return float(max(0, math.floor(when - now + 0.5)))
+
+
+def _usable_seconds(raw: Any) -> float | None:
+    """A JSON number (not a ``bool``) >= 0 that is a finite double."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
     try:
-        seconds = float(value)
-    except ValueError:
-        try:
-            when = email.utils.parsedate_to_datetime(value)
-        except (TypeError, ValueError, IndexError):
-            return None
-        if when is None:
-            return None
-        return max(0.0, when.timestamp() - time.time())
-    return _delta_from_number(seconds)
+        seconds = float(raw)
+    except OverflowError:  # an integer too large for a double
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return seconds + 0.0  # -0.0 -> 0.0
 
 
 def _typed_error(body: Any) -> dict[str, Any]:
@@ -169,21 +279,19 @@ def _typed_error(body: Any) -> dict[str, Any]:
 
 def _body_retry_after(body: Any) -> float | None:
     """JSON ``retryAfter`` field (delta-seconds; epoch values converted):
-    top-level (legacy shape), else ``error.details.retryAfter`` (typed
-    envelope)."""
+    the top-level field when usable, else ``details.retryAfter`` —
+    ``error.details`` (typed envelope) before a top-level ``details``
+    (legacy envelope)."""
     if not isinstance(body, dict):
         return None
-    raw = body.get("retryAfter")
-    if raw is None:
+    seconds = _usable_seconds(body.get("retryAfter"))
+    if seconds is None:
         details = _typed_error(body).get("details")
-        raw = details.get("retryAfter") if isinstance(details, dict) else None
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None
-    try:
-        seconds = float(raw)
-    except OverflowError:  # an integer too large for a float
-        return None
-    return _delta_from_number(seconds)
+        if not isinstance(details, dict):
+            details = body.get("details")
+        if isinstance(details, dict):
+            seconds = _usable_seconds(details.get("retryAfter"))
+    return None if seconds is None else _delta_from_number(seconds)
 
 
 def _is_national_semantic_unavailable(status: int, body: Any) -> bool:
@@ -210,10 +318,8 @@ def server_wait_hint(headers: httpx.Headers, body: Any, status: int | None = Non
         return _body_retry_after(body) if _is_national_semantic_unavailable(status, body) else None
     reset = headers.get("ratelimit-reset")
     if reset is not None:
-        try:
-            seconds = _delta_from_number(float(reset.strip()))
-        except ValueError:
-            seconds = None
+        number = _header_number(reset)
+        seconds = _delta_from_number(number) if number is not None else None
         if seconds is not None:
             return seconds
     return _body_retry_after(body)
@@ -232,9 +338,10 @@ def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
         return False
     if isinstance(body, dict) and body.get("code") == "QUOTA_EXHAUSTED":
         return True
-    if headers.get("retry-after") is not None:
+    header = headers.get("retry-after")
+    if header is not None and parse_retry_after(header) is not None:
         return False
-    if not isinstance(body, dict) or "retryAfter" in body:
+    if not isinstance(body, dict) or _body_retry_after(body) is not None:
         return False
     usage = body.get("usage")
     return isinstance(usage, dict) and isinstance(usage.get("resetsAt"), str)
@@ -387,5 +494,5 @@ def retry_wait(
         return None
     hint = server_wait_hint(response.headers, body, response.status_code)
     if hint is not None:
-        return min(hint, config.backoff_cap)
+        return clamp_wait(hint, config)
     return compute_backoff(attempt, config)

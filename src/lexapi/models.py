@@ -24,7 +24,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from lexapi._response import APIResponse, header
+from lexapi._response import APIResponse, header, parse_header_int
 
 #: Why a semantic-legislation hit could not be answered for ``asOf``
 #: (``SemanticLegislationResult.as_of_reason``), copied from openapi.yaml.
@@ -203,13 +203,7 @@ def _parse_items(data: dict[str, Any], key: str, cls: Any) -> list[Any]:
     return [cls.from_dict(item) for item in _list(data, key) if isinstance(item, dict)]
 
 
-def _header_int(value: str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
+_header_int = parse_header_int
 
 
 # ── Document building blocks ────────────────────────────────────────────
@@ -676,10 +670,10 @@ def parse_post_filtered_kept(value: str | None) -> dict[str, PostFilterCount]:
         kept, slash, before = counts.partition("/")
         if not (sep and slash and name):
             continue
-        try:
-            result[name.strip()] = PostFilterCount(int(kept), int(before))
-        except ValueError:
+        kept_n, before_n = parse_header_int(kept), parse_header_int(before)
+        if kept_n is None or before_n is None:
             continue
+        result[name.strip()] = PostFilterCount(kept_n, before_n)
     return result
 
 
@@ -1452,6 +1446,16 @@ class CitationExtractResponse(APIResponse):
         return _s(self._map, "message")
 
 
+def _group_edges(group: CitationDocumentGroup) -> int:
+    """A group's edge rows: its ``citationCount`` when that is a count (a
+    non-negative integer up to 2**53 - 1), else the length of its edge
+    list (also for a count of 0, as before)."""
+    count = group.citation_count
+    if count is None or count < 0 or count > 9_007_199_254_740_991:
+        count = 0
+    return count or len(group.citations)
+
+
 class CitedByResponse(APIResponse):
     """``GET /citations/cited-by/{celex}`` — inbound edges, grouped by source."""
 
@@ -1505,7 +1509,7 @@ class CitedByResponse(APIResponse):
     def edge_count(self) -> int:
         """Edge rows in this page (sum of the groups' ``citation_count``) —
         the amount to advance ``offset`` by, since paging is in edges."""
-        return sum(group.citation_count or len(group.citations) for group in self.cited_by)
+        return sum(_group_edges(group) for group in self.cited_by)
 
     @property
     def include_national(self) -> bool | None:
@@ -1561,7 +1565,7 @@ class CitesResponse(APIResponse):
     @property
     def edge_count(self) -> int:
         """Edges in this page — the amount to advance ``offset`` by."""
-        return sum(group.citation_count or len(group.citations) for group in self.cites)
+        return sum(_group_edges(group) for group in self.cites)
 
     @property
     def include_national(self) -> bool | None:

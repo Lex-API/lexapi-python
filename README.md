@@ -292,7 +292,7 @@ print(inbound.total_edges, "edge rows;", inbound.total_citations, "document pair
 print(inbound.counts_source)  # "stats" or "counted" — both exact for the request
 print(inbound.relation_sync.status)  # Cellar refresh state of amendment/corrigendum/repeal edges
 
-for group in client.citations.iter_cited_by("32008R1272"):  # walks every edge page (1 credit each)
+for group in client.citations.iter_cited_by("32008R1272"):  # every edge page (1 credit each)
     print(group.celex_number, group.citation_count)
 
 outbound = client.citations.cites("32016R0679")
@@ -313,6 +313,15 @@ with_national = client.citations.cited_by("32016R0679", include_national=True)
 print(with_national.include_national)  # present once honoured; None while no jurisdiction is live
 national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
 ```
+
+**Page iterators** (`citations.iter_cited_by` / `iter_cites`,
+`webhooks.iter_deliveries`, `national.iter_documents`) walk every page until
+the last one: a short or empty page, `total` / `total_edges` reached, or no
+next cursor. When the server shows it is not advancing — it echoes another
+`offset` than the one asked for, hands back a cursor already sent, or (on
+pages without a total) keeps sending the same page — the iterator raises
+`InvalidResponseError`. Everything it yielded before stays valid; the page
+that showed the stall is not yielded and is on `err.body`.
 
 Every edge says where it comes from (`provenance`) and how its target was
 identified (`resolution`, national edges only); every node carries `id`,
@@ -411,7 +420,7 @@ result = client.webhooks.test(hook.webhook.id)  # synchronous test delivery
 if not result.ok:  # HTTP 200 either way
     print(result.delivery.error_message)
 
-for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # all pages, deduped on id
+for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # every page, deduped on id
     print(delivery.status, delivery.response_status)
 
 client.webhooks.delete(hook.webhook.id)
@@ -859,7 +868,11 @@ read-only POSTs (search, document reads, resolve, semantic search,
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
 A `2xx` answer is never retried, whatever its body.
 Every wait, server-directed ones included, is clamped to `backoff_cap`
-(default 30 s): a cap below the server's requested wait shortens it. The full
+(default 30 s): a cap below the server's requested wait shortens it.
+`backoff_base` and `backoff_cap` must be finite and not negative. A
+`Retry-After`, `RateLimit-Reset` or `retryAfter` hint that is not in a
+documented form (delta-seconds; for `Retry-After` also an HTTP-date)
+counts as absent, and the normal backoff applies. The full
 rules are in the [SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md).
 
 ```python

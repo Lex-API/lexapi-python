@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import TYPE_CHECKING, Any, Union
 
+from lexapi._paging import EdgeWalk
 from lexapi._payloads import drop_none, seg
 from lexapi.models import (
     CitationDocumentGroup,
@@ -74,20 +75,6 @@ def _graph_params(
             "maxDepth": max_depth,
         }
     )
-
-
-def _repeats(groups: list[CitationDocumentGroup], previous: list[dict[str, Any]] | None) -> bool:
-    """True when a page holds exactly the groups of the page before: the
-    server is not paging (e.g. it ignores ``offset``), so the walk stops."""
-    return previous is not None and bool(groups) and [g.raw for g in groups] == previous
-
-
-def _page_done(rows: int, page_size: int, offset: int, total_edges: int | None) -> bool:
-    """Edge pages are full until the last one (paging is over edge rows);
-    ``total_edges``, when sent, ends the walk without an extra empty page."""
-    if rows == 0 or rows < page_size:
-        return True
-    return total_edges is not None and offset >= total_edges
 
 
 class CitationsResource:
@@ -237,11 +224,16 @@ class CitationsResource:
         boundary is yielded once per page it appears in (merge on ``id`` if
         you need one entry per document). Edges extracted while you iterate
         can shift between pages. Each page is a separate billed call (1
-        credit); the walk stops at the first short page, once ``offset``
-        reaches ``total_edges``, or at a page that repeats the one before.
+        credit); the walk stops at the first short page or once ``offset``
+        reaches ``total_edges``. It raises
+        :class:`~lexapi.InvalidResponseError` when the server does not
+        advance (an echoed ``offset`` other than the one requested, or, on
+        pages without ``totalEdges`` or ``offset``, the same page a third
+        time in a row); groups already yielded stay valid, and the page that
+        showed it is on the error's ``body``. ``page_size`` must be a
+        positive integer.
         """
-        offset = 0
-        previous: list[dict[str, Any]] | None = None
+        walk = EdgeWalk(page_size)
         while True:
             page = self.cited_by(
                 celex,
@@ -251,17 +243,13 @@ class CitationsResource:
                 resolution=resolution,
                 include_national=include_national,
                 language=language,
-                limit=page_size,
-                offset=offset,
+                limit=walk.page_size,
+                offset=walk.offset,
             )
-            groups = page.cited_by
-            if _repeats(groups, previous):
+            if not walk.check(page._map, "citedBy"):
                 return
-            previous = [group.raw for group in groups]
-            yield from groups
-            rows = page.edge_count
-            offset += rows
-            if _page_done(rows, page_size, offset, page.total_edges):
+            yield from page.cited_by
+            if walk.advance(page._map, page.edge_count):
                 return
 
     def iter_cites(
@@ -279,8 +267,7 @@ class CitationsResource:
         """Walk every outbound edge page of :meth:`cites` (see
         :meth:`iter_cited_by` for the paging caveat). 1 credit per page.
         Does not take ``unresolved``; call :meth:`cites` for that."""
-        offset = 0
-        previous: list[dict[str, Any]] | None = None
+        walk = EdgeWalk(page_size)
         while True:
             page = self.cites(
                 celex,
@@ -290,17 +277,13 @@ class CitationsResource:
                 resolution=resolution,
                 include_national=include_national,
                 language=language,
-                limit=page_size,
-                offset=offset,
+                limit=walk.page_size,
+                offset=walk.offset,
             )
-            groups = page.cites
-            if _repeats(groups, previous):
+            if not walk.check(page._map, "cites"):
                 return
-            previous = [group.raw for group in groups]
-            yield from groups
-            rows = page.edge_count
-            offset += rows
-            if _page_done(rows, page_size, offset, page.total_edges):
+            yield from page.cites
+            if walk.advance(page._map, page.edge_count):
                 return
 
     def network(
@@ -595,8 +578,7 @@ class AsyncCitationsResource:
         page_size: int = _EDGE_PAGE_SIZE,
     ) -> AsyncIterator[CitationDocumentGroup]:
         """Async twin of :meth:`CitationsResource.iter_cited_by`."""
-        offset = 0
-        previous: list[dict[str, Any]] | None = None
+        walk = EdgeWalk(page_size)
         while True:
             page = await self.cited_by(
                 celex,
@@ -606,18 +588,14 @@ class AsyncCitationsResource:
                 resolution=resolution,
                 include_national=include_national,
                 language=language,
-                limit=page_size,
-                offset=offset,
+                limit=walk.page_size,
+                offset=walk.offset,
             )
-            groups = page.cited_by
-            if _repeats(groups, previous):
+            if not walk.check(page._map, "citedBy"):
                 return
-            previous = [group.raw for group in groups]
-            for group in groups:
+            for group in page.cited_by:
                 yield group
-            rows = page.edge_count
-            offset += rows
-            if _page_done(rows, page_size, offset, page.total_edges):
+            if walk.advance(page._map, page.edge_count):
                 return
 
     async def iter_cites(
@@ -633,8 +611,7 @@ class AsyncCitationsResource:
         page_size: int = _EDGE_PAGE_SIZE,
     ) -> AsyncIterator[CitationDocumentGroup]:
         """Async twin of :meth:`CitationsResource.iter_cites`."""
-        offset = 0
-        previous: list[dict[str, Any]] | None = None
+        walk = EdgeWalk(page_size)
         while True:
             page = await self.cites(
                 celex,
@@ -644,18 +621,14 @@ class AsyncCitationsResource:
                 resolution=resolution,
                 include_national=include_national,
                 language=language,
-                limit=page_size,
-                offset=offset,
+                limit=walk.page_size,
+                offset=walk.offset,
             )
-            groups = page.cites
-            if _repeats(groups, previous):
+            if not walk.check(page._map, "cites"):
                 return
-            previous = [group.raw for group in groups]
-            for group in groups:
+            for group in page.cites:
                 yield group
-            rows = page.edge_count
-            offset += rows
-            if _page_done(rows, page_size, offset, page.total_edges):
+            if walk.advance(page._map, page.edge_count):
                 return
 
     async def network(

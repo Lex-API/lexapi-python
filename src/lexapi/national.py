@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
+from lexapi._paging import CursorWalk, check_page_size
 from lexapi._payloads import DateLike, drop_none, iso_date, seg
 from lexapi.models import (
     NationalCoverageResponse,
@@ -219,27 +220,31 @@ class NationalResource:
     ) -> Iterator[NationalDocumentListResponse]:
         """Walk every page of :meth:`list_documents` via ``cursor`` (reaches
         past the 1,000-row ``page`` ceiling). Each page is a separate billed
-        call. Stops after a page with ``has_more=False`` or an empty page,
-        and when the API hands back a cursor already used.
+        call. Stops after a page with ``has_more=False`` or an empty page.
+        Raises :class:`~lexapi.InvalidResponseError` when the server hands
+        back a cursor already sent in this walk (including ``cursor``), or
+        one that is not a string; pages already yielded stay valid, and the
+        page that showed it is on the error's ``body``.
         """
-        used: set[str] = set()
+        if limit is not None:
+            check_page_size("limit", limit)
+        if cursor is not None and not isinstance(cursor, str):
+            raise ValueError(f"cursor must be a string, got {cursor!r}")
+        walk = CursorWalk(cursor)
         while True:
             page = self.list_documents(
                 jurisdiction,
-                cursor=cursor,
+                cursor=walk.cursor,
                 limit=limit,
                 q=q,
                 document_type=document_type,
                 include_repealed=include_repealed,
             )
+            following = walk.next_cursor(page._map, bool(page.results))
             yield page
-            if not page.has_more or not page.next_cursor or not page.results:
+            if following is None:
                 return
-            if page.next_cursor == cursor or page.next_cursor in used:
-                return  # a cursor already used: the next page would repeat
-            if cursor is not None:
-                used.add(cursor)
-            cursor = page.next_cursor
+            walk.send(following)
 
     def semantic_search(
         self,
@@ -419,24 +424,25 @@ class AsyncNationalResource:
         include_repealed: bool | None = None,
     ) -> AsyncIterator[NationalDocumentListResponse]:
         """Async twin of :meth:`NationalResource.iter_documents`."""
-        used: set[str] = set()
+        if limit is not None:
+            check_page_size("limit", limit)
+        if cursor is not None and not isinstance(cursor, str):
+            raise ValueError(f"cursor must be a string, got {cursor!r}")
+        walk = CursorWalk(cursor)
         while True:
             page = await self.list_documents(
                 jurisdiction,
-                cursor=cursor,
+                cursor=walk.cursor,
                 limit=limit,
                 q=q,
                 document_type=document_type,
                 include_repealed=include_repealed,
             )
+            following = walk.next_cursor(page._map, bool(page.results))
             yield page
-            if not page.has_more or not page.next_cursor or not page.results:
+            if following is None:
                 return
-            if page.next_cursor == cursor or page.next_cursor in used:
-                return  # a cursor already used: the next page would repeat
-            if cursor is not None:
-                used.add(cursor)
-            cursor = page.next_cursor
+            walk.send(following)
 
     async def semantic_search(
         self,
