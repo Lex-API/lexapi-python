@@ -153,7 +153,8 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 - Integer fields of the response models (for example `Document.version`)
   accept an integer, or a float with an integral value; a non-integral or
-  non-finite number (`2.9`, `1e999`) is now `None`. Before, `2.9` was read
+  non-finite number (`2.9`, `1e999`) is now `None`, and such an item of
+  `WebhookRetryPolicy.delays_minutes` is left out. Before, `2.9` was read
   as `2` and `1e999` raised `OverflowError`.
 - A non-finite number (`1e999`) in the `credits` / `usage` / `subscription`
   blocks, in the 402 figures or in `TimeoutError.timeout_ms` now reads as

@@ -268,7 +268,7 @@ class NotFoundError(LexAPIError):
     @property
     def candidates_truncated(self) -> bool:
         """True when ``details.candidatesTruncated`` is ``true``, or when more
-        than 10 candidates were sent: there are more than those listed."""
+        than 10 candidates were kept: there are more than those listed."""
         return (
             self._detail("candidatesTruncated") is True or len(self._candidates()) > _MAX_CANDIDATES
         )

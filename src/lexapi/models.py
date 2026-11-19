@@ -2232,9 +2232,7 @@ class WebhookRetryPolicy:
             max_attempts=_i(data, "maxAttempts"),
             window_hours=_i(data, "windowHours"),
             delays_minutes=[
-                int(v)
-                for v in _list(data, "delaysMinutes")
-                if isinstance(v, (int, float)) and not isinstance(v, bool)
+                n for n in (_int(v) for v in _list(data, "delaysMinutes")) if n is not None
             ],
             raw=data,
         )

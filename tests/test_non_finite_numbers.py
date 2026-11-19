@@ -113,3 +113,13 @@ def test_timeout_budget():
     for raw, expected in [(float("inf"), None), (float("nan"), None), (2.9, 2), (5000, 5000)]:
         err = TimeoutError("x", details={"timeoutMs": raw})
         assert err.timeout_ms == expected
+
+
+def test_webhook_retry_delays_keep_only_integers():
+    from lexapi import WebhookRetryPolicy
+
+    policy = WebhookRetryPolicy.from_dict(
+        {"delaysMinutes": [1, float("inf"), 2.9, "5", True, None, 30.0, float("nan"), 120]}
+    )
+    assert policy.delays_minutes == [1, 30, 120]
+    assert all(type(v) is int for v in policy.delays_minutes)
