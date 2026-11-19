@@ -91,7 +91,7 @@ def test_bool_case_law_score_reads_as_none():
     ],
 )
 def test_depth_guard(text, deep):
-    assert too_deep(text) is (deep and GUARDED)
+    assert too_deep(text) is deep  # the 512 cap applies on every Python version
 
 
 DEEP_SCRIPT = textwrap.dedent(
@@ -121,9 +121,7 @@ DEEP_SCRIPT = textwrap.dedent(
             try:
                 c._request("GET", "/info", params={"s": status})
             except EXPECTED[status] as err:
-                # Refused before parsing (older interpreters) or by the
-                # parser, or parsed by a parser that allows the depth.
-                assert err.body is None or type(err.body) is list, type(err.body)
+                assert err.body is None, type(err.body)  # refused before parsing
                 return "ok"
 
     async def async_call(status):
@@ -132,9 +130,7 @@ DEEP_SCRIPT = textwrap.dedent(
             try:
                 await c._request("GET", "/info", params={"s": status})
             except EXPECTED[status] as err:
-                # Refused before parsing (older interpreters) or by the
-                # parser, or parsed by a parser that allows the depth.
-                assert err.body is None or type(err.body) is list, type(err.body)
+                assert err.body is None, type(err.body)  # refused before parsing
                 return "ok"
 
     depth = min(950, sys.getrecursionlimit() - 50)
@@ -178,21 +174,10 @@ def test_a_100k_deep_body_never_crashes_the_interpreter(recursion_limit):
     assert run.stdout.strip() == "survived"
 
 
-def test_a_deep_webhook_body_is_a_signature_error_or_parsed():
+def test_a_deep_webhook_body_is_a_signature_error():
     body = b'{"a":' * 100_000 + b"1" + b"}" * 100_000
-    signature = compute_signature(body, "s")
-    if GUARDED:
-        with pytest.raises(WebhookSignatureError, match="not JSON"):
-            verify_webhook(body, signature, "s", tolerance=None)
-        return
-    # From 3.12 the parser decides: it refuses the depth (RecursionError,
-    # read as "not JSON") or, where the stack allows it, parses it.
-    try:
-        event = verify_webhook(body, signature, "s", tolerance=None)
-    except WebhookSignatureError as err:
-        assert "not JSON" in str(err)
-    else:
-        assert isinstance(event, dict)
+    with pytest.raises(WebhookSignatureError, match="not JSON"):
+        verify_webhook(body, compute_signature(body, "s"), "s", tolerance=None)
 
 
 # ── typed integers above 2**53 - 1 ───────────────────────────────────────
@@ -552,3 +537,126 @@ def test_timeouts_accept_any_real_number():
         client.close()
     with pytest.raises(ValueError):
         LexAPI("k", base_url="http://127.0.0.1:9/api/v1", timeout=decimal.Decimal("NaN"))
+
+
+# ── a small thread stack ─────────────────────────────────────────────────
+
+THREAD_SCRIPT = textwrap.dedent(
+    """
+    import asyncio, sys, threading
+    import httpx
+    from lexapi import (AsyncLexAPI, InternalServerError, InvalidResponseError, LexAPI,
+                        RateLimitedError, WebhookSignatureError, compute_signature,
+                        verify_webhook)
+
+    DEEP = b"[" * 100_000 + b"]" * 100_000
+    EXPECTED = {200: InvalidResponseError, 500: InternalServerError, 429: RateLimitedError}
+    BASE = "http://127.0.0.1:9/api/v1"
+    results = []
+
+    def handler(request):
+        if request.url.path.endswith("/export"):
+            lines = b'{"_meta": {}}\\n' + DEEP + b'\\n{"_done": {}}\\n'
+            return httpx.Response(200, content=lines,
+                                  headers={"content-type": "application/x-ndjson"})
+        status = int(request.url.params["s"])
+        return httpx.Response(status, content=DEEP, headers={"content-type": "application/json"})
+
+    def work():
+        transport = httpx.MockTransport(handler)
+        with LexAPI("k", base_url=BASE, transport=transport, max_retries=0) as c:
+            for status in (200, 500, 429):
+                try:
+                    c._request("GET", "/info", params={"s": status})
+                except EXPECTED[status] as err:
+                    assert err.body is None
+                    results.append(("sync", status))
+            with c.export(limit=1) as stream:
+                assert list(stream) == [] and stream.invalid_lines == 1
+                results.append(("export", "sync"))
+
+        async def go():
+            async with AsyncLexAPI("k", base_url=BASE, transport=transport, max_retries=0) as c:
+                for status in (200, 500, 429):
+                    try:
+                        await c._request("GET", "/info", params={"s": status})
+                    except EXPECTED[status] as err:
+                        assert err.body is None
+                        results.append(("async", status))
+                stream = await c.export(limit=1)
+                async with stream:
+                    assert [r async for r in stream] == [] and stream.invalid_lines == 1
+                    results.append(("export", "async"))
+
+        asyncio.run(go())
+        try:
+            verify_webhook(DEEP, compute_signature(DEEP, "s"), "s", tolerance=None)
+        except WebhookSignatureError:
+            results.append(("webhook",))
+
+    threading.stack_size(256 * 1024)
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+    assert len(results) == 9, results
+    print("survived")
+    """
+)
+
+
+def test_a_deep_body_in_a_thread_with_a_small_stack_never_aborts():
+    run = subprocess.run(
+        [sys.executable, "-c", THREAD_SCRIPT], capture_output=True, text=True, timeout=120
+    )
+    assert run.returncode == 0, (run.returncode, run.stderr[-1500:])
+    assert run.stdout.strip() == "survived"
+
+
+# ── the scan across chunks ───────────────────────────────────────────────
+
+
+def test_a_string_open_across_a_chunk_boundary_hides_its_brackets():
+    from lexapi._json import _CHUNK, nesting_depth
+
+    # The string opens in the first chunk and closes in the third; the
+    # brackets inside it must not count.
+    text = b'["' + b"[" * (2 * _CHUNK) + b'"]'
+    assert nesting_depth(text) == 1
+
+
+def test_depth_carries_into_the_peak_across_chunks():
+    from lexapi._json import _CHUNK, nesting_depth
+
+    # 300 levels open in chunk 1, 300 more open in chunk 2: the peak is 600.
+    # The scan keeps only quotes and brackets, so the padding is brackets
+    # inside a string: it fills the rest of the first chunk.
+    pad = b'"' + b"[" * (_CHUNK - 400) + b'"'
+    text = b"[" * 300 + pad + b"[" * 300 + b"]" * 600
+    assert nesting_depth(text) == 600
+
+
+def test_depth_accumulates_across_three_chunks():
+    from lexapi._json import _CHUNK, nesting_depth
+
+    pad = b'"' + b"{" * _CHUNK + b'"'  # brackets in a string: a whole chunk each
+    text = b"[" * 200 + pad + b"[" * 200 + pad + b"[" * 200 + pad + b"]" * 600
+    assert nesting_depth(text) == 600
+    assert too_deep(text) is True
+
+
+# ── invalid UTF-8 in a webhook body ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        b"\xff",
+        b"\xed\xa0\x80",  # an encoded surrogate (U+D800)
+        b"\xc0\xaf",  # an overlong "/"
+        b"\xe2\x82",  # a truncated three-byte sequence
+    ],
+)
+def test_invalid_utf8_inside_a_webhook_string_is_not_json(bad):
+    body = b'{"event": "webhook.test", "note": "a' + bad + b'b"}'
+    with pytest.raises(WebhookSignatureError, match="not JSON"):
+        verify_webhook(body, compute_signature(body, "s"), "s", tolerance=None)

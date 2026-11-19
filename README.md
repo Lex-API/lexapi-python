@@ -825,6 +825,12 @@ without a code, raised as `TierForbiddenError`. A handler that treated
 `TierForbiddenError` as a failed payment needs a `PaymentPastDueError` clause on
 API 2.27.0 and later.
 
+A JSON body (or export line, or webhook body) nested deeper than 512 levels
+is refused before it is parsed, on every Python version, and counts as not
+JSON. In a thread whose stack is far smaller than the default, the
+interpreter itself can run out of stack before any check runs; the SDK cannot
+detect that.
+
 `InvalidResponseError`: a `2xx` answer that is not the documented shape — no
 body, a body that is not strict UTF-8 JSON (e.g. a proxy's HTML page), JSON
 that is not an object, `success: false`, a documented field that is missing or

@@ -132,6 +132,9 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   days); `nan`, a negative value or a non-number raises `ValueError` when the
   client is created (`None` still means no limit). Any real number is
   accepted (`int`, `float`, `Decimal`, numpy numbers).
+- **A JSON text nested deeper than 512 levels is refused** (a response body,
+  error body, export line or webhook body), on every Python version, before
+  it is parsed: it is "not JSON".
 - **Webhook bodies are strict UTF-8.** `verify_webhook` decodes the body as
   UTF-8 (one leading byte order mark allowed) before parsing it, like every
   response body; a body in another encoding (UTF-16, UTF-32) raises
@@ -214,14 +217,15 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 - An asctime `Retry-After` date (`Sun Nov  6 08:49:37 1994`) is read as UTC;
   it was read in local time.
 - On Python older than 3.12, a response body, error body, export line or
-  webhook body nested deeper than 512 levels, or deeper than the recursion
-  limit leaves room for where it is parsed (less a small reserve; a text
-  without brackets is never refused), is refused before it is parsed
-  (not JSON: `InvalidResponseError`, an error without a body, an invalid
-  export line, `WebhookSignatureError`). Such a body could abort the
-  interpreter. Each response body is parsed at most once (the retry decision
-  and the error share it). From 3.12 the parser's own limit applies;
-  `verify_webhook` now also treats a `RecursionError` as "not JSON".
+  webhook body nested deeper than the recursion limit leaves room for where
+  it is parsed (less a small reserve; a text without brackets is never
+  refused) is refused before it is parsed (not JSON: `InvalidResponseError`,
+  an error without a body, an invalid export line, `WebhookSignatureError`).
+  Such a body could abort the interpreter. Each response body is parsed at
+  most once (the retry decision and the error share it). `verify_webhook`
+  now also treats a `RecursionError` as "not JSON". In a thread whose stack
+  is far smaller than the default, the interpreter itself can still run out
+  of stack before any check runs; the SDK cannot detect that.
 - A deeply nested export line is counted in `invalid_lines` instead of
   raising `RecursionError`.
 - A float field (`score`, the national coverage rates and bounds) holding a

@@ -1,17 +1,19 @@
-"""Nesting guard for the JSON parser on interpreters older than 3.12.
+"""Nesting guard for the JSON parser.
 
-Before Python 3.12 the C JSON parser recurses once per level of nesting,
-counted against the recursion limit. A body nested deeply enough can abort
-the interpreter instead of raising ``RecursionError`` — and once a
-``RecursionError`` was raised near the limit, a second deep parse from the
-same depth aborts it too. On those interpreters a text is therefore refused
-before it is parsed when it nests deeper than :data:`MAX_DEPTH` levels, or
-deeper than the recursion limit leaves room for at the caller's depth. From
-3.12 the parser has its own limit and raises ``RecursionError``, which every
-caller treats like ``ValueError``.
+On every Python version a JSON text nested deeper than :data:`MAX_DEPTH`
+levels is refused before it is parsed: the C parser recurses once per level,
+and in a thread with a small stack a deep text can exhaust the C stack before
+the parser's own limit is reached. Before Python 3.12 the parser's recursion
+also counts against the recursion limit, and once a ``RecursionError`` was
+raised near the limit, a second deep parse from the same depth aborts the
+interpreter; there a text is also refused when it nests deeper than the
+recursion limit leaves room for at the caller's depth. A ``RecursionError``
+the parser still raises is treated like ``ValueError`` by every caller.
 
 The depth is measured in one linear pass of C-level byte operations, and
-only when the text holds more brackets than the room available.
+only when the text holds more brackets than the room available. In a thread
+whose stack is far smaller than the default, the interpreter itself can run
+out of stack before any check runs; that cannot be detected from here.
 """
 
 from __future__ import annotations
@@ -21,9 +23,10 @@ from itertools import accumulate
 from types import FrameType
 from typing import Union
 
-#: The deepest nesting parsed on interpreters older than 3.12.
+#: The deepest nesting handed to the parser, on every Python version.
 MAX_DEPTH = 512
 
+#: Whether the recursion-room check applies (Python before 3.12).
 GUARDED = sys.version_info < (3, 12)
 
 #: Recursion levels kept free below the limit for the parser's own calls.
@@ -78,16 +81,16 @@ def _stack_depth() -> int:
 
 def too_deep(text: Text) -> bool:
     """True when ``text`` must not be handed to the parser: it nests deeper
-    than :data:`MAX_DEPTH`, or deeper than the recursion limit leaves room
-    for here, less :data:`RESERVED` (only checked where :data:`GUARDED`).
-    A text without brackets is never refused."""
-    if not GUARDED:
-        return False
+    than :data:`MAX_DEPTH` (every Python version), or — where
+    :data:`GUARDED` — deeper than the recursion limit leaves room for here,
+    less :data:`RESERVED`. A text without brackets is never refused."""
     data = text.encode("utf-8", "surrogatepass") if isinstance(text, str) else bytes(text)
     brackets = data.count(b"[") + data.count(b"{")
     if brackets == 0:
         return False
-    room = min(MAX_DEPTH, sys.getrecursionlimit() - _stack_depth() - RESERVED)
+    room = MAX_DEPTH
+    if GUARDED:
+        room = min(room, sys.getrecursionlimit() - _stack_depth() - RESERVED)
     if brackets <= room:
         return False
     return nesting_depth(data) > room
