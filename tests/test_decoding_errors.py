@@ -127,3 +127,34 @@ def test_lines_split_across_chunks_and_crlf_endings(mode):
     content = b'\xef\xbb\xbf{"_meta": {}}\r\n{"celex": "A"}\r\n\r\n{"_done": {}}'
     rows, invalid = export(mode, content, "application/x-ndjson")
     assert rows == [{"celex": "A"}] and invalid == 0
+
+
+def test_unencodable_payloads_leak_nothing_and_encodable_ones_compare_in_constant_time(
+    monkeypatch,
+):
+    from lexapi import webhooks
+
+    calls = []
+    real = webhooks.hmac.compare_digest
+
+    def spy(a, b):
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(webhooks.hmac, "compare_digest", spy)
+
+    secret_text = "SECRET-PAYLOAD-TEXT"
+    payload = '{"note": "' + secret_text + '\ud800"}'
+    with pytest.raises(WebhookSignatureError) as info:
+        verify_webhook(payload, "0" * 64, "s", tolerance=None)
+    err = info.value
+    for text in (str(err), repr(err), " ".join(map(str, err.args))):
+        assert secret_text not in text and "\ud800" not in text
+    assert err.__cause__ is None and err.__context__ is None
+    assert calls == []  # nothing to compare: the payload has no UTF-8 form
+
+    good = '{"note": "' + secret_text + '"}'
+    signature = compute_signature(good.encode("utf-8"), "s")
+    assert verify_signature(good, signature, "s") is True
+    assert verify_signature(good, "f" * 64, "s") is False
+    assert len(calls) == 2  # both encodable checks went through compare_digest
