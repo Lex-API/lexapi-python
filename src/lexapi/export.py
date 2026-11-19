@@ -168,6 +168,10 @@ def _envelope(row: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else row
 
 
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")  # NaN, Infinity, -Infinity
+
+
 class _ExportStreamBase:
     def __init__(self, response: httpx.Response) -> None:
         self._response = response
@@ -264,12 +268,12 @@ class _ExportStreamBase:
         A line is read as strict UTF-8 whatever charset the response names
         (one byte order mark at the start of the stream is ignored); a line
         that is not UTF-8 is an invalid line."""
-        try:
-            line = raw.decode("utf-8-sig" if self._first_line else "utf-8").strip()
-        except UnicodeDecodeError:
-            line = None
+        first = self._first_line
         self._first_line = False
-        if line is None:
+        try:
+            # Only spaces, tabs and carriage returns are trimmed (contract §1.8).
+            line = raw.decode("utf-8-sig" if first else "utf-8").strip(" \t\r")
+        except UnicodeDecodeError:
             self.invalid_lines += 1
             return None
         if not line:
@@ -277,14 +281,18 @@ class _ExportStreamBase:
         try:
             if too_deep(line):
                 raise ValueError("nested too deeply")
-            row = json.loads(line)
+            # Strict JSON: NaN / Infinity are not JSON.
+            row = json.loads(line, parse_constant=_reject_constant)
         except (ValueError, RecursionError):  # RecursionError: nested too deeply
             self.invalid_lines += 1
             return None
         if not isinstance(row, dict):
             self.invalid_lines += 1
             return None
-        if self.meta is None and self.done is None and "_meta" in row:
+        if "_meta" in row:
+            # Never a row; it sets the exposed _meta only as the first line.
+            if not first:
+                return None
             self.meta = _envelope(row, "_meta")
             return ("meta", self.meta)
         if "_done" in row:

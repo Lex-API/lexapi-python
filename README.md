@@ -449,8 +449,10 @@ from lexapi import WebhookSignatureError, verify_webhook
 def handle_delivery(raw_body: bytes, signature: str) -> int:
     try:
         event = verify_webhook(raw_body, signature, secret)  # 5-minute replay window
-    except WebhookSignatureError:
-        return 401
+    except WebhookSignatureError as err:
+        # err.reason: missing_signature, invalid_signature, malformed_body,
+        # stale_timestamp (missing_secret is a configuration error)
+        return 400 if err.reason == "malformed_body" else 401
     if event["event"] == "watchlist.changes":
         for change in event["data"]["changes"]:
             print(change["watchedCelex"], change["relation"], change["document"]["celex"])

@@ -340,6 +340,7 @@ def process_response(response: httpx.Response, cast: type[R]) -> R:
         body,
         retry_after=retry_after,
         body_excerpt=_excerpt(content) if parsed is NOT_JSON else None,
+        quota=quota,
     )
     if isinstance(error, RateLimitedError):
         error.__dict__["_quota_exhausted"] = quota  # the retry decision's answer

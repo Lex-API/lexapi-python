@@ -10,13 +10,16 @@ cost no credits.
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import hmac
 import json
+import math
+import re
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from lexapi._json import too_deep
 from lexapi._paging import DeliveryWalk
@@ -40,8 +43,33 @@ _DELIVERIES_PAGE_SIZE = 50
 DEFAULT_TOLERANCE_SECONDS = 300
 
 
+#: Why a delivery failed verification (``WebhookSignatureError.reason``).
+WebhookFailureReason = Literal[
+    "missing_secret",
+    "missing_signature",
+    "invalid_signature",
+    "malformed_body",
+    "stale_timestamp",
+]
+
+
 class WebhookSignatureError(ValueError):
-    """A delivery failed verification (bad signature, or a stale timestamp)."""
+    """A delivery failed verification, or a helper was given no secret.
+
+    :attr:`reason` says which check failed, in the order
+    :func:`verify_webhook` runs them: ``missing_secret`` (a configuration
+    error: the secret is empty), ``missing_signature`` (no header),
+    ``invalid_signature``, ``malformed_body`` (not strict UTF-8 JSON, or not
+    a JSON object), ``stale_timestamp`` (the signed ``timestamp`` is missing,
+    malformed or outside the replay window).
+    """
+
+    def __init__(self, message: str, reason: str = "invalid_signature") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (str(self), self.reason))
 
 
 def _reject_constant(name: str) -> Any:
@@ -54,10 +82,28 @@ def _as_bytes(value: bytes | bytearray | memoryview | str) -> bytes:
     return bytes(value)
 
 
+def _secret_bytes(secret: str | bytes) -> bytes:
+    """The HMAC key; an empty secret is a configuration error. A ``str``
+    secret that cannot be encoded as UTF-8 raises ``UnicodeEncodeError``."""
+    key = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
+    if not key:
+        raise WebhookSignatureError("the webhook secret is empty", "missing_secret")
+    return key
+
+
+#: Exactly 64 hexadecimal digits, after trimming.
+_HEX_DIGEST = re.compile(r"[0-9a-fA-F]{64}")
+
+
 def compute_signature(payload: bytes | bytearray | memoryview | str, secret: str | bytes) -> str:
     """The ``X-Webhook-Signature`` LexAPI sends: hex HMAC-SHA256 of the raw
-    request body, keyed with the webhook ``secret``."""
-    key = secret.encode("utf-8") if isinstance(secret, str) else secret
+    request body, keyed with the webhook ``secret``.
+
+    An empty secret raises :class:`WebhookSignatureError`
+    (``reason="missing_secret"``). A ``str`` payload is signed as its UTF-8
+    bytes; one that has none (a lone surrogate) raises ``UnicodeEncodeError``
+    and no signature is returned."""
+    key = _secret_bytes(secret)
     return hmac.new(key, _as_bytes(payload), hashlib.sha256).hexdigest()
 
 
@@ -69,18 +115,54 @@ def verify_signature(
     """Timing-safe check of an ``X-Webhook-Signature`` header.
 
     Pass the **raw request body bytes exactly as received** — parsing and
-    re-serialising the JSON changes the bytes and breaks the digest.
+    re-serialising the JSON changes the bytes and breaks the digest. Leading
+    and trailing spaces, tabs, carriage returns and line feeds are removed
+    from the header, and nothing else; what remains must be exactly 64
+    hexadecimal digits (either case). A ``str`` payload that cannot be
+    encoded as UTF-8 has no bytes to verify: ``False``. An empty secret
+    raises :class:`WebhookSignatureError` (``reason="missing_secret"``).
     """
+    key = _secret_bytes(secret)
     if not signature:
         return False
-    candidate = signature.strip().lower()
-    if not candidate.isascii():  # never a hex digest; compare_digest(str) would raise
+    candidate = signature.strip(" \t\r\n")
+    if not _HEX_DIGEST.fullmatch(candidate):
         return False
     try:
-        expected = compute_signature(payload, secret)
-    except UnicodeEncodeError:  # a str payload with a lone surrogate: not a body
+        body = _as_bytes(payload)
+    except UnicodeEncodeError:  # a str payload with a lone surrogate: no bytes
         return False
-    return hmac.compare_digest(expected.encode("ascii"), candidate.encode("ascii"))
+    expected = hmac.new(key, body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected.encode("ascii"), candidate.lower().encode("ascii"))
+
+
+#: ``YYYY-MM-DDTHH:MM:SS[.fraction]`` then ``Z`` or ``±HH:MM`` (ASCII only).
+_TIMESTAMP = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})"
+    r"(?:\.([0-9]+))?(?:(Z)|([+-])([0-9]{2}):([0-9]{2}))"
+)
+
+
+def _signed_time(stamp: Any) -> float | None:
+    """Seconds since the epoch of a signed ``timestamp``, or ``None`` when it
+    is not a string in the required form (or names an impossible time)."""
+    if not isinstance(stamp, str):
+        return None
+    match = _TIMESTAMP.fullmatch(stamp)
+    if match is None:
+        return None
+    year, month, day, hh, mm, ss, fraction, zulu, sign, oh, om = match.groups()
+    offset_minutes = 0
+    if not zulu:
+        if int(oh) > 23 or int(om) > 59:
+            return None
+        offset_minutes = (int(oh) * 60 + int(om)) * (1 if sign == "+" else -1)
+    try:
+        when = datetime(int(year), int(month), int(day), int(hh), int(mm), int(ss))
+    except ValueError:
+        return None
+    seconds = calendar.timegm(when.timetuple()) - offset_minutes * 60
+    return seconds + (float("0." + fraction) if fraction else 0.0)
 
 
 def verify_webhook(
@@ -93,18 +175,29 @@ def verify_webhook(
 ) -> dict[str, Any]:
     """Verify a delivery and return the parsed event.
 
-    Checks the signature (raises :class:`WebhookSignatureError` on mismatch),
-    then — unless ``tolerance`` is ``None`` — rejects an event whose signed
-    ``timestamp`` is more than ``tolerance`` seconds from ``now``: the
-    signature covers only the body and there is no nonce, so a replayed
-    delivery would otherwise verify again. Retries are re-signed with a fresh
-    ``timestamp``; dedupe side effects on ``event["delivery"]["id"]`` (stable
-    across retries, also sent as ``X-Webhook-Delivery``).
+    Checks, in this order, each failing with :class:`WebhookSignatureError`
+    and its :attr:`~WebhookSignatureError.reason`: the secret
+    (``missing_secret``), a missing or empty header (``missing_signature``),
+    the signature (``invalid_signature``), the body — strict UTF-8 JSON
+    whose value is an object (``malformed_body``) — and, unless
+    ``tolerance`` is ``None``, the signed ``timestamp``
+    (``stale_timestamp``): it must be ``YYYY-MM-DDTHH:MM:SS[.fraction]``
+    followed by ``Z`` or ``±HH:MM``, at most ``tolerance`` seconds from
+    ``now``. The signature covers only the body and there is no nonce, so a
+    replayed delivery would otherwise verify again. Retries are re-signed
+    with a fresh ``timestamp``; dedupe side effects on
+    ``event["delivery"]["id"]`` (stable across retries, also sent as
+    ``X-Webhook-Delivery``). ``tolerance`` must not be NaN (``ValueError``).
 
     Events: ``documents.new``, ``watchlist.changes`` and ``webhook.test``.
     """
+    if tolerance is not None and math.isnan(tolerance):
+        raise ValueError("tolerance must be a number of seconds, not NaN")
+    _secret_bytes(secret)
+    if not signature:
+        raise WebhookSignatureError("missing webhook signature", "missing_signature")
     if not verify_signature(payload, signature, secret):
-        raise WebhookSignatureError("invalid webhook signature")
+        raise WebhookSignatureError("invalid webhook signature", "invalid_signature")
     body = _as_bytes(payload)
     try:
         # Strict UTF-8 (one leading byte order mark allowed), as for every
@@ -114,21 +207,23 @@ def verify_webhook(
             raise ValueError("nested too deeply")
         event = json.loads(text, parse_constant=_reject_constant)
     except (ValueError, RecursionError) as exc:  # UnicodeDecodeError is a ValueError
-        raise WebhookSignatureError("webhook body is not JSON") from exc
+        raise WebhookSignatureError("webhook body is not JSON", "malformed_body") from exc
     if not isinstance(event, dict):
-        raise WebhookSignatureError("webhook body is not a JSON object")
+        raise WebhookSignatureError("webhook body is not a JSON object", "malformed_body")
     if tolerance is not None:
         stamp = event.get("timestamp")
         if not isinstance(stamp, str):
-            raise WebhookSignatureError("webhook event carries no timestamp")
-        try:
-            sent = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
-        except ValueError as exc:
-            raise WebhookSignatureError(f"unparseable webhook timestamp {stamp!r}") from exc
-        current = time.time() if now is None else now
-        if abs(current - sent) > tolerance:
+            raise WebhookSignatureError("webhook event carries no timestamp", "stale_timestamp")
+        sent = _signed_time(stamp)
+        if sent is None:
             raise WebhookSignatureError(
-                f"webhook timestamp {stamp} is outside the {tolerance:g}s tolerance"
+                f"unparseable webhook timestamp {stamp!r}", "stale_timestamp"
+            )
+        current = time.time() if now is None else now
+        if not abs(current - sent) <= tolerance:
+            raise WebhookSignatureError(
+                f"webhook timestamp {stamp} is outside the {tolerance:g}s tolerance",
+                "stale_timestamp",
             )
     return event
 

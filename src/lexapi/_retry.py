@@ -366,10 +366,11 @@ def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
 
     API 2.4.0 on: the code is ``QUOTA_EXHAUSTED`` — the top-level ``code``,
     or ``error.code`` on the typed envelope — whatever else the response
-    carries. Fallback for older servers: legacy
-    daily-call plans (``"Daily quota exceeded"``) and the legacy monthly
-    semantic quota answer 429 with a ``usage`` block carrying ``resetsAt``
-    and no ``retryAfter`` / ``Retry-After``.
+    carries. Fallback for older servers, only when the 429's code is
+    ``RATE_LIMITED`` (sent, or derived from the status): legacy daily-call
+    plans (``"Daily quota exceeded"``) and the legacy monthly semantic quota
+    answer 429 with a ``usage`` block carrying ``resetsAt`` and no usable
+    ``retryAfter`` / ``Retry-After``.
     """
     if status != 429:
         return False
@@ -378,6 +379,11 @@ def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
         _typed_error(body).get("code"),
     ):
         return True
+    # The shape test applies only to a 429 whose code is RATE_LIMITED, sent
+    # or derived from the status; any other code is a quota only by name.
+    own = _envelope_code(body) if isinstance(body, dict) else None
+    if isinstance(own, str) and own and own != "RATE_LIMITED":
+        return False
     header = headers.get("retry-after")
     if header is not None and parse_retry_after(header) is not None:
         return False
@@ -385,6 +391,15 @@ def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
         return False
     usage = body.get("usage")
     return isinstance(usage, dict) and isinstance(usage.get("resetsAt"), str)
+
+
+def is_payment_past_due(body: Any) -> bool:
+    """A failed payment (``PAYMENT_PAST_DUE``, the top-level ``code`` or the
+    typed ``error.code``): never retried, on any status (a 429 included)."""
+    return isinstance(body, dict) and "PAYMENT_PAST_DUE" in (
+        body.get("code"),
+        _typed_error(body).get("code"),
+    )
 
 
 def is_app_response(headers: httpx.Headers, body: Any = None) -> bool:
@@ -480,6 +495,8 @@ def retry_allowed(
     """
     status = response.status_code
     idempotent = method.upper() in _IDEMPOTENT_METHODS
+    if is_payment_past_due(body):
+        return False
     if is_quota_exhausted(status, response.headers, body):
         return False
     if is_budget_timeout(status, body):

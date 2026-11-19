@@ -333,11 +333,11 @@ class RateLimitedError(LexAPIError):
         (:func:`lexapi._retry.is_quota_exhausted`): the client records that
         decision on the error it raises. An error built by hand (no
         headers) is judged from its code and body."""
+        if self.code == "QUOTA_EXHAUSTED":  # on any status
+            return True
         decided = self.__dict__.get("_quota_exhausted")
         if isinstance(decided, bool):
             return decided
-        if self.code == "QUOTA_EXHAUSTED":
-            return True
         return is_quota_exhausted(429, httpx.Headers(), self.body)
 
 
@@ -781,6 +781,7 @@ def error_from_response(
     retry_after: float | None = None,
     *,
     body_excerpt: str | None = None,
+    quota: bool | None = None,
 ) -> LexAPIError:
     """Map a non-2xx response to the most specific typed error.
 
@@ -799,6 +800,10 @@ def error_from_response(
     (anything else counts as absent), and a body that is not JSON is never
     quoted in the message (``"HTTP <status>"``); ``body_excerpt`` keeps it,
     off the message.
+
+    ``quota`` is the quota-429 decision of
+    :func:`lexapi._retry.is_quota_exhausted` (judged from the body alone
+    when not given).
     """
     code = STATUS_TO_CODE.get(status, "INTERNAL")
     message = f"HTTP {status}"
@@ -822,7 +827,15 @@ def error_from_response(
             message = top_message or message
             details = body.get("details")
 
-    error_cls = CODE_TO_ERROR.get(code, LexAPIError)
+    if quota is None:
+        quota = is_quota_exhausted(status, httpx.Headers(), body)
+    if quota:
+        # A quota 429 is a rate-limit error with the quota flag, whatever other
+        # code the body carries; a RATE_LIMITED code (sent or derived) stays.
+        code = code if code == "RATE_LIMITED" else "QUOTA_EXHAUSTED"
+        error_cls: type[LexAPIError] = RateLimitedError
+    else:
+        error_cls = CODE_TO_ERROR.get(code, LexAPIError)
     kwargs: dict[str, Any] = {
         "code": code,
         "status": status,
