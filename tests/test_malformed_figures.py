@@ -383,3 +383,17 @@ def test_national_iter_documents_stops_on_a_cursor_cycle(mode):
     pages, seen = _collect(mode, responses, lambda c: c.national.iter_documents("AT"))
     assert [r.url.params.get("cursor") for r in seen] == [None, "a", "b"]
     assert len(pages) == 3
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_deliveries_stop_at_an_all_seen_page_even_if_more_follow(mode):
+    # Pins the current stop rule: a page of only seen ids ends the walk, so
+    # a later page with unseen ids is not requested.
+    pages = [
+        (200, {"success": True, "deliveries": [_delivery(1), _delivery(2)]}, {}),
+        (200, {"success": True, "deliveries": [_delivery(1), _delivery(2)]}, {}),
+        (200, {"success": True, "deliveries": [_delivery(3)]}, {}),
+    ]
+    items, seen = _collect(mode, pages, lambda c: c.webhooks.iter_deliveries("wh_1", page_size=2))
+    assert [d.id for d in items] == ["d1", "d2"]
+    assert len(seen) == 2

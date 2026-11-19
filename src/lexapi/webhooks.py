@@ -124,6 +124,13 @@ class _DeleteResponse(APIResponse):
     _allow_empty = True
 
 
+def _walk_ends(new_ids: int) -> bool:
+    """The delivery walk's stop rule for a non-empty page: stop when the page
+    added no delivery id not seen before. A server that ignores ``offset``
+    repeats a page and would otherwise be asked for it forever."""
+    return new_ids == 0
+
+
 class WebhooksResource:
     """Synchronous ``/webhooks`` operations (``client.webhooks``)."""
 
@@ -280,9 +287,7 @@ class WebhooksResource:
             total = page.total
             if not deliveries or (total is not None and offset >= total):
                 return
-            if new_ids == 0:
-                # A page with no new delivery id: the server is not paging
-                # (e.g. it ignores ``offset``), so another page would repeat.
+            if _walk_ends(new_ids):
                 return
 
 
@@ -388,7 +393,5 @@ class AsyncWebhooksResource:
             total = page.total
             if not deliveries or (total is not None and offset >= total):
                 return
-            if new_ids == 0:
-                # A page with no new delivery id: the server is not paging
-                # (e.g. it ignores ``offset``), so another page would repeat.
+            if _walk_ends(new_ids):
                 return
