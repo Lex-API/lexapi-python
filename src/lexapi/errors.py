@@ -338,7 +338,8 @@ class RateLimitedError(LexAPIError):
         decided = self.__dict__.get("_quota_exhausted")
         if isinstance(decided, bool):
             return decided
-        return is_quota_exhausted(429, httpx.Headers(), self.body)
+        # The shape test applies to a 429 only; every other error is not a quota.
+        return self.status == 429 and is_quota_exhausted(429, httpx.Headers(), self.body)
 
 
 class TierForbiddenError(LexAPIError):

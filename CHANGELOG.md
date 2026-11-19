@@ -28,7 +28,9 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   subscription payment failed and was not completed in time, so API requests
   are refused until it succeeds. `.billing_url` is where to pay the open
   invoice, `.access_ended_at` when access ended (`None` when not known).
-  Never retried, on any status (a 429 included). It derives from
+  Never retried, on any status (a 429 included; the error's own code
+  decides, not a stray top-level `code` beside a typed `error`). It
+  derives from
   `TierForbiddenError`: on an API before 2.27.0 a failed payment is a
   code-less 403 raised as `TierForbiddenError`, so `except
   TierForbiddenError` handlers keep catching it; put a `PaymentPastDueError`
@@ -124,20 +126,28 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   one is skipped.
 - **Webhook verification.** The signature header is trimmed of spaces,
   tabs, carriage returns and line feeds only, and must then be exactly 64
-  hex digits. An empty secret raises `WebhookSignatureError`
-  (`reason="missing_secret"`) from every helper; a `str` secret that cannot
-  be encoded as UTF-8 raises `UnicodeEncodeError`. A missing or empty
-  header is now `"missing webhook signature"` (`missing_signature`). The
-  signed `timestamp` must be `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by
-  `Z` or `±HH:MM` (the same on every Python version); `tolerance=nan`
-  raises `ValueError`.
+  hex digits. An empty secret, or a `str` secret that cannot be encoded as
+  UTF-8, raises `WebhookSignatureError` (`reason="missing_secret"`) from
+  every helper; the error never holds the secret. A secret that is neither
+  `str` nor bytes-like raises `TypeError`. A missing or empty header is now
+  `"missing webhook signature"` (`missing_signature`). A body that is JSON
+  but not a JSON object is `malformed_body`. The signed `timestamp` must be
+  `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by `Z` or `±HH:MM` (the same on
+  every Python version) and name a real date and time in years 0001–9999;
+  the distance to now is computed exactly (no float drift) and the window's
+  edge is included.
+  `tolerance=nan` raises `ValueError`.
 - **Quota 429s.** A 429 with the code `QUOTA_EXHAUSTED` (top-level, or
   `error.code` on the typed envelope) is a `RateLimitedError` with
   `quota_exhausted`, whatever other code the body carries; its code is
   `QUOTA_EXHAUSTED` unless the body's code is `RATE_LIMITED`. The shape test
   for servers before API 2.4.0 applies only when the code is `RATE_LIMITED`
-  (sent or derived from the status). On any status, `quota_exhausted` is
-  true when the code is `QUOTA_EXHAUSTED`.
+  (sent or derived from the status), and only on a 429: `quota_exhausted` is
+  false on every other error unless the code is `QUOTA_EXHAUSTED`, which
+  sets it on any status.
+- **520 and 524 are retried only on free GETs.** An app-origin 520 or 524
+  (the response carries `X-LexAPI-Version` or `RateLimit-Limit`) on a billed
+  GET was retried since 0.4.0; it is no longer, as for a proxy's 520 / 524.
 - **Page sizes** (`page_size`, the national `limit`) must be at most
   2**53 - 1.
 - **Retry hints are read strictly.** `Retry-After` and `RateLimit-Reset`

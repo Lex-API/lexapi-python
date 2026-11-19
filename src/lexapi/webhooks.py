@@ -13,15 +13,15 @@ from __future__ import annotations
 import calendar
 import hashlib
 import hmac
-import json
 import math
 import re
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal
 
-from lexapi._json import too_deep
+from lexapi._json import strict_loads, too_deep
 from lexapi._paging import DeliveryWalk
 from lexapi._payloads import drop_none, seg, webhook_create_body, webhook_update_body
 from lexapi._response import APIResponse
@@ -72,10 +72,6 @@ class WebhookSignatureError(ValueError):
         return (type(self), (str(self), self.reason))
 
 
-def _reject_constant(name: str) -> Any:
-    raise ValueError(f"{name} is not JSON")  # NaN, Infinity, -Infinity
-
-
 def _as_bytes(value: bytes | bytearray | memoryview | str) -> bytes:
     if isinstance(value, str):
         return value.encode("utf-8")
@@ -83,9 +79,23 @@ def _as_bytes(value: bytes | bytearray | memoryview | str) -> bytes:
 
 
 def _secret_bytes(secret: str | bytes) -> bytes:
-    """The HMAC key; an empty secret is a configuration error. A ``str``
-    secret that cannot be encoded as UTF-8 raises ``UnicodeEncodeError``."""
-    key = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
+    """The HMAC key. An empty secret, or a ``str`` secret that cannot be
+    encoded as UTF-8 (a lone surrogate), is a configuration error
+    (``missing_secret``); the error never holds the secret. A secret that
+    is neither ``str`` nor bytes-like raises ``TypeError``."""
+    if isinstance(secret, str):
+        try:
+            key = secret.encode("utf-8")
+        except UnicodeEncodeError:
+            key = None  # raised below, outside the except: no chained error
+        if key is None:
+            raise WebhookSignatureError(
+                "the webhook secret cannot be encoded as UTF-8", "missing_secret"
+            )
+    elif isinstance(secret, (bytes, bytearray, memoryview)):
+        key = bytes(secret)
+    else:
+        raise TypeError(f"secret must be str or bytes, not {type(secret).__name__}")
     if not key:
         raise WebhookSignatureError("the webhook secret is empty", "missing_secret")
     return key
@@ -143,9 +153,11 @@ _TIMESTAMP = re.compile(
 )
 
 
-def _signed_time(stamp: Any) -> float | None:
-    """Seconds since the epoch of a signed ``timestamp``, or ``None`` when it
-    is not a string in the required form (or names an impossible time)."""
+def _signed_time(stamp: Any) -> Fraction | None:
+    """Microseconds since the epoch of a signed ``timestamp``, exactly (any
+    number of fraction digits), or ``None`` when it is not a string in the
+    required form or names a time that does not exist (years 0001–9999).
+    Exact arithmetic keeps the window edge free of float drift."""
     if not isinstance(stamp, str):
         return None
     match = _TIMESTAMP.fullmatch(stamp)
@@ -162,7 +174,18 @@ def _signed_time(stamp: Any) -> float | None:
     except ValueError:
         return None
     seconds = calendar.timegm(when.timetuple()) - offset_minutes * 60
-    return seconds + (float("0." + fraction) if fraction else 0.0)
+    sub = Fraction(int(fraction), 10 ** len(fraction)) if fraction else Fraction(0)
+    return seconds * 1_000_000 + sub * 1_000_000
+
+
+def _within(distance_us: Fraction, tolerance: float) -> bool:
+    """Whether a distance in microseconds is inside the window (the edge
+    included). An infinite window holds everything, a negative one nothing."""
+    if tolerance < 0:
+        return False
+    if math.isinf(tolerance):
+        return True
+    return distance_us <= round(tolerance * 1_000_000)
 
 
 def verify_webhook(
@@ -205,7 +228,7 @@ def verify_webhook(
         text = body.decode("utf-8-sig")
         if too_deep(text):
             raise ValueError("nested too deeply")
-        event = json.loads(text, parse_constant=_reject_constant)
+        event = strict_loads(text)
     except (ValueError, RecursionError) as exc:  # UnicodeDecodeError is a ValueError
         raise WebhookSignatureError("webhook body is not JSON", "malformed_body") from exc
     if not isinstance(event, dict):
@@ -219,8 +242,8 @@ def verify_webhook(
             raise WebhookSignatureError(
                 f"unparseable webhook timestamp {stamp!r}", "stale_timestamp"
             )
-        current = time.time() if now is None else now
-        if not abs(current - sent) <= tolerance:
+        current = round((time.time() if now is None else now) * 1_000_000)
+        if not _within(abs(current - sent), tolerance):
             raise WebhookSignatureError(
                 f"webhook timestamp {stamp} is outside the {tolerance:g}s tolerance",
                 "stale_timestamp",

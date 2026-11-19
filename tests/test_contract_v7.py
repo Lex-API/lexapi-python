@@ -367,8 +367,19 @@ def test_a_secret_that_cannot_be_encoded_raises():
         lambda: compute_signature(BODY, "s\ud800"),
         lambda: verify_signature(BODY, SIG, "s\ud800"),
     ):
-        with pytest.raises(UnicodeEncodeError):
+        with pytest.raises(WebhookSignatureError) as info:
             call()
+        assert info.value.reason == "missing_secret"
+
+
+@pytest.mark.parametrize(
+    "tolerance, ok", [(float("inf"), True), (-1, False), (float("-inf"), False)]
+)
+def test_infinite_and_negative_windows(tolerance, ok):
+    if ok:
+        verify_webhook(BODY, SIG, "s", tolerance=tolerance, now=NOW + 10**9)
+    else:
+        assert _reason(BODY, SIG, tolerance=tolerance) == "stale_timestamp"
 
 
 def _reason(payload, header, *, tolerance=None, now=NOW):
@@ -501,3 +512,283 @@ def test_the_largest_safe_page_size_is_accepted():
     from lexapi._paging import check_page_size
 
     assert check_page_size("page_size", 2**53 - 1) == 2**53 - 1
+
+
+# ── round 3: resolved codes, origins, secrets, envelopes, the replay edge ──
+
+
+def _calls(mode, status, body, headers=None, call=lambda c: c.get_info(), retry=FAST):
+    """(error, number of requests)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(status, json=body, headers=headers or {})
+
+    transport = httpx.MockTransport(handler)
+    err = None
+    if mode == "sync":
+        with LexAPI("k", base_url=LOOPBACK, transport=transport, retry_config=retry) as c:
+            try:
+                call(c)
+            except Exception as exc:  # noqa: BLE001
+                err = exc
+    else:
+
+        async def go():
+            async with AsyncLexAPI(
+                "k", base_url=LOOPBACK, transport=transport, retry_config=retry
+            ) as c:
+                await call(c)
+
+        try:
+            asyncio.run(go())
+        except Exception as exc:  # noqa: BLE001
+            err = exc
+    return err, calls["n"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_past_due_keys_on_the_resolved_code(mode):
+    # A stray top-level code beside a typed error object is not the code.
+    stray = {"code": "PAYMENT_PAST_DUE", "error": {"code": "RATE_LIMITED", "message": "x"}}
+    err, n = _calls(mode, 429, stray, {"retry-after": "0"})
+    assert isinstance(err, RateLimitedError) and n == 3
+    typed = {"code": "RATE_LIMITED", "error": {"code": "PAYMENT_PAST_DUE", "message": "x"}}
+    err, n = _calls(mode, 429, typed, {"retry-after": "0"})
+    assert isinstance(err, PaymentPastDueError) and n == 1
+
+
+@pytest.mark.parametrize(
+    "status, body",
+    [
+        (
+            200,
+            {
+                "success": False,
+                "error": {"code": "RATE_LIMITED", "message": "x"},
+                "usage": {"resetsAt": "2026-12-01T00:00:00Z"},
+            },
+        ),
+        (
+            200,
+            {
+                "success": False,
+                "error": "Slow down",
+                "code": "RATE_LIMITED",
+                "usage": {"resetsAt": "2026-12-01T00:00:00Z"},
+            },
+        ),
+        (
+            503,
+            {"error": "x", "code": "RATE_LIMITED", "usage": {"resetsAt": "2026-12-01T00:00:00Z"}},
+        ),
+    ],
+)
+def test_the_shape_test_never_applies_off_a_429(status, body):
+    err = error_from_response(status, body)
+    assert isinstance(err, RateLimitedError) and err.quota_exhausted is False
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_success_false_rate_limited_body_has_no_quota_flag(mode):
+    body = {
+        "success": False,
+        "error": {"code": "RATE_LIMITED", "message": "x"},
+        "usage": {"resetsAt": "2026-12-01T00:00:00Z"},
+    }
+    err, n = _calls(mode, 200, body)
+    assert isinstance(err, RateLimitedError) and err.quota_exhausted is False and n == 1
+
+
+def test_a_hand_built_rate_limit_error_without_a_429_has_no_quota_flag():
+    usage = {"usage": {"resetsAt": "2026-12-01T00:00:00Z"}}
+    assert RateLimitedError("x", body=usage).quota_exhausted is False
+    assert RateLimitedError("x", status=429, body=usage).quota_exhausted is True
+    assert RateLimitedError("x", code="QUOTA_EXHAUSTED").quota_exhausted is True
+
+
+APP = {"x-lexapi-version": "2.29.0"}
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("status", [520, 524])
+@pytest.mark.parametrize("headers", [APP, {"ratelimit-limit": "60"}, {}])
+def test_520_and_524_are_retried_only_on_free_gets_whatever_the_origin(mode, status, headers):
+    err, n = _calls(mode, status, {"error": "x"}, headers)  # get_info is free
+    assert n == 3
+    billed = lambda c: c.get_document_version("X", 1)  # noqa: E731
+    err, n = _calls(mode, status, {"error": "x"}, headers, call=billed)
+    assert n == 1
+    post = lambda c: c.resolve("32016R0679")  # noqa: E731
+    optin = RetryConfig(
+        max_retries=2, backoff_base=0.0001, backoff_cap=0.001, retry_read_only_posts=True
+    )
+    err, n = _calls(mode, status, {"error": "x"}, headers, call=post, retry=optin)
+    assert n == 1
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_app_origin_502_503_504_are_still_retried_on_billed_gets(mode, status):
+    err, n = _calls(
+        mode, status, {"error": "x"}, APP, call=lambda c: c.get_document_version("X", 1)
+    )
+    assert n == 3
+
+
+SECRET = "my-secret-\ud800"
+
+
+def test_an_unencodable_secret_is_a_configuration_error_that_never_holds_it():
+    for call in (
+        lambda: compute_signature(BODY, SECRET),
+        lambda: verify_signature(BODY, SIG, SECRET),
+        lambda: verify_webhook(BODY, SIG, SECRET, tolerance=None),
+        lambda: verify_webhook(BODY, None, SECRET, tolerance=None),
+    ):
+        with pytest.raises(WebhookSignatureError) as info:
+            call()
+        err = info.value
+        assert err.reason == "missing_secret"
+        for text in (str(err), repr(err), repr(err.args)):
+            assert "my-secret" not in text
+        assert err.__cause__ is None and err.__context__ is None
+        assert not hasattr(err, "object")
+
+
+@pytest.mark.parametrize("secret", [5, None, 1.5, ["s"], {"s": 1}])
+def test_a_secret_of_the_wrong_type_raises_type_error(secret):
+    for call in (
+        lambda: compute_signature(BODY, secret),
+        lambda: verify_signature(BODY, SIG, secret),
+        lambda: verify_webhook(BODY, SIG, secret, tolerance=None),
+    ):
+        with pytest.raises(TypeError):
+            call()
+
+
+@pytest.mark.parametrize("secret", [b"s", bytearray(b"s"), memoryview(b"s"), "s"])
+def test_secrets_as_bytes_like_or_str_still_work(secret):
+    assert verify_signature(BODY, SIG, secret) is True
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_envelope_objects_are_read_alone(mode):
+    body = (
+        b'{"_meta": {"total": 1, "truncated": true}, "truncated": false, "x": 1}\n'
+        b'{"celex": "A"}\n'
+        b'{"_done": {"written": 1, "truncated": false}, "truncated": true, "complete": false}\n'
+    )
+    rows, invalid, meta, done, error, truncated = export(mode, body)
+    assert meta == {"total": 1, "truncated": True}
+    assert done == {"written": 1, "truncated": False} and error is None
+    assert truncated is False
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(
+    "value, expected",
+    [("1", True), ("0", False), ("true", None), ("2", None), (" 1 ", True), ("", None)],
+)
+def test_only_1_and_0_count_in_the_truncated_header(mode, value, expected):
+    def handler(request):
+        return httpx.Response(
+            200,
+            content=b'{"_meta": {"truncated": true}}\n',
+            headers={"content-type": "application/x-ndjson", "x-export-truncated": value},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with LexAPI("k", base_url=LOOPBACK, transport=transport, max_retries=0) as c:
+        with c.export(limit=1) as s:
+            s.read_meta()
+            # an absent header falls back to _meta.truncated (true here)
+            assert s.truncated is (True if expected is None else expected)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("key", [b'"_done": {}', b'"_error": {"code": "X"}'])
+def test_a_later_meta_line_is_skipped_also_with_done_or_error(mode, key):
+    body = (
+        b'{"_meta": {}}\n{"celex": "A"}\n{"_meta": {}, '
+        + key
+        + b'}\n{"celex": "B"}\n'
+        + b'{"_done": {"written": 2}}\n'
+    )
+    rows, invalid, meta, done, error, _ = export(mode, body)
+    assert rows == [{"celex": "A"}, {"celex": "B"}] and invalid == 0
+    assert done == {"written": 2} and error is None
+
+
+@pytest.mark.parametrize("year, ok", [("0000", False), ("0001", True), ("9999", True)])
+def test_timestamp_years(year, ok):
+    import json
+
+    from lexapi.webhooks import _signed_time
+
+    stamp = f"{year}-06-15T00:00:00Z"
+    assert (_signed_time(stamp) is not None) is ok
+    body = json.dumps({"timestamp": stamp}).encode()
+    if not ok:
+        assert _reason(body, compute_signature(body, "s"), tolerance=1e15) == "stale_timestamp"
+
+
+@pytest.mark.parametrize(
+    "stamp, delta_us, ok",
+    [
+        ("2026-11-19T10:05:00.000000Z", 0, True),  # exactly the window: included
+        ("2026-11-19T10:05:00.000001Z", 1, False),
+        ("2026-11-19T10:04:59.999999Z", -1, True),
+        ("2026-11-19T09:55:00Z", 0, True),
+        ("2026-11-19T09:54:59.999999Z", 1, False),
+        ("2026-11-19T10:05:00.1Z", 0, False),
+        ("2026-11-19T11:05:00+01:00", 0, True),
+    ],
+)
+def test_the_replay_window_edge_is_included_without_float_drift(stamp, delta_us, ok):
+    import json
+
+    body = json.dumps({"timestamp": stamp}).encode()
+    sig = compute_signature(body, "s")
+    if ok:
+        verify_webhook(body, sig, "s", tolerance=300, now=NOW)
+    else:
+        assert _reason(body, sig, tolerance=300) == "stale_timestamp"
+
+
+def test_the_edge_holds_without_float_drift():
+    import json
+
+    body = json.dumps({"timestamp": "2026-11-19T10:00:00.001Z"}).encode()
+    sig = compute_signature(body, "s")
+    # In floats, (NOW + 0.001 + 0.002) - (NOW + 0.001) > 0.002: the edge would fail.
+    verify_webhook(body, sig, "s", tolerance=0.002, now=NOW + 0.001 + 0.002)
+    assert _reason(body, sig, tolerance=0.002, now=NOW + 0.001 + 0.0021) == "stale_timestamp"
+
+
+@pytest.mark.parametrize("millis, tol_ms", [(2, 2), (3, 5), (5, 2)])
+def test_the_edge_matches_exact_arithmetic(millis, tol_ms):
+    import json
+
+    stamp = f"2026-11-19T10:00:00.{millis:03d}Z"
+    body = json.dumps({"timestamp": stamp}).encode()
+    sig = compute_signature(body, "s")
+    now = NOW + millis / 1000 + tol_ms / 1000  # float sums drift by a few ULPs
+    verify_webhook(body, sig, "s", tolerance=tol_ms / 1000, now=now)
+
+
+def test_fraction_digits_beyond_microseconds_count():
+    import json
+
+    # 0.9 µs past the edge fails; exactly the edge passes.
+    for stamp, ok in (
+        ("2026-11-19T10:05:00.0000009Z", False),
+        ("2026-11-19T10:05:00.000000000Z", True),
+    ):
+        body = json.dumps({"timestamp": stamp}).encode()
+        sig = compute_signature(body, "s")
+        if ok:
+            verify_webhook(body, sig, "s", tolerance=300, now=NOW)
+        else:
+            assert _reason(body, sig, tolerance=300) == "stale_timestamp"

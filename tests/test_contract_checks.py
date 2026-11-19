@@ -369,7 +369,7 @@ def _refuse_nesting(monkeypatch):
     def loads(*args: Any, **kwargs: Any) -> Any:
         raise RecursionError("maximum recursion depth exceeded")
 
-    monkeypatch.setattr(base.json, "loads", loads)
+    monkeypatch.setattr(base, "strict_loads", loads)  # the parser the SDK calls
 
 
 @pytest.mark.parametrize("mode", MODES)

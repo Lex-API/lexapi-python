@@ -75,6 +75,10 @@ _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: timed out (522), origin unreachable (523). The app never saw the request.
 NOT_REACHED_STATUSES = frozenset({521, 522, 523})
 
+#: Cloudflare's own errors (unknown error, timeout): retried only for a free
+#: GET, whatever their origin; a billed call may already have been charged.
+FREE_ONLY_STATUSES = frozenset({520, 524})
+
 #: App-origin statuses a read-only POST may retry under ``retry_read_only_posts``.
 READ_ONLY_POST_STATUSES = frozenset({502, 503, 504})
 
@@ -394,12 +398,10 @@ def is_quota_exhausted(status: int, headers: httpx.Headers, body: Any) -> bool:
 
 
 def is_payment_past_due(body: Any) -> bool:
-    """A failed payment (``PAYMENT_PAST_DUE``, the top-level ``code`` or the
-    typed ``error.code``): never retried, on any status (a 429 included)."""
-    return isinstance(body, dict) and "PAYMENT_PAST_DUE" in (
-        body.get("code"),
-        _typed_error(body).get("code"),
-    )
+    """A failed payment: the error's code as it is resolved — ``error.code``
+    on the typed envelope, the top-level ``code`` on the legacy shape — is
+    ``PAYMENT_PAST_DUE``. Never retried, on any status (a 429 included)."""
+    return isinstance(body, dict) and _envelope_code(body) == "PAYMENT_PAST_DUE"
 
 
 def is_app_response(headers: httpx.Headers, body: Any = None) -> bool:
@@ -511,6 +513,8 @@ def retry_allowed(
         return False
     if status == 429 or status in NOT_REACHED_STATUSES:
         return True
+    if status in FREE_ONLY_STATUSES:
+        return idempotent and free  # never on a billed call, whatever the origin
     if idempotent:
         return free or is_app_response(response.headers, body)
     return (

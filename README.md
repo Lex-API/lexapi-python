@@ -876,12 +876,13 @@ honouring `Retry-After`) **only when a retry cannot charge you twice**. LexAPI
 refunds a failed request only when its own app finishes the error response, so
 the SDK retries:
 
-- a **429** — any call (the rate limiter runs before any charge);
+- a **429** — any call (the rate limiter runs before any charge), except an
+  exhausted quota and a failed payment (`PAYMENT_PAST_DUE`);
 - a 502/503/504 **from the LexAPI app** — GET calls (refunded in full);
 - requests that **never reached the app** — connect errors, a stale
   keep-alive connection closed before any response, Cloudflare 521/522/523 —
   any call;
-- anything else (proxy 502/504, Cloudflare 520/524, a connection dropped
+- anything else (proxy 502/504, Cloudflare 520/524 from any origin, a connection dropped
   mid-response) only for **free** calls (`get_info`, webhook reads).
 
 POSTs, including webhook create/update/test, are never retried on a 5xx by

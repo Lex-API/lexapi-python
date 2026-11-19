@@ -45,13 +45,12 @@ when iteration finishes, on ``close()``/``aclose()``, or on context exit.
 from __future__ import annotations
 
 import datetime as _dt
-import json
 from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any
 
 import httpx
 
-from lexapi._json import too_deep
+from lexapi._json import strict_loads, too_deep
 from lexapi._payloads import DateLike, drop_none, iso_date
 from lexapi._response import header, parse_header_int
 from lexapi.errors import IncompleteExportError, LexAPIConnectionError, RequestTimeoutError
@@ -168,10 +167,6 @@ def _envelope(row: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else row
 
 
-def _reject_constant(name: str) -> Any:
-    raise ValueError(f"{name} is not JSON")  # NaN, Infinity, -Infinity
-
-
 class _ExportStreamBase:
     def __init__(self, response: httpx.Response) -> None:
         self._response = response
@@ -282,7 +277,7 @@ class _ExportStreamBase:
             if too_deep(line):
                 raise ValueError("nested too deeply")
             # Strict JSON: NaN / Infinity are not JSON.
-            row = json.loads(line, parse_constant=_reject_constant)
+            row = strict_loads(line)
         except (ValueError, RecursionError):  # RecursionError: nested too deeply
             self.invalid_lines += 1
             return None
