@@ -36,11 +36,14 @@ import httpx
 
 
 def _opt_int(value: Any) -> int | None:
+    """An integer figure: finite floats truncate (as released); a value
+    beyond 2**53 - 1 either way is absent."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     if isinstance(value, float) and not math.isfinite(value):
         return None
-    return int(value)
+    number = int(value)
+    return number if abs(number) <= 9_007_199_254_740_991 else None
 
 
 def _opt_str(value: Any) -> str | None:
@@ -53,20 +56,23 @@ def header(headers: httpx.Headers, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-_HEADER_INT = re.compile(r"[0-9]{1,16}")
+_HEADER_INT = re.compile(r"[0-9]+")
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 def parse_header_int(value: str | None) -> int | None:
-    """An integer header: ASCII digits only after trimming spaces and tabs,
-    at most 2**53 - 1; anything else (``+5``, ``-5``, ``1_000``, ``1e3``, a
-    long digit run) is absent."""
+    """An integer header: ASCII digits only after trimming spaces and tabs
+    (leading zeros allowed), with a value of at most 2**53 - 1; anything
+    else (``+5``, ``-5``, ``1_000``, ``1e3``) is absent."""
     if value is None:
         return None
     text = value.strip(" \t")
     if not _HEADER_INT.fullmatch(text):
         return None
-    number = int(text)
+    significant = text.lstrip("0") or "0"  # leading zeros allowed, any length
+    if len(significant) > 16:
+        return None
+    number = int(significant)
     return number if number <= _MAX_SAFE_INTEGER else None
 
 

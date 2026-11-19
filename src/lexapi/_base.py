@@ -8,6 +8,7 @@ differ in how they send the request and how they sleep.
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Any, TypeVar
 
@@ -29,6 +30,7 @@ from lexapi._retry import (
 from lexapi.errors import (
     InvalidResponseError,
     LexAPIConnectionError,
+    RateLimitedError,
     RequestTimeoutError,
     error_from_response,
 )
@@ -64,7 +66,32 @@ def make_timeout(
     waiting for a pooled connection."""
     if isinstance(timeout, httpx.Timeout):
         return timeout
-    return httpx.Timeout(timeout, connect=connect_timeout, pool=connect_timeout)
+    read = _timeout_seconds("timeout", timeout)
+    connect = _timeout_seconds("connect_timeout", connect_timeout)
+    return httpx.Timeout(read, connect=connect, pool=connect)
+
+
+#: The longest timeout handed to the timers (2**31 - 1 milliseconds); a
+#: longer one, ``inf`` included, is clamped to it.
+MAX_TIMEOUT_SECONDS = 2_147_483.647
+
+
+def _timeout_seconds(name: str, value: Any) -> float | None:
+    """A timeout in seconds: a number >= 0, or ``None`` for no limit (as
+    httpx reads it). A longer one than the timers support (``inf``
+    included) is clamped to :data:`MAX_TIMEOUT_SECONDS`; ``nan``, a negative
+    value or a non-number is a ``ValueError``."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number of seconds, got {value!r}")
+    try:
+        seconds = float(value)
+    except OverflowError:  # an integer too large for a double
+        seconds = math.inf
+    if math.isnan(seconds) or seconds < 0:
+        raise ValueError(f"{name} must be a number of seconds >= 0, got {value!r}")
+    return min(seconds, MAX_TIMEOUT_SECONDS)
 
 
 def build_httpx_kwargs(
@@ -118,12 +145,27 @@ def parse_json_bytes(content: bytes) -> Any:
         return NOT_JSON
 
 
+_PARSED = "_lexapi_parsed_body"
+
+
+def parsed_body(response: httpx.Response) -> Any:
+    """:func:`parse_json_bytes` of the response's content, computed once per
+    response: the retry decision and the error both read it, and a body is
+    never handed to the parser a second time (after a ``RecursionError``, a
+    second deep parse can abort Python 3.9)."""
+    cached = response.__dict__.get(_PARSED, _MISSING)
+    if cached is _MISSING:
+        cached = parse_json_bytes(response.content) if response.content else NOT_JSON
+        response.__dict__[_PARSED] = cached
+    return cached
+
+
 def decode_body(response: httpx.Response) -> Any:
     """The parsed JSON body of a response; ``None`` when it is empty, is not
     JSON, or is JSON ``null``."""
     if not response.content:
         return None
-    body = parse_json_bytes(response.content)
+    body = parsed_body(response)
     return None if body is NOT_JSON else body
 
 
@@ -252,7 +294,7 @@ def parse_success(response: httpx.Response, cast: type[R]) -> R:
             return cast({}, response.headers)
         raise _invalid(response, "Expected JSON, got no body")
     # NOT_JSON is returned, not raised, so no decode error is chained.
-    body = parse_json_bytes(response.content)
+    body = parsed_body(response)
     if body is NOT_JSON:
         raise _invalid(
             response,
@@ -284,17 +326,21 @@ def process_response(response: httpx.Response, cast: type[R]) -> R:
     if response.is_success:
         return parse_success(response, cast)
     content = response.content
-    parsed = parse_json_bytes(content) if content else NOT_JSON
+    parsed = parsed_body(response)
     body = None if parsed is NOT_JSON else parsed
     retry_after = None
-    if not is_quota_exhausted(response.status_code, response.headers, body):
+    quota = is_quota_exhausted(response.status_code, response.headers, body)
+    if not quota:
         retry_after = server_wait_hint(response.headers, body, response.status_code)
-    raise error_from_response(
+    error = error_from_response(
         response.status_code,
         body,
         retry_after=retry_after,
         body_excerpt=_excerpt(content) if parsed is NOT_JSON else None,
     )
+    if isinstance(error, RateLimitedError):
+        error.__dict__["_quota_exhausted"] = quota  # the retry decision's answer
+    raise error
 
 
 def status_retry_wait(

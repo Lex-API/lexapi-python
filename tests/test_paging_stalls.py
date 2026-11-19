@@ -558,3 +558,127 @@ def test_figures_that_are_not_usable_numbers_are_no_signal(mode, value):
     items = walk(mode, server, lambda c: c.citations.iter_cited_by("X", page_size=2))
     assert [g.celex_number for g in items] == [f"D{i}" for i in range(5)]
     assert len(server.requests) == 3
+
+
+# ── pinned stall rules ───────────────────────────────────────────────────
+
+
+class Scripted(Server):
+    """Answers the given bodies in order (the last one repeats)."""
+
+    def __init__(self, bodies, **kw):
+        super().__init__(**kw)
+        self.bodies = bodies
+
+    def answer(self, request):
+        return self.bodies[min(len(self.requests), len(self.bodies)) - 1]
+
+
+def page(*celex, **extra):
+    body = {
+        "success": True,
+        "citedBy": [{"celexNumber": c, "citationCount": 1, "citations": [{}]} for c in celex],
+    }
+    body.update(extra)
+    return body
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_an_echoed_offset_larger_than_requested_raises(mode):
+    server = Scripted([page("A", "B", offset=2)])
+    items, err = walk_until_error(
+        mode, server, lambda c: c.citations.iter_cited_by("X", page_size=2)
+    )
+    assert items == [] and len(server.requests) == 1 and "did not advance" in str(err)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_page_with_total_edges_ends_the_repeat_run(mode):
+    same = page("A", "B")
+    bodies = [same, same, same, page("A", "B", totalEdges=100), same, same, page("Z")]
+    server = Scripted(bodies)
+    items = walk(mode, server, lambda c: c.citations.iter_cited_by("X", page_size=2))
+    assert len(server.requests) == 7 and len(items) == 13
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_different_page_resets_the_repeat_run(mode):
+    a, b = page("A", "B"), page("C", "D")
+    bodies = [a, a, a, b, b, b, a, page("Z")]
+    server = Scripted(bodies)
+    walk(mode, server, lambda c: c.citations.iter_cited_by("X", page_size=2))
+    assert len(server.requests) == 8
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_repeats_compare_json_values(mode):
+    def group(order, count):
+        g = {"celexNumber": "A", "citationCount": count, "citations": [{"t": 0.0}, {"t": -0.0}]}
+        return dict(reversed(list(g.items()))) if order else g
+
+    def body(order, count):
+        return {"success": True, "citedBy": [group(order, count)]}
+
+    # key order, 2 vs 2.0, 0.0 vs -0.0 vs 0: all the same JSON value
+    bodies = [
+        body(False, 2),
+        body(True, 2.0),
+        body(False, 2),
+        {
+            "success": True,
+            "citedBy": [
+                {"citations": [{"t": 0}, {"t": 0}], "citationCount": 2, "celexNumber": "A"}
+            ],
+        },
+    ]
+    server = Scripted(bodies)
+    items, err = walk_until_error(
+        mode, server, lambda c: c.citations.iter_cited_by("X", page_size=2)
+    )
+    assert len(server.requests) == 4 and len(items) == 3
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_an_echoed_limit_of_zero_is_not_used(mode):
+    server = Scripted([page("A", "B", limit=0), page("C", limit=0)])
+    items = walk(mode, server, lambda c: c.citations.iter_cited_by("X", page_size=2))
+    assert [g.celex_number for g in items] == ["A", "B", "C"]  # 2 rows = full page of 2
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_usable_total_resets_the_delivery_stall_count(mode):
+    def d(*ids, **extra):
+        body = {"success": True, "deliveries": [{"id": i} for i in ids]}
+        body.update(extra)
+        return body
+
+    bodies = [
+        d("a", "b"),
+        d("a", "b"),
+        d("a", "b"),
+        d("a", "b", total=1000),
+        d("a", "b"),
+        d("a", "b"),
+        d(),
+    ]
+    server = Scripted(bodies)
+    items = walk(mode, server, deliveries_walk(2))
+    assert [x.id for x in items] == ["a", "b"] and len(server.requests) == 7
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("has_more", [False, None, "yes"])
+@pytest.mark.parametrize("cursor", [5, ["a"], True])
+def test_a_bad_cursor_on_a_last_page_ends_the_walk(mode, has_more, cursor):
+    body = {"success": True, "results": [{"id": "x"}], "nextCursor": cursor}
+    if has_more is not None:
+        body["hasMore"] = has_more
+    server = Scripted([body])
+    pages = walk(mode, server, national_walk())
+    assert len(pages) == 1 and len(server.requests) == 1
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_bad_cursor_on_an_empty_page_ends_the_walk(mode):
+    server = Scripted([{"success": True, "results": [], "hasMore": True, "nextCursor": 5}])
+    assert len(walk(mode, server, national_walk())) == 1

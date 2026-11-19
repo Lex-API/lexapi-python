@@ -315,13 +315,16 @@ national_edges = client.citations.cites("AT-NOR-10001597")  # a national id work
 ```
 
 **Page iterators** (`citations.iter_cited_by` / `iter_cites`,
-`webhooks.iter_deliveries`, `national.iter_documents`) walk every page until
-the last one: a short or empty page, `total` / `total_edges` reached, or no
-next cursor. When the server shows it is not advancing — it echoes another
-`offset` than the one asked for, hands back a cursor already sent, or (on
-pages without a total) keeps sending the same page — the iterator raises
-`InvalidResponseError`. Everything it yielded before stays valid; the page
-that showed the stall is not yielded and is on `err.body`.
+`webhooks.iter_deliveries`, `national.iter_documents`) yield every page as it
+arrives. A walk ends at an empty page; at a page shorter than the echoed
+`limit` (when that is a positive integer; else than the requested page size);
+once the offset reaches `total` / `total_edges`; or after a page without a
+next cursor. It raises `InvalidResponseError` when the server shows it is not
+advancing: it echoes another `offset` than the one asked for, or hands back a
+cursor already sent. Only on answers that carry neither a total nor an echoed
+`offset`, it also raises on the third page in a row that repeats the page
+before it (for deliveries: brings no delivery not seen yet). Everything yielded before stays
+valid; the page that showed the stall is not yielded and is on `err.body`.
 
 Every edge says where it comes from (`provenance`) and how its target was
 identified (`resolution`, national edges only); every node carries `id`,
@@ -913,7 +916,10 @@ for the whole call. The 95 s default sits above the API's 90 s deadline on
 document reads, so that timeout comes back as a typed, refunded 504; the CDN
 ends any wait at 100 s. A request can still run past the timeout and raise a
 local `RequestTimeoutError`; values above ~100 s buy nothing on the public
-endpoint.
+endpoint. Both timeouts are numbers of seconds >= 0 (`None` means no limit);
+a value longer than the timers support, `inf` included, is clamped to
+2**31 - 1 ms (about 24.8 days), and `nan` or a negative value raises
+`ValueError` when the client is created.
 
 ## Development
 

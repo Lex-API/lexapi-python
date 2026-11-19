@@ -31,6 +31,9 @@ INT_HEADERS = [
     ("9007199254740992", None),
     ("1" * 17, None),
     ("1" * 400, None),
+    ("0" * 20 + "5", 5),  # leading zeros, any length
+    ("0" * 5000 + "9007199254740991", 9007199254740991),
+    ("0" * 5000, 0),
     ("+5", None),
     ("-5", None),
     ("1_000", None),
@@ -190,3 +193,231 @@ def test_a_deep_webhook_body_is_a_signature_error_or_parsed():
         assert "not JSON" in str(err)
     else:
         assert isinstance(event, dict)
+
+
+# ── typed integers above 2**53 - 1 ───────────────────────────────────────
+
+
+def test_integers_above_the_safe_range_read_as_absent():
+    from lexapi import CitedByResponse, CreditsExhaustedError
+
+    huge = 2**53
+    resp = DocumentResponse(
+        {
+            "success": True,
+            "document": {"version": huge},
+            "credits": {"remaining": huge, "limit": 2.9, "operation_weight": -(2**60)},
+            "usage": {"remaining": 9007199254740991},
+        }
+    )
+    assert resp.document.version is None
+    assert resp.credits is not None
+    assert (resp.credits.remaining, resp.credits.limit, resp.credits.operation_weight) == (
+        None,
+        2,  # finite floats still truncate, as released
+        None,
+    )
+    assert resp.usage is not None and resp.usage.remaining == 9007199254740991
+    assert CitedByResponse({"success": True, "totalEdges": huge}).total_edges is None
+    err = CreditsExhaustedError("x", details={"weight": huge, "available": 3})
+    assert (err.weight, err.available) == (None, 3)
+
+
+# ── timeouts ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("value", [1e12, float("inf"), 10**400])
+def test_timeouts_beyond_the_timer_are_clamped(value):
+    from lexapi import AsyncLexAPI, LexAPI
+    from lexapi._base import MAX_TIMEOUT_SECONDS
+
+    for cls in (LexAPI, AsyncLexAPI):
+        client = cls(
+            "k", base_url="http://127.0.0.1:9/api/v1", timeout=value, connect_timeout=value
+        )
+        assert client._http.timeout.read == MAX_TIMEOUT_SECONDS
+        assert client._http.timeout.connect == MAX_TIMEOUT_SECONDS
+        view = client.with_options(timeout=value)
+        assert view._timeout.read == MAX_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("value", [float("nan"), -1, -0.5, True, "5"])
+def test_unusable_timeouts_are_refused_at_construction(value):
+    from lexapi import AsyncLexAPI, LexAPI
+
+    for cls in (LexAPI, AsyncLexAPI):
+        with pytest.raises(ValueError):
+            cls("k", base_url="http://127.0.0.1:9/api/v1", timeout=value)
+        with pytest.raises(ValueError):
+            cls("k", base_url="http://127.0.0.1:9/api/v1", connect_timeout=value)
+
+
+def test_a_huge_timeout_does_not_break_a_request():
+    from lexapi import LexAPI
+
+    def handler(request):
+        return httpx.Response(200, json={"success": True, "service": "LexAPI"})
+
+    with LexAPI(
+        "k",
+        base_url="http://127.0.0.1:9/api/v1",
+        timeout=float("inf"),
+        connect_timeout=1e12,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        assert client.get_info().service == "LexAPI"
+
+
+# ── linear depth check ───────────────────────────────────────────────────
+
+TRUNCATED_ENDINGS = {
+    "escaped quotes": lambda n: b"[" * 600 + b'["' + b'\\"x' * (n // 3),
+    "lone backslash": lambda n: b"[" * 600 + b'["' + b'\\"x' * (n // 3) + b"\\",
+    "mid escape": lambda n: b"[" * 600 + b'["' + b"x\\" * (n // 2) + b"\\u12",
+}
+
+
+@pytest.mark.parametrize("size", [50_000, 1_000_000, 10_000_000])
+@pytest.mark.parametrize("ending", sorted(TRUNCATED_ENDINGS))
+def test_the_depth_check_is_linear_on_truncated_text(size, ending):
+    import time
+
+    from lexapi._json import nesting_depth
+
+    data = TRUNCATED_ENDINGS[ending](size)
+    start = time.perf_counter()
+    nesting_depth(data)
+    too_deep(data)
+    assert time.perf_counter() - start < 2.0
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("size", [50_000, 1_000_000, 10_000_000])
+def test_truncated_bodies_and_lines_answer_quickly(mode, size):
+    import asyncio
+    import time
+
+    from lexapi import AsyncLexAPI, InvalidResponseError, LexAPI
+
+    truncated = TRUNCATED_ENDINGS["escaped quotes"](size)
+
+    def handler(request):
+        if request.url.path.endswith("/export"):
+            content = b'{"_meta": {}}\n' + truncated + b'\n{"_done": {"written": 0}}\n'
+            return httpx.Response(
+                200, content=content, headers={"content-type": "application/x-ndjson"}
+            )
+        return httpx.Response(200, content=truncated, headers={"content-type": "application/json"})
+
+    kw = {"base_url": "http://127.0.0.1:9/api/v1", "transport": httpx.MockTransport(handler)}
+    start = time.perf_counter()
+    if mode == "sync":
+        with LexAPI("k", max_retries=0, **kw) as c:
+            with pytest.raises(InvalidResponseError):
+                c.get_info()
+            with c.export(limit=1) as stream:
+                assert list(stream) == [] and stream.invalid_lines == 1
+    else:
+
+        async def go():
+            async with AsyncLexAPI("k", max_retries=0, **kw) as c:
+                with pytest.raises(InvalidResponseError):
+                    await c.get_info()
+                stream = await c.export(limit=1)
+                async with stream:
+                    assert [r async for r in stream] == [] and stream.invalid_lines == 1
+
+        asyncio.run(asyncio.wait_for(go(), 10))
+    with pytest.raises(WebhookSignatureError):
+        verify_webhook(truncated, compute_signature(truncated, "s"), "s", tolerance=None)
+    assert time.perf_counter() - start < 5.0
+
+
+def test_the_depth_check_costs_little_next_to_the_parser():
+    import json
+    import time
+
+    from lexapi._json import nesting_depth
+
+    article = {"id": "art_1", "title": "Title [x] {y}", "content": 'Lorem "q" \\ [1] {2} ' * 40}
+    doc = {"document": {"articles": [dict(article, id=f"art_{i}") for i in range(6000)]}}
+    body = json.dumps(doc).encode()  # several MB
+    best_check = best_parse = float("inf")
+    for _ in range(3):
+        start = time.perf_counter()
+        nesting_depth(body)
+        best_check = min(best_check, time.perf_counter() - start)
+        start = time.perf_counter()
+        json.loads(body)
+        best_parse = min(best_parse, time.perf_counter() - start)
+    assert best_check <= 5 * best_parse  # measured about 1.7x
+
+
+# ── one parse per response ───────────────────────────────────────────────
+
+STACK_SCRIPT = textwrap.dedent(
+    """
+    import sys
+    import httpx
+    from lexapi import LexAPI, LexAPIError
+    from lexapi._retry import RetryConfig
+
+    def at(n, f):
+        return f() if n == 0 else at(n - 1, f)
+
+    for levels in (100, 300, 512):
+        body = b"[" * levels + b"]" * levels
+        for status in (429, 500):
+            for retries in (0, 3):
+                def handler(request, body=body, status=status):
+                    return httpx.Response(status, content=body,
+                                          headers={"content-type": "application/json"})
+                def call(retries=retries, handler=handler):
+                    config = RetryConfig(max_retries=retries, backoff_base=0, backoff_cap=0)
+                    with LexAPI("k", base_url="http://127.0.0.1:9/api/v1",
+                                transport=httpx.MockTransport(handler),
+                                retry_config=config) as c:
+                        try:
+                            c.get_info()
+                        except LexAPIError as err:
+                            return type(err).__name__
+                for depth in (930, 944, 956, 968):
+                    at(depth, call)
+    print("survived")
+    """
+)
+
+
+@pytest.mark.skipif(not GUARDED, reason="the parser has its own C-stack limit from 3.12")
+def test_error_bodies_from_a_deep_stack_never_abort():
+    run = subprocess.run(
+        [sys.executable, "-c", STACK_SCRIPT], capture_output=True, text=True, timeout=300
+    )
+    assert run.returncode == 0, (run.returncode, run.stderr[-1500:])
+    assert run.stdout.strip() == "survived"
+
+
+def test_a_response_body_is_parsed_once(monkeypatch):
+    from lexapi import LexAPI, RateLimitedError, _base
+
+    calls = {"n": 0}
+    real = _base.json.loads
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_base.json, "loads", counting)
+
+    def handler(request):
+        return httpx.Response(429, json={"error": "x", "code": "RATE_LIMITED"})
+
+    with LexAPI(
+        "k",
+        base_url="http://127.0.0.1:9/api/v1",
+        transport=httpx.MockTransport(handler),
+        max_retries=0,
+    ) as client:
+        with pytest.raises(RateLimitedError):
+            client.get_info()
+    assert calls["n"] == 1

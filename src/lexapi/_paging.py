@@ -47,8 +47,9 @@ def stalled(body: Any, reason: str) -> InvalidResponseError:
 
 
 def canonical(value: Any) -> str:
-    """A key-order-independent text form of a JSON value, built without
-    recursion (so a deep value cannot exhaust the stack)."""
+    """A text form of a JSON value that is equal for equal JSON values
+    (object keys in any order; ``1`` and ``1.0``, ``-0`` and ``0`` alike),
+    built without recursion so a deep value cannot exhaust the stack."""
     out: list[str] = []
     stack: list[Any] = [value]
     while stack:
@@ -65,6 +66,12 @@ def canonical(value: Any) -> str:
             out.append("[")
             stack.append(_Token("]"))
             stack.extend(reversed(item))
+        elif isinstance(item, bool) or item is None:
+            out.append(f"{item!r},")
+        elif isinstance(item, float) and item.is_integer():
+            out.append(f"n{int(item)},")  # 1.0 equals 1, -0.0 equals 0
+        elif isinstance(item, (int, float)):
+            out.append(f"n{item!r},")
         else:
             out.append(f"{type(item).__name__}:{item!r},")
     return "".join(out)
@@ -161,9 +168,11 @@ class DeliveryWalk:
 
 
 class CursorWalk:
-    """State of a cursor walk: a ``nextCursor`` already sent in this walk
-    (including the one the walk started from) raises, and so does one that
-    is neither a string nor ``null``."""
+    """State of a cursor walk. It ends after a page whose ``hasMore`` is not
+    ``true``, whose ``nextCursor`` is absent, ``null`` or empty, or whose
+    list is empty. Otherwise a ``nextCursor`` that is not a string, or that
+    was already sent in this walk (the one it started from included),
+    raises."""
 
     def __init__(self, cursor: str | None) -> None:
         self.cursor = cursor
@@ -173,10 +182,10 @@ class CursorWalk:
         """Called before a page is yielded: the cursor to send next, or
         ``None`` when this page is the last."""
         raw = body.get("nextCursor")
-        if raw is not None and not isinstance(raw, str):
-            raise stalled(body, "the page cursor is not a string")
-        if body.get("hasMore") is not True or not raw or not has_results:
+        if body.get("hasMore") is not True or raw is None or raw == "" or not has_results:
             return None
+        if not isinstance(raw, str):
+            raise stalled(body, "the page cursor is not a string")
         if raw in self._sent:
             raise stalled(body, "the server repeated a page cursor")
         return raw

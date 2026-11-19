@@ -252,7 +252,7 @@ class _ExportStreamBase:
         value = self.done.get(key)
         if isinstance(value, bool) or not isinstance(value, int):
             return None
-        return value
+        return value if abs(value) <= 9_007_199_254_740_991 else None
 
     def _header_int(self, name: str) -> int | None:
         return parse_header_int(header(self.headers, name))

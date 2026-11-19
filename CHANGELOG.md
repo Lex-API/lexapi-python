@@ -111,31 +111,50 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 - **Retry hints are read strictly.** `Retry-After` and `RateLimit-Reset`
   numbers must be plain ASCII decimals (`5`, `2.5`; no sign, exponent, `nan`
-  or `inf`); a `Retry-After` date must be an IMF-fixdate (`GMT`, `UTC` or
-  `+0000`), an RFC 850 date or an asctime date — a date in another zone, or
-  an impossible one, is ignored. The wait to a date is rounded to the nearest
-  second; a date in the past is a wait of 0. A body `retryAfter` must be a
-  number >= 0 (top-level first, then `error.details`, then a top-level
-  `details`). Anything else counts as absent: the normal backoff applies, and
-  a national 503 `SEARCH_INCOMPLETE` whose only hint is unusable is not
-  retried. `RetryConfig` refuses a negative or non-finite `backoff_base` /
-  `backoff_cap` (`ValueError`).
+  or `inf`); a `Retry-After` date must be an IMF-fixdate or RFC 850 date in
+  `GMT`, `UTC` or `+0000`, or an asctime date — a date in another zone
+  (`Z`, `EST`, ...), or an impossible one, is ignored. The wait to a date,
+  and a wait converted from an epoch value, is rounded to the nearest second
+  (halves up); a time in the past is a wait of 0. A body `retryAfter` must be
+  a number >= 0: the top-level field, else `error.details` on the typed
+  envelope or the top-level `details` on the legacy shape. Anything else
+  counts as absent: the normal backoff applies, and a national 503
+  `SEARCH_INCOMPLETE` whose only hint is unusable is not retried. A 429 with
+  code `QUOTA_EXHAUSTED` in `error.code` of the typed envelope is a quota 429
+  too, and `RateLimitedError.quota_exhausted` always matches the retry
+  decision.
+- **`RetryConfig` refuses unusable waits.** `backoff_base` and `backoff_cap`
+  must be finite numbers >= 0; anything else (`inf`, `nan`, a negative value,
+  a number too large for a float) raises `ValueError`. 0.4.0 accepted
+  `backoff_cap=float("inf")` as "no cap"; pass a large finite value instead.
+- **Timeouts.** `timeout` and `connect_timeout` longer than the timers
+  support (`inf` included) are clamped to 2**31 - 1 milliseconds (about 24.8
+  days); `nan`, a negative value or a non-number raises `ValueError` when the
+  client is created (`None` still means no limit).
 - **Unusable figures read as absent.** An integer header (`RateLimit-*`,
   `X-National-*`, `X-Corpus-Version`, `X-Export-*`, the batch and post-filter
-  counts) must be ASCII digits up to 2**53 - 1 (`+5`, `1e3`, `1_000` are
-  absent). A float field must be a finite number; a `bool` case-law `score`
-  is now `None` (it was `1.0` / `0.0`).
+  counts) must be ASCII digits (leading zeros allowed) with a value up to
+  2**53 - 1 (`+5`, `1e3`, `1_000` are absent). An integer read through a
+  typed accessor (credits, usage, totals, counts) above 2**53 - 1 is absent;
+  finite floats still truncate. A float field must be a finite number; a
+  `bool` case-law `score` is now `None` (it was `1.0` / `0.0`).
 - **Iterators raise when the server stops advancing.**
   `citations.iter_cited_by` / `iter_cites`, `webhooks.iter_deliveries` and
-  `national.iter_documents` still end where they ended before, but raise
-  `InvalidResponseError` when the server hands back a cursor already sent in
-  the walk (or one that is not a string), echoes an `offset` other than the
-  one requested, or — on pages without a total — repeats the same page (edge
-  pages) or brings no unseen delivery id three times in a row. Pages already
-  yielded stay valid; the page that showed the stall is on `err.body`.
-  A `page_size` (or national `limit`) that is not a positive integer raises
-  `ValueError` before any request. An edge group whose `citationCount` is not
-  a count advances by the length of its edge list.
+  `national.iter_documents` yield every page as it arrives. A walk ends at an
+  empty page; at a page shorter than the echoed `limit` (when that is a
+  positive integer; else than the requested page size); once the offset
+  reaches a usable `total` / `totalEdges`; or after a page whose `hasMore` is
+  not `true`, whose `nextCursor` is absent or empty, or whose list is empty.
+  It raises `InvalidResponseError` when the server hands back a cursor
+  already sent in the walk (or, when the walk would continue, one that is not
+  a string), or echoes an `offset` other than the one requested. On answers
+  without those position signals only, it also raises on the third page in a
+  row that repeats the page before (edge pages, compared as JSON values) or
+  brings no unseen delivery id. Pages already yielded stay valid; the page
+  that showed the stall is on `err.body`. A `page_size` (or national `limit`)
+  that is not a positive integer raises `ValueError` before any request. An
+  edge group whose `citationCount` is not a count advances by the length of
+  its edge list.
 - A `2xx` answer that is not the documented shape now raises
   `InvalidResponseError`; before, it could be read as an empty result. To tell
   a malformed answer from an empty result, catch `InvalidResponseError`. This
@@ -186,11 +205,13 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 - An asctime `Retry-After` date (`Sun Nov  6 08:49:37 1994`) is read as UTC;
   it was read in local time.
 - On Python older than 3.12, a response body, error body, export line or
-  webhook body nested deeper than 512 levels is refused before it is parsed
+  webhook body nested deeper than 512 levels, or deeper than the recursion
+  limit leaves room for where it is parsed, is refused before it is parsed
   (not JSON: `InvalidResponseError`, an error without a body, an invalid
   export line, `WebhookSignatureError`). Such a body could abort the
-  interpreter. From 3.12 the parser's own limit applies; `verify_webhook` now
-  also treats a `RecursionError` as "not JSON".
+  interpreter. Each response body is parsed at most once (the retry decision
+  and the error share it). From 3.12 the parser's own limit applies;
+  `verify_webhook` now also treats a `RecursionError` as "not JSON".
 - A deeply nested export line is counted in `invalid_lines` instead of
   raising `RecursionError`.
 - A float field (`score`, the national coverage rates and bounds) holding a

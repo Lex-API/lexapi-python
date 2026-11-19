@@ -130,7 +130,10 @@ RETRY_AFTER = [
     ("Thu, 29 Feb 2027 00:00:00 GMT", None),
     ("Mon, 29 Feb 2100 00:00:00 GMT", None),
     ("Tue, 29 Feb 2028 00:00:00 GMT", 71_884_800.0),
-    ("Sat, 01 Jan 0000 00:00:00 GMT", None),
+    ("Sat, 01 Jan 0000 00:00:00 GMT", 0.0),  # year 0000 is valid (and past)
+    ("Tue, 29 Feb 0000 00:00:00 GMT", 0.0),  # 0000 is a leap year
+    ("Wed, 19 Nov 2025 00:00:30 Z", None),
+    ("Wed, 19 Nov 2025 00:00:30 UT", None),
     ("Wed, 19 Nov 2025 00:00:30 GΜT", None),
     ("Wed, 19 Nov ２０２５ 00:00:30 GMT", None),
     # RFC 850
@@ -250,19 +253,27 @@ def test_body_retry_after_table(value, expected):
             assert math.copysign(1.0, got) == 1.0  # -0 reads as 0
 
 
-def test_body_sources_in_order():
-    top_bad = {
-        "retryAfter": "x",
-        "error": {"details": {"retryAfter": 7}},
-        "details": {"retryAfter": 9},
-    }
-    assert server_wait_hint(httpx.Headers(), top_bad, 429) == 7.0
-    legacy = {"error": "Too many requests", "retryAfter": -1, "details": {"retryAfter": 9}}
-    assert server_wait_hint(httpx.Headers(), legacy, 429) == 9.0
-    typed_without = {"error": {"code": "RATE_LIMITED"}, "details": {"retryAfter": 9}}
-    assert server_wait_hint(httpx.Headers(), typed_without, 429) == 9.0
-    top_good = {"retryAfter": 3, "error": {"details": {"retryAfter": 7}}}
-    assert server_wait_hint(httpx.Headers(), top_good, 429) == 3.0
+BODY_SOURCES = [
+    # typed envelope: error.details only, never a top-level details
+    (
+        {"retryAfter": "x", "error": {"details": {"retryAfter": 7}}, "details": {"retryAfter": 9}},
+        7.0,
+    ),
+    ({"error": {"code": "RATE_LIMITED"}, "details": {"retryAfter": 9}}, None),
+    ({"error": {"code": "RATE_LIMITED", "details": None}, "details": {"retryAfter": 9}}, None),
+    ({"error": {"code": "RATE_LIMITED", "details": [5]}, "details": {"retryAfter": 9}}, None),
+    ({"retryAfter": 3, "error": {"details": {"retryAfter": 7}}}, 3.0),
+    # legacy shape: the top-level details
+    ({"error": "Too many requests", "retryAfter": -1, "details": {"retryAfter": 9}}, 9.0),
+    ({"error": "Too many requests", "details": {"retryAfter": 9}}, 9.0),
+    ({"details": {"retryAfter": 9}}, 9.0),
+    ({"error": ["x"], "details": {"retryAfter": 9}}, 9.0),
+]
+
+
+@pytest.mark.parametrize("body, expected", BODY_SOURCES)
+def test_body_sources_in_order(body, expected):
+    assert server_wait_hint(httpx.Headers(), body, 429) == expected
 
 
 def test_quota_429_reads_no_usable_wait():
@@ -385,3 +396,128 @@ def test_incomplete_national_search_with_only_an_unusable_hint_is_not_retried(mo
         _client_call(mode, handler, config, lambda c: c.national.semantic_search("AT", "x"))
     assert calls["n"] == 1
     assert info.value.retry_after is None
+
+
+# ── RFC 850 years for any clock ──────────────────────────────────────────
+
+CLOCKS = {
+    "1999-12-31": 946_598_400.0,  # Fri, 31 Dec 1999 00:00:00 GMT
+    "2026-01-01": 1_767_225_600.0,
+    "2060-06-15": 2_854_656_000.0,
+    "2099-12-31": 4_102_358_400.0,
+}
+
+
+def _year(when):
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(when, tz=timezone.utc).year
+
+
+@pytest.mark.parametrize(
+    "clock, date, year",
+    [
+        ("1999-12-31", "30-Dec-49", 2049),
+        ("1999-12-31", "31-Dec-49", 2049),  # exactly 50 years on: not "more than"
+        ("1999-12-31", "30-Dec-50", 1950),
+        ("1999-12-31", "30-Dec-99", 1999),
+        ("1999-12-31", "30-Dec-00", 2000),
+        ("2026-01-01", "30-Dec-75", 2075),
+        ("2026-01-01", "30-Dec-76", 1976),
+        ("2026-01-01", "30-Dec-26", 2026),
+        ("2060-06-15", "30-Dec-05", 2105),
+        ("2060-06-15", "30-Jan-10", 2110),
+        ("2060-06-15", "30-Dec-10", 2010),
+        ("2060-06-15", "30-Dec-11", 2011),
+        ("2099-12-31", "30-Dec-49", 2149),
+        ("2099-12-31", "30-Dec-50", 2050),
+        ("2099-12-31", "30-Dec-00", 2100),
+    ],
+)
+def test_rfc850_year_for_any_clock(clock, date, year):
+    when = parse_http_date(f"Monday, {date} 00:00:00 GMT", CLOCKS[clock])
+    assert when is not None and _year(when) == year
+
+
+def test_rfc850_fifty_year_boundary_is_inclusive():
+    now = CLOCKS["2026-01-01"]  # Thu, 01 Jan 2026 00:00:00
+    assert _year(parse_http_date("Tuesday, 01-Jan-76 00:00:00 GMT", now)) == 2076
+    assert _year(parse_http_date("Tuesday, 01-Jan-76 00:00:01 GMT", now)) == 1976
+
+
+# ── rounding ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "offset, expected", [(29.5, 30.0), (30.5, 31.0), (30.4, 30.0), (30.6, 31.0)]
+)
+def test_waits_round_half_up_not_to_even(monkeypatch, offset, expected):
+    target = NOW + 100  # Wed, 19 Nov 2025 00:01:40 GMT
+    monkeypatch.setattr(_retry.time, "time", lambda: target - offset)
+    assert parse_retry_after("Wed, 19 Nov 2025 00:01:40 GMT") == expected
+    assert parse_retry_after(str(int(target))) == expected  # epoch seconds
+    assert parse_retry_after(str(int(target * 1000))) == expected  # epoch milliseconds
+
+
+# ── one quota decision ───────────────────────────────────────────────────
+
+RESETS = {"resetsAt": "2025-11-20T00:00:00Z"}
+QUOTA_CASES = [
+    ({}, {"code": "QUOTA_EXHAUSTED", "error": "Daily quota exceeded"}, True),
+    ({"retry-after": "5"}, {"code": "QUOTA_EXHAUSTED", "error": "x"}, True),
+    ({}, {"success": False, "error": {"code": "QUOTA_EXHAUSTED", "message": "x"}}, True),
+    ({}, {"error": "x", "usage": RESETS}, True),
+    ({"retry-after": "nan"}, {"error": "x", "usage": RESETS}, True),
+    ({"retry-after": "5"}, {"error": "x", "usage": RESETS}, False),
+    ({}, {"error": "x", "retryAfter": 5, "usage": RESETS}, False),
+    ({}, {"error": "x", "retryAfter": -5, "usage": RESETS}, True),
+    ({}, {"error": "x", "retryAfter": "5", "usage": RESETS}, True),
+    ({}, {"error": "x", "usage": {"resetsAt": 5}}, False),
+    ({}, {"error": "x", "resetsAt": "2025-11-20T00:00:00Z"}, False),
+    ({}, {"error": "x"}, False),
+]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("headers, body, quota", QUOTA_CASES)
+def test_the_quota_flag_agrees_with_the_retry_decision(mode, headers, body, quota):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(429, json=body, headers=headers)
+
+    config = RetryConfig(max_retries=1, backoff_base=0.0001, backoff_cap=0.001)
+    with pytest.raises(RateLimitedError) as info:
+        _client_call(mode, handler, config, lambda c: c.get_info())
+    assert info.value.quota_exhausted is quota
+    assert calls["n"] == (1 if quota else 2)
+    assert is_quota_exhausted(429, httpx.Headers(headers), body) is quota
+    if quota:
+        assert info.value.retry_after is None
+
+
+@pytest.mark.parametrize(
+    "body, keyed",
+    [
+        ({"error": "x", "code": "NATIONAL_SEMANTIC_UNAVAILABLE", "retryAfter": 5}, True),
+        ({"error": {"code": "NATIONAL_SEMANTIC_UNAVAILABLE", "details": {"retryAfter": 5}}}, True),
+        (
+            {
+                "error": {"code": "UPSTREAM_ERROR"},
+                "code": "NATIONAL_SEMANTIC_UNAVAILABLE",
+                "retryAfter": 5,
+            },
+            False,
+        ),
+    ],
+)
+def test_national_unavailable_keys_on_the_envelopes_own_code(body, keyed):
+    assert (server_wait_hint(httpx.Headers(), body, 503) is not None) is keyed
+
+
+def test_retry_config_refuses_a_cap_too_large_for_a_float():
+    with pytest.raises(ValueError):
+        RetryConfig(backoff_cap=10**400)
+    with pytest.raises(ValueError):
+        RetryConfig(backoff_base=10**400)

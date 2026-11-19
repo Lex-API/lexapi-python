@@ -65,7 +65,10 @@ class LexAPI:
             full ``httpx.Timeout``.
         connect_timeout: connect timeout in seconds (TCP + TLS, and the wait
             for a pooled connection); ignored when ``timeout`` is an
-            ``httpx.Timeout``.
+            ``httpx.Timeout``. Both are numbers >= 0; a value longer than the
+            timers support (``inf`` included) is clamped to about 24.8 days
+            (2**31 - 1 ms), and ``nan`` or a negative value is a
+            ``ValueError``.
         max_retries: retry budget for 429/502/503/504/520-524 and connect
             errors (default 3). ``0`` disables retries.
         retry_config: full :class:`~lexapi._retry.RetryConfig` override;

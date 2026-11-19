@@ -124,15 +124,18 @@ def _s(data: dict[str, Any], key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+
 def _int(value: Any) -> int | None:
     """An ``int`` (not a ``bool``), or a finite float with an integral value
     (``3.0``); anything else (``2.9``, ``inf``, ``nan``, strings) is ``None``."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        return value if abs(value) <= _MAX_SAFE_INTEGER else None
     # ``is_integer()`` is False for ``inf`` and ``nan``.
-    if isinstance(value, float) and value.is_integer():
+    if isinstance(value, float) and value.is_integer() and abs(value) <= _MAX_SAFE_INTEGER:
         return int(value)
     return None
 
