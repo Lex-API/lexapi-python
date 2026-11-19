@@ -18,6 +18,8 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from lexapi._json import too_deep
+from lexapi._paging import DeliveryWalk
 from lexapi._payloads import drop_none, seg, webhook_create_body, webhook_update_body
 from lexapi._response import APIResponse
 from lexapi.models import (
@@ -96,9 +98,15 @@ def verify_webhook(
     """
     if not verify_signature(payload, signature, secret):
         raise WebhookSignatureError("invalid webhook signature")
+    body = _as_bytes(payload)
     try:
-        event = json.loads(_as_bytes(payload))
-    except ValueError as exc:
+        # Strict UTF-8 (one leading byte order mark allowed), as for every
+        # response body: the parser never picks an encoding itself.
+        text = body.decode("utf-8-sig")
+        if too_deep(text):
+            raise ValueError("nested too deeply")
+        event = json.loads(text)
+    except (ValueError, RecursionError) as exc:  # UnicodeDecodeError is a ValueError
         raise WebhookSignatureError("webhook body is not JSON") from exc
     if not isinstance(event, dict):
         raise WebhookSignatureError("webhook body is not a JSON object")
@@ -259,23 +267,27 @@ class WebhooksResource:
         later pages by one. Each delivery is therefore yielded at most once
         (deduplicated on ``id``); deliveries created after the walk began may
         be missed, and pruned ones (history is kept 30 days) can shift a row
-        past a page boundary. Webhook reads cost no credits.
+        past a page boundary. Without a ``total``, the walk raises
+        :class:`~lexapi.InvalidResponseError` on the third page in a row that
+        brings no unseen delivery id: the server is not advancing.
+        Deliveries already yielded stay valid; the page that showed it is on
+        the error's ``body``. Webhook reads cost no credits.
         """
-        offset = 0
-        seen: set[str] = set()
+        walk = DeliveryWalk(page_size)
         while True:
-            page = self.deliveries(webhook_id, limit=page_size, offset=offset)
+            page = self.deliveries(webhook_id, limit=walk.page_size, offset=walk.offset)
             deliveries = page.deliveries
+            if not deliveries:
+                return
+            walk.check(page._map, [delivery.id for delivery in deliveries])
             for delivery in deliveries:
                 key = delivery.id
                 if key is not None:
-                    if key in seen:
+                    if key in walk.seen:
                         continue
-                    seen.add(key)
+                    walk.seen.add(key)
                 yield delivery
-            offset += len(deliveries)
-            total = page.total
-            if not deliveries or (total is not None and offset >= total):
+            if walk.advance(page._map, len(deliveries)):
                 return
 
 
@@ -363,19 +375,19 @@ class AsyncWebhooksResource:
     ) -> AsyncIterator[WebhookDelivery]:
         """Async twin of :meth:`WebhooksResource.iter_deliveries` (same
         deduplication and paging caveats)."""
-        offset = 0
-        seen: set[str] = set()
+        walk = DeliveryWalk(page_size)
         while True:
-            page = await self.deliveries(webhook_id, limit=page_size, offset=offset)
+            page = await self.deliveries(webhook_id, limit=walk.page_size, offset=walk.offset)
             deliveries = page.deliveries
+            if not deliveries:
+                return
+            walk.check(page._map, [delivery.id for delivery in deliveries])
             for delivery in deliveries:
                 key = delivery.id
                 if key is not None:
-                    if key in seen:
+                    if key in walk.seen:
                         continue
-                    seen.add(key)
+                    walk.seen.add(key)
                 yield delivery
-            offset += len(deliveries)
-            total = page.total
-            if not deliveries or (total is not None and offset >= total):
+            if walk.advance(page._map, len(deliveries)):
                 return

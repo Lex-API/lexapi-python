@@ -27,6 +27,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import httpx
+
+from lexapi._retry import is_quota_exhausted
 from lexapi.models import InForceLookup, SnapshotCandidate
 
 #: Fallback mapping used when the body carries no typed ``error.code``
@@ -324,15 +327,18 @@ class RateLimitedError(LexAPIError):
 
     @property
     def quota_exhausted(self) -> bool:
-        """True when the 429 reports an exhausted quota, not a rate limit."""
+        """True when the 429 reports an exhausted quota, not a rate limit.
+
+        Decided by the same rule as the retry decision
+        (:func:`lexapi._retry.is_quota_exhausted`): the client records that
+        decision on the error it raises. An error built by hand (no
+        headers) is judged from its code and body."""
+        decided = self.__dict__.get("_quota_exhausted")
+        if isinstance(decided, bool):
+            return decided
         if self.code == "QUOTA_EXHAUSTED":
             return True
-        # Fallback for servers before API 2.4.0 (no top-level code).
-        return (
-            isinstance(self.body, dict)
-            and "retryAfter" not in self.body
-            and self.resets_at is not None
-        )
+        return is_quota_exhausted(429, httpx.Headers(), self.body)
 
 
 class TierForbiddenError(LexAPIError):
@@ -398,7 +404,8 @@ class CreditsExhaustedError(LexAPIError):
             return None
         if isinstance(value, float) and not math.isfinite(value):
             return None
-        return int(value)
+        number = int(value)
+        return number if abs(number) <= 9_007_199_254_740_991 else None
 
     @property
     def operation(self) -> str | None:
@@ -466,7 +473,8 @@ class NationalAllowanceExhaustedError(LexAPIError):
             return None
         if isinstance(value, float) and not math.isfinite(value):
             return None
-        return int(value)
+        number = int(value)
+        return number if abs(number) <= 9_007_199_254_740_991 else None
 
     @property
     def jurisdiction(self) -> str | None:
@@ -658,7 +666,8 @@ class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
             return None
         if isinstance(value, float) and not math.isfinite(value):
             return None
-        return int(value)
+        number = int(value)
+        return number if abs(number) <= 9_007_199_254_740_991 else None
 
 
 class InternalServerError(LexAPIError):

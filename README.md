@@ -292,7 +292,7 @@ print(inbound.total_edges, "edge rows;", inbound.total_citations, "document pair
 print(inbound.counts_source)  # "stats" or "counted" — both exact for the request
 print(inbound.relation_sync.status)  # Cellar refresh state of amendment/corrigendum/repeal edges
 
-for group in client.citations.iter_cited_by("32008R1272"):  # walks every edge page (1 credit each)
+for group in client.citations.iter_cited_by("32008R1272"):  # every edge page (1 credit each)
     print(group.celex_number, group.citation_count)
 
 outbound = client.citations.cites("32016R0679")
@@ -313,6 +313,29 @@ with_national = client.citations.cited_by("32016R0679", include_national=True)
 print(with_national.include_national)  # present once honoured; None while no jurisdiction is live
 national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
 ```
+
+**Page iterators.** `citations.iter_cited_by` / `iter_cites` yield every
+document group, `webhooks.iter_deliveries` every delivery and
+`national.iter_documents` every page, as the pages arrive.
+
+- **Edge walks** (`iter_cited_by`, `iter_cites`) end at an empty page, at a
+  page shorter than the echoed `limit` (when that is a positive integer; else
+  than the requested `page_size`), or once the offset reaches `total_edges`.
+  They raise `InvalidResponseError` when the server echoes another `offset`
+  than the one asked for, and — only on answers that carry neither
+  `totalEdges` nor an echoed `offset` — on the third page in a row equal to
+  the page before.
+- **Deliveries** (`iter_deliveries`) end at an empty page or once the offset
+  reaches `total`. Only when the answer has no usable `total` (whatever else
+  it echoes), the walk raises on the third page in a row that brings no
+  delivery not seen yet.
+- **National documents** (`iter_documents`) end after a page without a next
+  cursor (or with `has_more` not true, or no results), and raise when the
+  server hands back a cursor already sent in the walk, or one that is not a
+  string while the walk would continue.
+
+Everything yielded before an error stays valid; the page that showed the
+stall is not yielded and is on `err.body`.
 
 Every edge says where it comes from (`provenance`) and how its target was
 identified (`resolution`, national edges only); every node carries `id`,
@@ -411,7 +434,7 @@ result = client.webhooks.test(hook.webhook.id)  # synchronous test delivery
 if not result.ok:  # HTTP 200 either way
     print(result.delivery.error_message)
 
-for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # all pages, deduped on id
+for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # every page, deduped on id
     print(delivery.status, delivery.response_status)
 
 client.webhooks.delete(hook.webhook.id)
@@ -802,6 +825,12 @@ without a code, raised as `TierForbiddenError`. A handler that treated
 `TierForbiddenError` as a failed payment needs a `PaymentPastDueError` clause on
 API 2.27.0 and later.
 
+A JSON body (or export line, or webhook body) nested deeper than 512 levels
+is refused before it is parsed, on every Python version, and counts as not
+JSON. In a thread whose stack is far smaller than the default, the
+interpreter itself can run out of stack before any check runs; the SDK cannot
+detect that.
+
 `InvalidResponseError`: a `2xx` answer that is not the documented shape — no
 body, a body that is not strict UTF-8 JSON (e.g. a proxy's HTML page), JSON
 that is not an object, `success: false`, a documented field that is missing or
@@ -859,7 +888,11 @@ read-only POSTs (search, document reads, resolve, semantic search,
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
 A `2xx` answer is never retried, whatever its body.
 Every wait, server-directed ones included, is clamped to `backoff_cap`
-(default 30 s): a cap below the server's requested wait shortens it. The full
+(default 30 s): a cap below the server's requested wait shortens it.
+`backoff_base` and `backoff_cap` must be finite and not negative. A
+`Retry-After`, `RateLimit-Reset` or `retryAfter` hint that is not in a
+documented form (delta-seconds; for `Retry-After` also an HTTP-date)
+counts as absent, and the normal backoff applies. The full
 rules are in the [SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md).
 
 ```python
@@ -900,7 +933,10 @@ for the whole call. The 95 s default sits above the API's 90 s deadline on
 document reads, so that timeout comes back as a typed, refunded 504; the CDN
 ends any wait at 100 s. A request can still run past the timeout and raise a
 local `RequestTimeoutError`; values above ~100 s buy nothing on the public
-endpoint.
+endpoint. Both timeouts are numbers of seconds >= 0 (`None` means no limit);
+a value longer than the timers support, `inf` included, is clamped to
+2**31 - 1 ms (about 24.8 days), and `nan` or a negative value raises
+`ValueError` when the client is created.
 
 ## Development
 

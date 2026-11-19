@@ -51,8 +51,9 @@ from typing import Any
 
 import httpx
 
+from lexapi._json import too_deep
 from lexapi._payloads import DateLike, drop_none, iso_date
-from lexapi._response import header
+from lexapi._response import header, parse_header_int
 from lexapi.errors import IncompleteExportError, LexAPIConnectionError, RequestTimeoutError
 
 
@@ -251,16 +252,10 @@ class _ExportStreamBase:
         value = self.done.get(key)
         if isinstance(value, bool) or not isinstance(value, int):
             return None
-        return value
+        return value if abs(value) <= 9_007_199_254_740_991 else None
 
     def _header_int(self, name: str) -> int | None:
-        value = header(self.headers, name)
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except ValueError:
-            return None
+        return parse_header_int(header(self.headers, name))
 
     def _classify(self, line: str) -> tuple[str, dict[str, Any]] | None:
         """Sort a raw NDJSON line into ("meta"|"done"|"row", payload)."""
@@ -268,8 +263,10 @@ class _ExportStreamBase:
         if not line:
             return None
         try:
+            if too_deep(line):
+                raise ValueError("nested too deeply")
             row = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: nested too deeply
             self.invalid_lines += 1
             return None
         if not isinstance(row, dict):

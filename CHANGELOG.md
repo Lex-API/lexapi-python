@@ -109,6 +109,64 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Changed
 
+- **Retry hints are read strictly.** `Retry-After` and `RateLimit-Reset`
+  numbers must be plain ASCII decimals (`5`, `2.5`; no sign, exponent, `nan`
+  or `inf`); a `Retry-After` date must be an IMF-fixdate or RFC 850 date in
+  `GMT`, `UTC` or `+0000`, or an asctime date — a date in another zone
+  (`Z`, `EST`, ...), or an impossible one, is ignored. The wait to a date,
+  and a wait converted from an epoch value, is rounded to the nearest second
+  (halves up); a time in the past is a wait of 0. A body `retryAfter` must be
+  a number >= 0: the top-level field, else `error.details` on the typed
+  envelope or the top-level `details` on the legacy shape. Anything else
+  counts as absent: the normal backoff applies, and a national 503
+  `SEARCH_INCOMPLETE` whose only hint is unusable is not retried. A 429 with
+  code `QUOTA_EXHAUSTED` in `error.code` of the typed envelope is a quota 429
+  too, and `RateLimitedError.quota_exhausted` always matches the retry
+  decision.
+- **`RetryConfig` refuses unusable waits.** `backoff_base` and `backoff_cap`
+  must be finite numbers >= 0; anything else (`inf`, `nan`, a negative value,
+  a number too large for a float) raises `ValueError`. 0.4.0 accepted
+  `backoff_cap=float("inf")` as "no cap"; pass a large finite value instead.
+- **Timeouts.** `timeout` and `connect_timeout` longer than the timers
+  support (`inf` included) are clamped to 2**31 - 1 milliseconds (about 24.8
+  days); `nan`, a negative value or a non-number raises `ValueError` when the
+  client is created (`None` still means no limit). Any real number is
+  accepted (`int`, `float`, `Decimal`, numpy numbers).
+- **A JSON text nested deeper than 512 levels is refused** (a response body,
+  error body, export line or webhook body), on every Python version, before
+  it is parsed: it is "not JSON".
+- **Webhook bodies are strict UTF-8.** `verify_webhook` decodes the body as
+  UTF-8 (one leading byte order mark allowed) before parsing it, like every
+  response body; a body in another encoding (UTF-16, UTF-32) raises
+  `WebhookSignatureError` ("not JSON"). It used to be handed to the parser
+  as bytes, which guessed the encoding.
+- **Unusable figures read as absent.** An integer header (`RateLimit-*`,
+  `X-National-*`, `X-Corpus-Version`, `X-Export-*`, the batch and post-filter
+  counts) must be ASCII digits (leading zeros allowed) with a value up to
+  2**53 - 1 (`+5`, `1e3`, `1_000` are absent). An integer read through a
+  typed accessor (credits, usage, totals, counts) above 2**53 - 1 is absent;
+  finite floats still truncate. A float field must be a finite number; a
+  `bool` case-law `score` is now `None` (it was `1.0` / `0.0`).
+- **Iterators raise when the server stops advancing.**
+  `citations.iter_cited_by` / `iter_cites` yield every document group,
+  `webhooks.iter_deliveries` every delivery and `national.iter_documents`
+  every page, as the pages arrive. Edge walks end at an empty page, at a page
+  shorter than the echoed `limit` (when that is a positive integer; else than
+  the requested page size) or once the offset reaches a usable `totalEdges`;
+  they raise `InvalidResponseError` when the server echoes an `offset` other
+  than the one requested, and, only on answers with neither a usable
+  `totalEdges` nor an echoed `offset`, on the third page in a row equal to the
+  page before (compared as JSON values). Delivery walks end at an empty page
+  or once the offset reaches a usable `total`; only without a usable `total`
+  (whatever else is echoed), they raise on the third page in a row that has
+  readable ids and none unseen. National walks end after a page whose
+  `hasMore` is not `true`, whose `nextCursor` is absent or empty, or whose
+  list is empty; they raise on a cursor already sent in the walk, or one that
+  is not a string while the walk would continue. Pages already yielded stay
+  valid; the page that showed the stall is on `err.body`. A `page_size` (or
+  national `limit`) that is not a positive integer raises `ValueError` before
+  any request. An edge group whose `citationCount` is not a count advances by
+  the length of its edge list.
 - A `2xx` answer that is not the documented shape now raises
   `InvalidResponseError`; before, it could be read as an empty result. To tell
   a malformed answer from an empty result, catch `InvalidResponseError`. This
@@ -151,6 +209,28 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ### Fixed
 
+- A `Retry-After`, `RateLimit-Reset` or `retryAfter` hint that is negative or
+  not finite (`nan`, `inf`, a number too large for a float) no longer makes a
+  call raise `ValueError` or `OverflowError`, never makes the async client
+  wait forever, and never sets `retry_after` to `nan`; no sleep receives
+  `nan`, a negative or an overflowing value, whatever `max_retries` is.
+- An asctime `Retry-After` date (`Sun Nov  6 08:49:37 1994`) is read as UTC;
+  it was read in local time.
+- On Python older than 3.12, a response body, error body, export line or
+  webhook body nested deeper than the recursion limit leaves room for where
+  it is parsed (less a small reserve; a text without brackets is never
+  refused) is refused before it is parsed (not JSON: `InvalidResponseError`,
+  an error without a body, an invalid export line, `WebhookSignatureError`).
+  Such a body could abort the interpreter. Each response body is parsed at
+  most once (the retry decision and the error share it). `verify_webhook`
+  now also treats a `RecursionError` as "not JSON". In a thread whose stack
+  is far smaller than the default, the interpreter itself can still run out
+  of stack before any check runs; the SDK cannot detect that.
+- A deeply nested export line is counted in `invalid_lines` instead of
+  raising `RecursionError`.
+- A float field (`score`, the national coverage rates and bounds) holding a
+  number too large for a float reads as `None` instead of raising
+  `OverflowError`.
 - Integer fields of the response models (for example `Document.version`)
   accept an integer, or a float with an integral value; a non-integral or
   non-finite number (`2.9`, `1e999`) is now `None`, and such an item of
