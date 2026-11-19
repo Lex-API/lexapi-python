@@ -420,12 +420,16 @@ class LexAPI:
     def get_document_at_date(
         self, celex: str, date: DateLike, *, language: str | None = None
     ) -> DocumentVersionResponse:
-        """GET /documents/{celex}/at/{date} — the snapshot observed as current on ``date``.
+        """GET /documents/{celex}/at/{date} — the snapshot LexAPI held at the
+        end of ``date`` (UTC), from its own fetch history: not the law in force
+        on that date (for that, :meth:`legislation_as_of`).
 
-        ``date`` is ``YYYY-MM-DD`` or a :class:`datetime.date` (end-of-day UTC
-        inclusive). Dates before the document entered the corpus raise
-        :class:`NotFoundError` with the tracking start date in the message.
-        1 credit.
+        ``date`` is ``YYYY-MM-DD`` or a :class:`datetime.date`. The answer has
+        ``kind``, ``date_in_future`` and ``in_force_lookup``, and the snapshot
+        ``observed_from`` / ``observed_until`` (API 2.28.0). A date LexAPI
+        holds no snapshot for raises :class:`NotFoundError`; its ``reason`` is
+        ``before_tracking`` (before the document entered the corpus) or
+        ``boundary_unknown`` (refunded; see ``candidates``). 1 credit.
         """
         params = _payloads.drop_none({"language": language})
         return self._request(

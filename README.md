@@ -70,6 +70,10 @@ if not resp.text_available:
     if ta.latest_consolidated:  # base acts: pointer to CONSLEG
         print("try", ta.latest_consolidated.celex)
 
+# In force today (API 2.19.0) and where the document comes from (API 2.20.0)
+print(doc.in_force, doc.not_in_force_reason, doc.end_of_validity)  # None = unknown
+print(doc.provenance.source_url, doc.provenance.licence, doc.provenance.content_hash)
+
 # Title not in the requested language? titleLanguage says which language it is in
 print(doc.title_language)
 
@@ -131,6 +135,15 @@ for hit in laws.results:
         print("  consolidated as of", hit.consolidated_as_of, "— cite", hit.base_celex)
         print("  ", hit.consolidated_note)
 ```
+
+| Field (documents and legislation hits) | Meaning |
+|---|---|
+| `in_force`, `not_in_force_reason`, `end_of_validity`, `entry_into_force` | Whether the act is in force **today** (UTC), as recorded by the Publications Office; all `None` when unknown. A consolidated text or corrigendum carries the label of its act. Not about amendments, nor about an `as_of` date (API 2.19.0) |
+| `provenance` (`Provenance`) | `publisher`, `source_url`, `source_identifier`, `retrieved_at`, `content_hash`, `version_identifier`, `language`, `licence`; `None` values are not known. On search hits `retrieved_at` and `content_hash` are `None` (API 2.20.0) |
+| `field_provenance` (`FieldProvenance`) | Which fields are the publisher's text (`official_source_text`) and which were derived (API 2.20.0) |
+| `Document.version` | LexAPI's snapshot number of the text |
+| `SemanticLegislationResponse.in_force_filter` | With `filters={"inForce": True}`: `removed_not_in_force`, `removed_unknown` |
+| `get_info().subscription_info.max_semantic_results` / `.max_semantic_legislation_results` | The most results one semantic search returns on your plan (API 2.24.0) |
 
 #### The text in force on a date (`as_of`)
 
@@ -245,12 +258,15 @@ print(result.withheld, "withheld;", result.units_charged, "credits")
   it, `base_celex`: consolidated texts have no legal force, so cite the act as
   published in the Official Journal. When the API does not name that act (a
   document read), `cite_celex` is `None`.
-- **Nothing is guessed.** A field the API did not send is `None`.
+- **Nothing is guessed.** A field the API did not send is `None`. A text that
+  is empty or holds only whitespace or invisible format characters (such as a
+  zero-width space) counts as no text: `text=None`, `has_text` False.
 - **Converters.** `from_legislation_search`, `from_case_law_search`,
   `from_document` (one passage per article) and `from_legislation_as_of`
   each return a `PassageResult`: `passages`, the `withheld` / `dropped`
   counts, `as_of`, and `units_charged` / `credits_remaining` as the response
-  reports them, once per call.
+  reports them, once per call. They take the EU responses only; national
+  search responses (`client.national.*`) are not supported.
 - **For a framework.** `p.metadata()` is the citation as a flat dictionary
   (never the text), `p.id` an identifier that is stable across calls and
   differs between dates, and `passages.format_passage(p)` the content
@@ -450,6 +466,44 @@ for r in hits.results:
 legislation_hits = client.national.legislation_semantic_search("AT", "right to erasure")
 ```
 
+**`as_of` on national legislation search (requires LexAPI API 2.29.0).** The
+search runs over today's texts only, and each hit is labelled for the date:
+
+```python
+from lexapi import NationalAsOfVersion
+
+hits = client.national.legislation_semantic_search(
+    "AT",
+    "Recht auf Auskunft über eigene Daten",
+    as_of="2020-06-01",  # or a datetime.date
+)
+print(hits.as_of, hits.as_of_summary.unresolved)
+for hit in hits.results:
+    v = hit.as_of_version
+    if hit.as_of_resolved and isinstance(v, NationalAsOfVersion):
+        print(hit.article_ref, v.valid_from, v.valid_to, v.source_id, v.checked_at)
+    else:
+        print(hit.article_ref, "not established for the date:", hit.as_of_reason)
+```
+
+| Field | Meaning |
+|---|---|
+| `as_of`, `as_of_resolved` | On every hit of an `as_of` search |
+| `as_of_version` (`NationalAsOfVersion`, `kind == "current_unit"`) | On a resolved hit: `valid_from` / `valid_to` (the publisher's dates for today's wording; `valid_to` `None` when open), `source_id` (the publisher's id of the provision), `checked_at` (`YYYY-MM-DD`, the day of the last read of the act that LexAPI recorded) |
+| `as_of_reason` | On an unresolved hit; one of `lexapi.NATIONAL_AS_OF_REASONS`: `provision_amended_since`, `no_longer_in_force`, `provision_dates_unknown`, `asof_not_available` |
+| `response.as_of`, `response.as_of_summary` | The date echoed; `unresolved` counts the unresolved hits (`live_fetches` is always 0) |
+
+A hit is resolved only when the publisher's dates, as of LexAPI's last recorded
+read of the act (`checked_at`), show today's wording already applied on the
+date; a change the publisher made after that read is not reflected. The text is
+never swapped for an earlier one: a provision repealed or replaced since the
+date cannot be found, and an unresolved hit keeps today's wording, which is not
+established as the text for the date. LexAPI holds such dates for Austria and
+Spain; for the other countries every hit is `asof_not_available`. `in_force`
+and the `inForce` filter are still about today. Dates from 1800-01-01; an
+invalid date is a 400 (`InvalidParamsError`, nothing charged). Same cost: 5
+credits.
+
 **One shape for every country (requires LexAPI API 2.8.0).** National
 documents have the same fields, types and formats in every jurisdiction, so
 code written for one country works for all of them. Every field is always
@@ -622,20 +676,42 @@ the text in force on a date, `semantic_legislation_search(as_of=...)`; or read
 a consolidated CELEX such as `02016R0679-20180524`.)
 
 ```python
+from lexapi import NotFoundError
+
 history = client.list_document_versions("32016R0679")
 print(history.current_version, history.tracked_since)
 for v in history.versions:
-    print(v.version, v.fetched_at, v.content_hash, "(current)" if v.is_current else "")
+    print(v.version, v.observed_from, v.fetched_at, "(current)" if v.is_current else "")
 
 snapshot = client.get_document_version("32016R0679", 2)
-print(snapshot.document.parsed_content)
+print(snapshot.document.parsed_content, snapshot.document.provenance.content_hash)
 
-as_of = client.get_document_at_date("32016R0679", "2026-03-20")  # or a datetime.date
-print(as_of.as_of, as_of.document.version)
+try:
+    at = client.get_document_at_date("32016R0679", "2026-04-01")  # or a datetime.date
+    print(at.kind, at.as_of, at.document.version)  # kind: "observation_snapshot"
+    print(at.document.observed_from, at.document.observed_until)  # until: None = current
+    if at.date_in_future:
+        print("a future date: this is the current version")
+except NotFoundError as err:
+    if err.before_tracking:
+        print("history starts", err.tracked_since)
+    elif err.boundary_unknown:  # refunded
+        for c in err.candidates:  # read them with get_document_version
+            print(c.version, c.observed_from, c.fetched_at)
 ```
 
-Each call costs 1 credit. Dates before the document entered the corpus raise
-`NotFoundError` with the tracking start date in the message.
+| Field (API 2.28.0) | Meaning |
+|---|---|
+| `VersionEntry.observed_from` | When the version began; `None` when LexAPI has no record of it |
+| `VersionEntry.fetched_at` | When the version's text arrived at LexAPI; for a version without `observed_from` (possible for snapshots stored before API 2.28.0) the last fetch of its text, which is not when the version began |
+| `VersionEntry.observed_until` | `get_document_at_date` only: when the next version's text arrived; `None` for the current version |
+| `kind`, `date_in_future`, `in_force_lookup` | `get_document_at_date` only: always `"observation_snapshot"`; True for a date after today (UTC), answered with the current version; a pointer to `legislation_as_of` for an EU act it resolves |
+| `NotFoundError.reason` | `"before_tracking"` (`.before_tracking`, `.tracked_since`, `.in_force_lookup`) or `"boundary_unknown"` (`.boundary_unknown`, `.candidates` of `VersionCandidate`: `version`, `fetched_at`, `observed_from`; at most 10, `.candidates_truncated` beyond; can be empty) |
+
+`get_document_at_date` returns the snapshot LexAPI held at the end of that day
+(UTC) — LexAPI's fetch history, not the law in force on the date. Each call
+costs 1 credit; a `404` costs 1 credit, except `boundary_unknown`, which is
+refunded. A document that is not in the corpus is a `404` without a reason.
 
 ### Async
 
@@ -685,7 +761,8 @@ shape are handled; a legacy body's `details` list is kept on `err.details`):
 ```python
 from lexapi import (
     LexAPIError,  # base — code / message / status / details / body / retry_after
-    NotFoundError,  # 404 NOT_FOUND — .unknown_endpoint (API 2.27.0+): the API has no such endpoint
+    NotFoundError,  # 404 NOT_FOUND — .unknown_endpoint (API 2.27.0+): the API has no such endpoint;
+    # .reason / .before_tracking / .boundary_unknown / .candidates (get_document_at_date, API 2.28.0+)
     InvalidCelexError,  # 400 INVALID_CELEX
     InvalidParamsError,  # 400 INVALID_PARAMS (e.g. an invalid as_of)
     RateLimitedError,  # 429 — .retry_after; code QUOTA_EXHAUSTED / .quota_exhausted / .resets_at on legacy quotas

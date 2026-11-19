@@ -392,12 +392,9 @@ class AsyncLexAPI:
     async def get_document_at_date(
         self, celex: str, date: DateLike, *, language: str | None = None
     ) -> DocumentVersionResponse:
-        """GET /documents/{celex}/at/{date} — the snapshot observed as current on ``date``.
-
-        ``date`` is ``YYYY-MM-DD`` or a :class:`datetime.date` (end-of-day UTC
-        inclusive). Dates before the document entered the corpus raise
-        :class:`NotFoundError` with the tracking start date in the message.
-        1 credit.
+        """GET /documents/{celex}/at/{date} — see
+        :meth:`LexAPI.get_document_at_date`: LexAPI's own fetch snapshot for
+        the date, not the law in force on it. 1 credit.
         """
         params = _payloads.drop_none({"language": language})
         return await self._request(

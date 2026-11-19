@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from lexapi.models import InForceLookup, VersionCandidate
+
 #: Fallback mapping used when the body carries no typed ``error.code``
 #: (legacy bare ``{"error": "..."}`` shape, or non-JSON bodies). 520-524 are
 #: Cloudflare's origin-error statuses (lex-api.com sits behind Cloudflare).
@@ -197,9 +199,30 @@ class InvalidURLError(LexAPIError):
 
 class NotFoundError(LexAPIError):
     """404 ``NOT_FOUND`` — document or resource missing, or a path or
-    method the API does not have (:attr:`unknown_endpoint`)."""
+    method the API does not have (:attr:`unknown_endpoint`).
+
+    :meth:`~lexapi.LexAPI.get_document_at_date` (API 2.28.0) says why there
+    is no snapshot for the date in :attr:`reason`: ``before_tracking``
+    (:attr:`before_tracking`; the date is before the document entered the
+    corpus, see :attr:`tracked_since` and :attr:`in_force_lookup`) or
+    ``boundary_unknown`` (:attr:`boundary_unknown`; LexAPI has no record of
+    when a version stored before API 2.28.0 began, so it does not guess —
+    read the :attr:`candidates` with
+    :meth:`~lexapi.LexAPI.get_document_version`). A document that is not in
+    the corpus is a 404 without a reason. These are LexAPI's fetch
+    snapshots, not the law in force on a date.
+    """
 
     default_code = "NOT_FOUND"
+
+    @property
+    def reason(self) -> str | None:
+        """``error.details.reason`` (``unknown_endpoint``, ``before_tracking``,
+        ``boundary_unknown``, or a value added later); ``None`` when absent."""
+        if not isinstance(self.details, dict):
+            return None
+        value = self.details.get("reason")
+        return value if isinstance(value, str) else None
 
     @property
     def unknown_endpoint(self) -> bool:
@@ -207,7 +230,50 @@ class NotFoundError(LexAPIError):
         mistyped path, a method newer than the API, or a national route for a
         country that is not available. Always False on APIs before 2.27.0;
         there the message starts with "Unknown API endpoint"."""
-        return isinstance(self.details, dict) and self.details.get("reason") == "unknown_endpoint"
+        return self.reason == "unknown_endpoint"
+
+    @property
+    def before_tracking(self) -> bool:
+        """True when the date asked is before the document entered the
+        corpus (``get_document_at_date``, API 2.28.0)."""
+        return self.reason == "before_tracking"
+
+    @property
+    def boundary_unknown(self) -> bool:
+        """True when LexAPI cannot say which snapshot it held on the date
+        (``get_document_at_date``, API 2.28.0). Refunded."""
+        return self.reason == "boundary_unknown"
+
+    @property
+    def tracked_since(self) -> str | None:
+        """``details.trackedSince``: when the document entered the corpus
+        (``before_tracking``)."""
+        value = self.details.get("trackedSince") if isinstance(self.details, dict) else None
+        return value if isinstance(value, str) else None
+
+    @property
+    def in_force_lookup(self) -> InForceLookup | None:
+        """``details.inForceLookup``: where the version of the act for a date
+        is answered (:meth:`~lexapi.LexAPI.legislation_as_of`), for an EU act
+        it resolves (``before_tracking``)."""
+        return InForceLookup.parse(self.details)
+
+    @property
+    def candidates(self) -> list[VersionCandidate]:
+        """``details.candidates`` (``boundary_unknown``): the versions the date
+        could fall in, at most 10 (see :attr:`candidates_truncated`); can be
+        empty. ``[]`` when absent."""
+        value = self.details.get("candidates") if isinstance(self.details, dict) else None
+        if not isinstance(value, list):
+            return []
+        return [VersionCandidate.from_dict(item) for item in value if isinstance(item, dict)]
+
+    @property
+    def candidates_truncated(self) -> bool:
+        """True when there were more than the :attr:`candidates` listed."""
+        if not isinstance(self.details, dict):
+            return False
+        return self.details.get("candidatesTruncated") is True
 
 
 def _usage_resets_at(body: Any) -> str | None:

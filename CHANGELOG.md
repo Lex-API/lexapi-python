@@ -57,6 +57,43 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   a model or log it by default. `LexAPIError(...)` and `error_from_response`
   take it as a keyword argument.
 
+- **`national.legislation_semantic_search(..., as_of=...)`** (sync + async,
+  API 2.29.0): a date (`YYYY-MM-DD` or a `datetime.date`, sent as `asOf`)
+  that labels each hit. The search runs over today's texts only and the text
+  is never swapped. A hit is resolved only when the publisher's dates, as of
+  LexAPI's last recorded read of the act (`checked_at`), show today's wording
+  already applied on the date; an unresolved hit keeps today's wording, which
+  is not established as the text for the date. LexAPI holds such dates for
+  Austria and Spain. Response: `as_of`, `as_of_summary`; per hit: `as_of`,
+  `as_of_resolved`, `as_of_reason` (`NATIONAL_AS_OF_REASONS` /
+  `NationalAsOfReason`: `provision_amended_since`, `no_longer_in_force`,
+  `provision_dates_unknown`, `asof_not_available`) and `as_of_version`, a
+  `NationalAsOfVersion` (a subclass of `AsOfVersion`: `kind ==
+  "current_unit"`, `valid_from`, `valid_to`, `source_id`, `checked_at`).
+- **Version snapshots** (API 2.28.0): `VersionEntry.observed_from` (when the
+  version began; `None` when LexAPI has no record of it) and, on
+  `get_document_at_date`, `VersionEntry.observed_until` and the response's
+  `kind` (`"observation_snapshot"`), `date_in_future` and `in_force_lookup`
+  (`InForceLookup`). `VersionEntry.provenance` / `.field_provenance` on
+  snapshots. These are LexAPI's fetch snapshots, not the law in force on a
+  date.
+- **`NotFoundError.reason`**, `.before_tracking` / `.tracked_since` /
+  `.in_force_lookup`, and `.boundary_unknown` / `.candidates`
+  (`VersionCandidate`: `version`, `fetched_at`, `observed_from`) /
+  `.candidates_truncated`: why `get_document_at_date` has no snapshot for the
+  date (API 2.28.0). `unknown_endpoint` is unchanged.
+- **In force today** (API 2.19.0): `in_force`, `not_in_force_reason`,
+  `end_of_validity`, `entry_into_force` on `Document` (document reads,
+  batch, by-URL, metadata) and `SemanticLegislationResult`;
+  `SemanticLegislationResponse.in_force_filter` (`InForceFilter`:
+  `removed_not_in_force`, `removed_unknown`).
+- **Provenance** (API 2.20.0): `provenance` (`Provenance`) and
+  `field_provenance` (`FieldProvenance`) on `Document`,
+  `SemanticLegislationResult` and `SemanticCaseLawResult`;
+  `SemanticSearchResponse.field_provenance`; `Document.version`.
+- `SubscriptionInfo.max_semantic_results` /
+  `.max_semantic_legislation_results` (`get_info`, API 2.24.0).
+
 ### Changed
 
 - A `2xx` answer that is not the documented shape now raises
@@ -106,6 +143,16 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   raises `TypeError` or puts that value in the message: it counts as absent.
 - A `LexAPIError` survives a pickle round trip with its message unchanged
   (before, the `[CODE]` prefix was added twice).
+- `lexapi.passages`: a text that is empty or holds only whitespace or
+  invisible format characters (such as a zero-width space) is now no text:
+  `text` is `None`, `has_text` is False and `text_status` is `"absent"` (on
+  a hit not established for `as_of`, the date status, as for a missing
+  text). Before, `text: ""` or `"   "` counted as a text. A blank `fullText`
+  of a document read gives no passage.
+- `national.legislation_semantic_search` hits parsed `asOfVersion` into the
+  EU model, without its national fields; it is now a `NationalAsOfVersion`
+  when `kind` is `current_unit` (other kinds stay an `AsOfVersion`, with
+  everything on `.raw`).
 - `AS_OF_REASONS` / `AsOfReason` now include `amendment_not_consolidated`,
   which `semantic_legislation_search(as_of=...)` hits can carry since LexAPI
   API 2.25.0. (The value was already passed through on `as_of_reason`.)

@@ -65,6 +65,11 @@ class SubscriptionInfo:
     Endpoints echo the subset that applies to them (``max_pages`` on search,
     ``max_batch_size`` on batch, ``max_results`` on semantic search), so most
     fields are ``None`` on most responses; ``/info`` carries the full set.
+
+    ``max_semantic_results`` / ``max_semantic_legislation_results``
+    (``/info``, API 2.24.0): the most results one semantic case-law /
+    legislation search returns on this plan, which ``limit`` is clamped to
+    (``0`` on an account without semantic search).
     """
 
     tier: str | None = None
@@ -77,6 +82,8 @@ class SubscriptionInfo:
     monthly_credits: int | None = None
     rate_limit: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    max_semantic_results: int | None = None
+    max_semantic_legislation_results: int | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> SubscriptionInfo | None:
@@ -93,6 +100,8 @@ class SubscriptionInfo:
             monthly_credits=_opt_int(data.get("monthlyCredits")),
             rate_limit=_opt_str(data.get("rateLimit")),
             raw=data,
+            max_semantic_results=_opt_int(data.get("maxSemanticResults")),
+            max_semantic_legislation_results=_opt_int(data.get("maxSemanticLegislationResults")),
         )
 
 
