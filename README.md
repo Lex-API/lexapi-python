@@ -902,8 +902,10 @@ the SDK retries:
 - anything else (proxy 502/504, Cloudflare 520/524 from any origin, a connection dropped
   mid-response) only for **free** calls (`get_info`, webhook reads).
 
-POSTs, including webhook create/update/test, are retried only on a 429 or when
-the request never reached the API (connect failure, Cloudflare 521/522/523).
+Writes (POST/PUT/DELETE: webhook create/update/delete/test, `citations.extract`)
+and, by default, the read-only POSTs are retried only on a 429 that is neither an
+exhausted quota nor a failed payment, or when the request never reached the API
+(connect failure, Cloudflare 521/522/523).
 `RetryConfig(retry_read_only_posts=True)` additionally retries the
 read-only POSTs (search, document reads, resolve, semantic search,
 `legislation_as_of`) on an app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
@@ -957,7 +959,7 @@ ends any wait at 100 s. A request can still run past the timeout and raise a
 local `RequestTimeoutError`; values above ~100 s buy nothing on the public
 endpoint. Both timeouts are numbers of seconds >= 0 (`None` means no limit);
 a value longer than the timers support, `inf` included, is clamped to
-2**31 - 1 ms (about 24.8 days), and `nan` or a negative value raises
+2**31 - 1 ms (about 24.9 days), and `nan` or a negative value raises
 `ValueError` when the client is created.
 
 ## Development

@@ -20,21 +20,26 @@ later versions are then absent (`legislation_as_of` raises `NotFoundError`).
   or without a documented required field (`results` on the searches,
   `document` on document reads) raises `InvalidResponseError` (before: it
   could read as an empty result); a `success: false` that carries the API's
-  error envelope raises the mapped API error instead. `NaN` / `Infinity`,
+  error envelope raises the mapped API error instead, and `webhooks.test`
+  still returns its `success: false` as `ok == False`. `NaN` / `Infinity`,
   UTF-16/32 bodies and JSON nested deeper than 512 levels count as not JSON.
   Catch it; the call may have been charged.
 - **Failed payments.** A 403 `PAYMENT_PAST_DUE` (API 2.27.0) raises
   `PaymentPastDueError` (0.4.0: base `LexAPIError`), a subclass of
   `TierForbiddenError`: an `except TierForbiddenError` clause now catches it;
   put `except PaymentPastDueError` first. Never retried.
-- **Iterators can raise.** `citations.iter_cited_by` / `iter_cites`,
-  `webhooks.iter_deliveries` and `national.iter_documents` raise
-  `InvalidResponseError` when the server stops advancing (an echoed offset
-  other than the one requested, repeated pages, a repeated cursor), and
-  `ValueError` for a `page_size` / `limit` that is not a positive integer up
-  to 2**53 − 1.
+- **Iterators can raise** `InvalidResponseError` when the server stops
+  advancing: `citations.iter_cited_by` / `iter_cites` when it echoes another
+  `offset` than the one asked for, or, on answers with neither `totalEdges`
+  nor an echoed `offset`, on the third page in a row equal to the page
+  before; `webhooks.iter_deliveries`, only when the answer has no usable
+  `total`, on the third page in a row with no delivery not seen yet;
+  `national.iter_documents` on a cursor already sent in the walk, or one
+  that is not a string while the walk would continue. A `page_size` /
+  `limit` that is not a positive integer up to 2**53 − 1 raises
+  `ValueError` at the first `next()`, before any request.
 - **Webhook verification.** The body must be a UTF-8 JSON object and the
-  header, once trimmed of whitespace, exactly 64 hex digits; `timestamp` must
+  header, once trimmed of spaces, tabs, CR and LF, exactly 64 hex digits; `timestamp` must
   be `YYYY-MM-DDTHH:MM:SS[.f]` with `Z` or `±HH:MM`. `tolerance=nan` raises
   `ValueError`; `tolerance=None` switches the window off (`0` is a zero-width
   window: only a timestamp equal to now, to the microsecond, passes).
@@ -43,17 +48,22 @@ later versions are then absent (`legislation_as_of` raises `NotFoundError`).
 - **`RetryConfig` and timeouts.** `backoff_base` / `backoff_cap` must be
   finite and ≥ 0: `backoff_cap=float("inf")` now raises `ValueError`, pass a
   large number. `timeout` / `connect_timeout` of `nan`, below 0 or not a
-  number raise `ValueError`; `inf` is clamped to about 24.8 days (`None` is
+  number raise `ValueError`; `inf` is clamped to about 24.9 days (`None` is
   still "no limit").
 - **Retries.** An app-origin 520/524 on a billed GET is no longer retried.
   Unusable retry hints count as absent. A 429 whose typed envelope carries
-  `error.code: "QUOTA_EXHAUSTED"` is now a quota 429 too and is not retried
-  (as with the top-level `code` before).
+  `error.code: "QUOTA_EXHAUSTED"` was already reported as `quota_exhausted`
+  but was retried; it is no longer retried, so on a 429 `quota_exhausted`
+  now always matches the retry decision. A top-level
+  `code: "QUOTA_EXHAUSTED"` beside another typed code is now a quota 429 too
+  (0.4.0: a plain `LexAPIError`, or, beside a typed `RATE_LIMITED`, a
+  `RateLimitedError` without `quota_exhausted`).
 - **Values that now read `None`.** A `bool` case-law `score` (was
-  `1.0`/`0.0`), a non-integral number in an integer field of a response model
-  such as `Document.version` (`2.9` was `2`; the `credits` / `usage` /
-  `subscription` figures still truncate), integers above 2**53 − 1, an empty
-  error body (`err.body` was `{}`).
+  `1.0`/`0.0`), a non-integral number in an integer field of a response
+  model such as `SearchResponse.total_results` or
+  `CitationDocumentGroup.citation_count` (`2.9` was `2`; finite floats in the `credits` / `usage` /
+  `subscription` blocks still truncate), an integer above 2**53 − 1, an
+  empty error body (`err.body` was `{}`).
 - **Construct models by keyword.** `NationalSemanticLegislationResult` and
   `NationalSemanticCaseLawResult` built with positional arguments must use
   keywords (new base-class fields, `text_availability` on the case-law one
@@ -208,7 +218,13 @@ later versions are then absent (`legislation_as_of` raises `NotFoundError`).
   `error.code` on the typed envelope) is a `RateLimitedError` with
   `quota_exhausted`, whatever other code the body carries, and is not
   retried; its code is `QUOTA_EXHAUSTED` unless the body's code is
-  `RATE_LIMITED`. The shape test for servers before API 2.4.0 applies only
+  `RATE_LIMITED`. A 429 whose typed envelope carries
+  `error.code: "QUOTA_EXHAUSTED"` was already reported as `quota_exhausted`
+  but was retried; it is no longer retried, so on a 429 `quota_exhausted`
+  now always matches the retry decision. A top-level
+  `code: "QUOTA_EXHAUSTED"` beside another typed code is now a quota 429 too
+  (0.4.0: a plain `LexAPIError`, or, beside a typed `RATE_LIMITED`, a
+  `RateLimitedError` without `quota_exhausted`). The shape test for servers before API 2.4.0 applies only
   when the code is `RATE_LIMITED` (sent or derived from the status), and
   only on a 429: `quota_exhausted` is false on every other error unless the
   code is `QUOTA_EXHAUSTED`, which sets it on any status.
@@ -233,7 +249,7 @@ later versions are then absent (`legislation_as_of` raises `NotFoundError`).
   a number too large for a float) raises `ValueError`. 0.4.0 accepted
   `backoff_cap=float("inf")` as "no cap"; pass a large finite value instead.
 - **Timeouts.** `timeout` and `connect_timeout` longer than the timers
-  support (`inf` included) are clamped to 2**31 - 1 milliseconds (about 24.8
+  support (`inf` included) are clamped to 2**31 - 1 milliseconds (about 24.9
   days); `nan`, a negative value or a non-number raises `ValueError` when the
   client is created (`None` still means no limit). Any real number is
   accepted (`int`, `float`, `Decimal`, numpy numbers).
@@ -243,8 +259,9 @@ later versions are then absent (`legislation_as_of` raises `NotFoundError`).
   parsed (less a small reserve; a text without brackets is never refused) —
   is refused before it is parsed, as not JSON: `InvalidResponseError`, an
   error without a body (`HTTP <status>`), an invalid export line counted in
-  `invalid_lines`, or `WebhookSignatureError`. Before, such a body raised
-  `RecursionError` or could abort the interpreter; `verify_webhook` also
+  `invalid_lines`, or `WebhookSignatureError`. Before, a body deeper than
+  512 levels but within the parser's limits was parsed; a deeper one raised
+  `RecursionError` or could abort the interpreter. `verify_webhook` also
   treats a `RecursionError` as "not JSON". Each response body is parsed at
   most once (the retry decision and the error share it). In a thread whose
   stack is far smaller than the default, the interpreter itself can still
@@ -253,9 +270,11 @@ later versions are then absent (`legislation_as_of` raises `NotFoundError`).
   `X-National-*`, `X-Corpus-Version`, `X-Export-*`, the batch and post-filter
   counts) must be ASCII digits (leading zeros allowed) with a value up to
   2**53 - 1 (`+5`, `1e3`, `1_000` are absent). An integer read through a
-  typed accessor (credits, usage, totals, counts) above 2**53 - 1 is absent;
-  finite floats there still truncate. A float field must be a finite number;
-  a `bool` case-law `score` is now `None` (it was `1.0` / `0.0`).
+  typed accessor (credits, usage, totals, counts) above 2**53 − 1 is absent;
+  finite floats in the `credits` / `usage` / `subscription` blocks still
+  truncate (other integer fields: see Fixed). A float field must be a
+  finite number; a `bool` case-law `score` is now `None` (it was `1.0` /
+  `0.0`).
 - **Iterators raise when the server stops advancing.**
   `citations.iter_cited_by` / `iter_cites` yield every document group,
   `webhooks.iter_deliveries` every delivery and `national.iter_documents`
@@ -343,7 +362,8 @@ later versions are then absent (`legislation_as_of` raises `NotFoundError`).
 - A float field (`score`, the national coverage rates and bounds) holding a
   number too large for a float reads as `None` instead of raising
   `OverflowError`.
-- Integer fields of the response models (for example `Document.version`)
+- Integer fields of the response models (for example
+  `SearchResponse.total_results` or `CitationDocumentGroup.citation_count`)
   accept an integer, or a float with an integral value; a non-integral or
   non-finite number (`2.9`, `1e999`) is now `None`, and such an item of
   `WebhookRetryPolicy.delays_minutes` is left out. Before, `2.9` was read
