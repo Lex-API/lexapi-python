@@ -9,6 +9,7 @@ import pytest
 from lexapi import (
     AsyncLexAPI,
     LexAPI,
+    NationalSemanticCaseLawResult,
     SemanticHitTextAvailability,
     TextAvailability,
 )
@@ -199,3 +200,40 @@ def test_mixed_hits_and_async():
     got = [(h.celex, h.text_availability.available) for h in resp.results if h.text_availability]
     assert got == [("62018CJ0311", True), ("62019CJ0001", False)]
     assert resp.results[1].text_availability.reason == "not_in_corpus"
+
+
+def test_new_names_are_exported():
+    import lexapi
+
+    assert "SemanticHitTextAvailability" in lexapi.__all__
+    assert "SemanticHitTextUnavailableReason" in lexapi.__all__
+
+
+def _national_search(hit):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "127.0.0.1"
+        return httpx.Response(200, json=_body(hit))
+
+    transport = httpx.MockTransport(handler)
+    with LexAPI("k", base_url=LOOPBACK, transport=transport, max_retries=0) as client:
+        return client.national.semantic_search("AT", "Datenschutz").results[0]
+
+
+def test_national_hit_has_no_text_availability():
+    hit = _national_search({"documentId": "AT-JUS-1", "score": 0.8, "snippet": "s"})
+    assert isinstance(hit, NationalSemanticCaseLawResult)
+    assert hit.text_availability is None
+
+
+def test_national_hit_reads_text_availability_if_sent():
+    hit = _national_search(
+        {
+            "documentId": "AT-JUS-1",
+            "score": 0.8,
+            "snippet": "s",
+            "textAvailability": {"available": False, "reason": "not_in_corpus"},
+        }
+    )
+    ta = hit.text_availability
+    assert ta is not None
+    assert (ta.available, ta.reason) == (False, "not_in_corpus")

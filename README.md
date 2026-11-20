@@ -4,6 +4,8 @@ Official Python SDK for [LexAPI](https://lex-api.com/?ref=pypi-sdk) — European
 
 Covers every documented `/api/v1` endpoint (search, documents, point-in-time versions, semantic search incl. `asOf`, the citation graph, webhooks, bulk export), sync and async, with typed responses, typed errors, retries and credit visibility. Python 3.9+; `httpx` is the only dependency. See the [CHANGELOG](https://github.com/Lex-API/lexapi-python/blob/main/CHANGELOG.md).
 
+Version 0.5.0 targets LexAPI API 3.0.0.
+
 ## Install
 
 ```bash
@@ -22,7 +24,7 @@ info = client.get_info()  # free (0 credits)
 print(info.subscription_info.tier, info.credits_remaining)
 ```
 
-Keys come from the [LexAPI dashboard](https://lex-api.com/dashboard?ref=pypi-sdk) and are prefixed `lex_`. Keep them server-side — never ship them in client-side code.
+Keys come from the [LexAPI dashboard](https://lex-api.com/dashboard?ref=pypi-sdk) and are prefixed `lex_` ([plans and credit costs](https://lex-api.com/pricing?ref=pypi-sdk)). Keep them server-side — never ship them in client-side code.
 
 ### Search
 
@@ -60,11 +62,12 @@ doc = resp.document
 print(
     doc.title, doc.date_of_document_iso, resp.source
 )  # source: corpus | cellar | cellar-oj | live
-for article in doc.content.articles[:3]:
-    print(article.number, article.title)
+if doc.content:  # None when the text is not available (below)
+    for article in doc.content.articles[:3]:
+        print(article.number, article.title)
 
 # Notice published but no text: a 200 with content=None (billed 1 credit, not 5)
-if not resp.text_available:
+if resp.text_available is False:
     ta = doc.text_availability
     print(ta.reason, ta.retryable, ta.available_languages)  # None = unknown, [] = none
     if ta.latest_consolidated:  # base acts: pointer to CONSLEG
@@ -72,7 +75,8 @@ if not resp.text_available:
 
 # In force today (API 2.19.0) and where the document comes from (API 2.20.0)
 print(doc.in_force, doc.not_in_force_reason, doc.end_of_validity)  # None = unknown
-print(doc.provenance.source_url, doc.provenance.licence, doc.provenance.content_hash)
+if doc.provenance:  # None before API 2.20.0
+    print(doc.provenance.source_url, doc.provenance.licence, doc.provenance.content_hash)
 
 # Title not in the requested language? titleLanguage says which language it is in
 print(doc.title_language)
@@ -121,10 +125,15 @@ for hit in resp.results:
 if resp.hint:  # present only on low-confidence (best-effort) responses
     print(resp.hint)
 
-# include_text=True: the full text of each hit LexAPI holds (API 2.30.0). A hit without
-# it has text_availability.available False, a reason ("not_in_corpus" | "unknown") and
-# keeps its snippet, which is then the head of the machine-written summary, not court text.
+# A snippet is the head of the machine-written summary when the hit has one (not court
+# text), else of the matched text. include_text=True: the full text of each hit LexAPI
+# holds (API 2.30.0). A hit without it has text_availability.available False, a reason
+# ("not_in_corpus" | "unknown") and keeps its snippet; read the text with get_document.
 resp = client.semantic_search("adequacy decision", include_text=True)
+for hit in resp.results:
+    ta = hit.text_availability
+    if ta and not ta.available and hit.celex:
+        print(hit.celex, ta.reason)  # then: client.get_document(hit.celex)
 
 # HyDE query rewriting for terse/keyword queries — 15 credits instead of 5
 resp = client.semantic_search("credit scoring article 22", hyde=True)
@@ -142,7 +151,8 @@ for hit in laws.results:
 
 # Only acts known to be in force today (sent as the top-level inForce)
 current = client.semantic_legislation_search("right to be forgotten", in_force=True)
-print(current.in_force_filter.removed_not_in_force, current.in_force_filter.removed_unknown)
+if current.in_force_filter:  # None before API 2.19.0
+    print(current.in_force_filter.removed_not_in_force, current.in_force_filter.removed_unknown)
 ```
 
 | Field (documents and legislation hits) | Meaning |
@@ -453,7 +463,8 @@ from lexapi import WebhookSignatureError, verify_webhook
 
 def handle_delivery(raw_body: bytes, signature: str) -> int:
     try:
-        event = verify_webhook(raw_body, signature, secret)  # 5-minute replay window
+        event = verify_webhook(raw_body, signature, secret)  # 5-minute replay window;
+        # tolerance=None switches the replay window off
     except WebhookSignatureError as err:
         # err.reason: missing_signature, invalid_signature, malformed_body,
         # stale_timestamp (missing_secret is a configuration error)
@@ -640,10 +651,11 @@ except NationalSemanticFilterUnreachableError:
 `precision`, `floors`; a rate that is not measured is `None` and its reason
 is in `methods.unmeasured`).
 
-Until 2026-11-12, an account created before 2026-10-16T18:43:20Z that has
-not yet accepted the national-source terms in the dashboard gets
+Since 2026-11-12 the national-source terms apply to every account, so the API
+no longer refuses national requests for terms not accepted.
 `NationalTermsNotAcceptedError` (403; `.accept_url`, `.terms_url`,
-`.terms_version`) from the national citation routes.
+`.terms_version`) stays in the SDK and is raised only if the API answers
+`NATIONAL_TERMS_NOT_ACCEPTED` again.
 
 `get_document` (and the citation methods, for a withdrawn national id)
 raise `DocumentWithdrawnError` (410) for a document its source withdrew —
@@ -876,8 +888,8 @@ document text; do not show it to a model or log it by default.
 
 ### Retries
 
-Retries are automatic (default: up to 3, exponential backoff + full jitter,
-honouring `Retry-After`) **only when a retry cannot charge you twice**. LexAPI
+Retries are automatic (default: up to 3, exponential backoff from a 0.5 s base
+with full jitter, honouring `Retry-After`) **only when a retry cannot charge you twice**. LexAPI
 refunds a failed request only when its own app finishes the error response, so
 the SDK retries:
 
@@ -890,8 +902,9 @@ the SDK retries:
 - anything else (proxy 502/504, Cloudflare 520/524 from any origin, a connection dropped
   mid-response) only for **free** calls (`get_info`, webhook reads).
 
-POSTs, including webhook create/update/test, are never retried on a 5xx by
-default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
+POSTs, including webhook create/update/test, are retried only on a 429 or when
+the request never reached the API (connect failure, Cloudflare 521/522/523).
+`RetryConfig(retry_read_only_posts=True)` additionally retries the
 read-only POSTs (search, document reads, resolve, semantic search,
 `legislation_as_of`) on an app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.

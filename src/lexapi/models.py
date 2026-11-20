@@ -4009,7 +4009,9 @@ class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     filled depends on the national source — prefer ``document``.
 
     ``provenance`` is an EU attribute and always ``None`` on a national hit;
-    the provenance of the hit's document is on ``document.raw``."""
+    the provenance of the hit's document is on ``document.raw``.
+    ``text_availability`` is ``None`` too: the national route does not send
+    ``textAvailability`` (it would be read like the EU one if it did)."""
 
     document_id: str | None = None
     document: NationalDocument | None = None
