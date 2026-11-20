@@ -21,7 +21,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
-from lexapi._payloads import drop_none, seg
+from lexapi._paging import CursorWalk, check_page_size
+from lexapi._payloads import DateLike, drop_none, iso_date, seg
 from lexapi.models import (
     NationalCoverageResponse,
     NationalDocumentListResponse,
@@ -91,7 +92,7 @@ def _semantic_case_law_body(
     )
     # hyde is accepted but never changes billing or behaviour here — the
     # national index never rewrites (the response always answers
-    # hyde: false). Sent only when True so older deployments never see a
+    # hyde: false). Sent only when True so older API versions never see a
     # param they don't know.
     if hyde:
         body["hyde"] = True
@@ -108,6 +109,7 @@ def _semantic_legislation_body(
     language: str | None,
     include_text: bool,
     filters: dict[str, Any] | None,
+    as_of: DateLike | None,
 ) -> dict[str, Any]:
     body = drop_none(
         {
@@ -116,6 +118,7 @@ def _semantic_legislation_body(
             "limit": limit,
             "language": language,
             "filters": filters,
+            "asOf": iso_date(as_of),
         }
     )
     if include_text:
@@ -218,20 +221,30 @@ class NationalResource:
         """Walk every page of :meth:`list_documents` via ``cursor`` (reaches
         past the 1,000-row ``page`` ceiling). Each page is a separate billed
         call. Stops after a page with ``has_more=False`` or an empty page.
+        Raises :class:`~lexapi.InvalidResponseError` when the server hands
+        back a cursor already sent in this walk (including ``cursor``), or
+        one that is not a string; pages already yielded stay valid, and the
+        page that showed it is on the error's ``body``.
         """
+        if limit is not None:
+            check_page_size("limit", limit)
+        if cursor is not None and not isinstance(cursor, str):
+            raise ValueError(f"cursor must be a string, got {cursor!r}")
+        walk = CursorWalk(cursor)
         while True:
             page = self.list_documents(
                 jurisdiction,
-                cursor=cursor,
+                cursor=walk.cursor,
                 limit=limit,
                 q=q,
                 document_type=document_type,
                 include_repealed=include_repealed,
             )
+            following = walk.next_cursor(page._map, bool(page.results))
             yield page
-            if not page.has_more or not page.next_cursor or not page.results:
+            if following is None:
                 return
-            cursor = page.next_cursor
+            walk.send(following)
 
     def semantic_search(
         self,
@@ -300,15 +313,33 @@ class NationalResource:
         language: str | None = None,
         include_text: bool = False,
         filters: dict[str, Any] | None = None,
+        as_of: DateLike | None = None,
     ) -> NationalSemanticLegislationResponse:
         """``POST /{jurisdiction}/legislation/semantic`` — national
         legislation semantic search. ``filters`` honours ``id``/``law_id``,
         ``inForce``/``in_force``, ``documentType``/``law_type``,
-        ``language`` and ``jurisdiction``. No ``hyde``, no ``as_of`` — both
-        are EU-only. ``filters["jurisdiction"]`` must equal the path's
+        ``language`` and ``jurisdiction``. No ``hyde`` (EU case law only).
+        ``filters["jurisdiction"]`` must equal the path's
         jurisdiction when given (or be omitted). ``language`` (top-level or
         in ``filters``) must be one this jurisdiction is indexed in; any
         other value is a 400.
+
+        Args:
+            as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), sent as
+                ``asOf`` (API 2.29.0; 1800-01-01 to today UTC). Pass a
+                ``date`` or a ``YYYY-MM-DD`` string; a ``datetime`` is cut to
+                its own calendar date, not converted to UTC. Labels each
+                hit for that date (``as_of_resolved``, ``as_of_reason``,
+                ``as_of_version``). The search runs over today's texts only:
+                a provision repealed or replaced since the date cannot be
+                found, and the text is never swapped for an earlier one. A
+                hit is resolved only when the publisher's dates, as of
+                LexAPI's last recorded read of the act (``checked_at``), show
+                today's wording already applied on the date; an unresolved
+                hit keeps today's wording, which is not established as the
+                text for the date. LexAPI holds such dates for Austria and
+                Spain. ``in_force`` and the ``inForce`` filter are still
+                about today. An invalid date is a 400 (nothing charged).
 
         5 credits flat. Below BUSINESS, counts against the monthly
         national-call allowance. Raises
@@ -328,6 +359,7 @@ class NationalResource:
                 language=language,
                 include_text=include_text,
                 filters=filters,
+                as_of=as_of,
             ),
             cast=NationalSemanticLegislationResponse,
             read_only=True,
@@ -392,19 +424,25 @@ class AsyncNationalResource:
         include_repealed: bool | None = None,
     ) -> AsyncIterator[NationalDocumentListResponse]:
         """Async twin of :meth:`NationalResource.iter_documents`."""
+        if limit is not None:
+            check_page_size("limit", limit)
+        if cursor is not None and not isinstance(cursor, str):
+            raise ValueError(f"cursor must be a string, got {cursor!r}")
+        walk = CursorWalk(cursor)
         while True:
             page = await self.list_documents(
                 jurisdiction,
-                cursor=cursor,
+                cursor=walk.cursor,
                 limit=limit,
                 q=q,
                 document_type=document_type,
                 include_repealed=include_repealed,
             )
+            following = walk.next_cursor(page._map, bool(page.results))
             yield page
-            if not page.has_more or not page.next_cursor or not page.results:
+            if following is None:
                 return
-            cursor = page.next_cursor
+            walk.send(following)
 
     async def semantic_search(
         self,
@@ -446,6 +484,7 @@ class AsyncNationalResource:
         language: str | None = None,
         include_text: bool = False,
         filters: dict[str, Any] | None = None,
+        as_of: DateLike | None = None,
     ) -> NationalSemanticLegislationResponse:
         """``POST /{jurisdiction}/legislation/semantic`` — see
         :meth:`NationalResource.legislation_semantic_search`."""
@@ -459,6 +498,7 @@ class AsyncNationalResource:
                 language=language,
                 include_text=include_text,
                 filters=filters,
+                as_of=as_of,
             ),
             cast=NationalSemanticLegislationResponse,
             read_only=True,

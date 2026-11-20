@@ -9,7 +9,7 @@ Some endpoint classes still answer in the legacy bare shape
 search/batch/webhook validation 400s, the ``/export`` and legacy semantic
 tier gates, semantic upstream 502/504s). The parser tolerates both shapes; on
 the legacy shape the code is the body's top-level string ``code`` when present
-(lex-api #304: ``RATE_LIMITED``, ``QUOTA_EXHAUSTED``, ...), else derived from
+(API 2.4.0: ``RATE_LIMITED``, ``QUOTA_EXHAUSTED``, ...), else derived from
 the HTTP status, and a top-level ``details`` (validation errors) is preserved.
 Unknown ``error.code`` values never crash the parser — the raw code string
 is preserved on the generic :class:`LexAPIError` (forward compatibility).
@@ -24,13 +24,19 @@ Two distinct "timeout" errors exist by design:
 
 from __future__ import annotations
 
+import math
 from typing import Any
+
+import httpx
+
+from lexapi._retry import is_quota_exhausted
+from lexapi.models import InForceLookup, SnapshotCandidate
 
 #: Fallback mapping used when the body carries no typed ``error.code``
 #: (legacy bare ``{"error": "..."}`` shape, or non-JSON bodies). 520-524 are
 #: Cloudflare's origin-error statuses (lex-api.com sits behind Cloudflare).
 #: ``UNAUTHORIZED`` and ``SERVICE_UNAVAILABLE`` are SDK-side codes: the API
-#: never sends them in ``error.code`` (its 401s and its deploy-drain 503 are
+#: never sends them in ``error.code`` (its 401s and its 503 are
 #: not typed envelopes).
 STATUS_TO_CODE = {
     400: "INVALID_PARAMS",
@@ -62,8 +68,15 @@ class LexAPIError(Exception):
         details: ``error.details`` on the typed envelope, or the top-level
             ``details`` of a legacy validation body (e.g. the list of
             rejected webhook criteria), when present.
-        body: the raw decoded response body (``None`` if not JSON).
+        body: the parsed JSON response body (``None`` when the body is
+            empty, is not JSON, or is JSON ``null``).
         retry_after: seconds to wait before retrying, when the server said so.
+        body_excerpt: for a body that is neither JSON nor empty, its first
+            200 characters (code points), decoded as UTF-8 with invalid
+            bytes replaced, whatever charset the response names; ``None``
+            otherwise. Raw response text that may contain document text:
+            do not show it to a model or log it by default. Never part of
+            ``str(err)``, ``message`` or ``repr``.
     """
 
     default_code = "UNKNOWN"
@@ -77,6 +90,7 @@ class LexAPIError(Exception):
         details: Any | None = None,
         body: Any | None = None,
         retry_after: float | None = None,
+        body_excerpt: str | None = None,
     ) -> None:
         code = code or self.default_code
         suffix = f" (HTTP {status})" if status is not None else ""
@@ -87,6 +101,11 @@ class LexAPIError(Exception):
         self.details = details
         self.body = body
         self.retry_after = retry_after
+        self.body_excerpt = body_excerpt
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # The default would call ``cls(*args)`` and prefix the code twice.
+        return (_restore_error, (type(self), self.args, self.__dict__.copy()))
 
     @classmethod
     def from_response(cls, status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
@@ -99,6 +118,16 @@ class LexAPIError(Exception):
         if isinstance(self.body, dict) and isinstance(self.body.get("upgradeUrl"), str):
             return str(self.body["upgradeUrl"])
         return None
+
+
+def _restore_error(
+    cls: type[LexAPIError], args: tuple[Any, ...], state: dict[str, Any]
+) -> LexAPIError:
+    """Unpickle a :class:`LexAPIError` without re-running ``__init__``."""
+    err = cls.__new__(cls)
+    err.args = args
+    err.__dict__.update(state)
+    return err
 
 
 class AuthenticationError(LexAPIError):
@@ -173,9 +202,93 @@ class InvalidURLError(LexAPIError):
 
 
 class NotFoundError(LexAPIError):
-    """404 ``NOT_FOUND`` — document or resource missing."""
+    """404 ``NOT_FOUND`` — document or resource missing, or a path or
+    method the API does not have (:attr:`unknown_endpoint`).
+
+    :meth:`~lexapi.LexAPI.get_document_at_date` (API 2.28.0) says why there
+    is no snapshot for the date in :attr:`reason`: ``before_tracking``
+    (:attr:`before_tracking`; the date is before the document entered the
+    corpus, see :attr:`tracked_since` and :attr:`in_force_lookup`) or
+    ``boundary_unknown`` (:attr:`boundary_unknown`; LexAPI has no record of
+    when a version stored before API 2.28.0 began, so it does not guess —
+    read the :attr:`candidates` with
+    :meth:`~lexapi.LexAPI.get_document_version`). A document that is not in
+    the corpus is a 404 without a reason. These are LexAPI's fetch
+    snapshots, not the law in force on a date.
+    """
 
     default_code = "NOT_FOUND"
+
+    @property
+    def reason(self) -> str | None:
+        """``error.details.reason`` (``unknown_endpoint``, ``before_tracking``,
+        ``boundary_unknown``, or a value added later); ``None`` when absent."""
+        value = self._detail("reason")
+        return value if isinstance(value, str) else None
+
+    @property
+    def unknown_endpoint(self) -> bool:
+        """True when the API (2.27.0 or later) has no such endpoint: a
+        mistyped path, a method newer than the API, or a national route for a
+        country that is not available. Always False on APIs before 2.27.0;
+        there the message starts with "Unknown API endpoint"."""
+        return self.reason == "unknown_endpoint"
+
+    @property
+    def before_tracking(self) -> bool:
+        """True when the date asked is before the document entered the
+        corpus (``get_document_at_date``, API 2.28.0)."""
+        return self.reason == "before_tracking"
+
+    @property
+    def boundary_unknown(self) -> bool:
+        """True when LexAPI cannot say which snapshot it held on the date
+        (``get_document_at_date``, API 2.28.0). Refunded."""
+        return self.reason == "boundary_unknown"
+
+    @property
+    def tracked_since(self) -> str | None:
+        """``details.trackedSince``: when the document entered the corpus
+        (``before_tracking``)."""
+        value = self._detail("trackedSince")
+        return value if isinstance(value, str) else None
+
+    @property
+    def in_force_lookup(self) -> InForceLookup | None:
+        """``details.inForceLookup``: where the version of the act for a date
+        is answered (:meth:`~lexapi.LexAPI.legislation_as_of`), for an EU act
+        it resolves (``before_tracking``)."""
+        return InForceLookup.parse(self.details)
+
+    @property
+    def candidates(self) -> list[SnapshotCandidate]:
+        """``details.candidates`` (``boundary_unknown``): the versions the date
+        could fall in, at most 10 (see :attr:`candidates_truncated`); can be
+        empty. Only objects with an integer ``version`` are kept. ``[]`` when
+        absent."""
+        return self._candidates()[:_MAX_CANDIDATES]
+
+    @property
+    def candidates_truncated(self) -> bool:
+        """True when ``details.candidatesTruncated`` is ``true``, or when more
+        than 10 candidates were kept: there are more than those listed."""
+        return (
+            self._detail("candidatesTruncated") is True or len(self._candidates()) > _MAX_CANDIDATES
+        )
+
+    def _detail(self, key: str) -> Any:
+        return self.details.get(key) if isinstance(self.details, dict) else None
+
+    def _candidates(self) -> list[SnapshotCandidate]:
+        value = self._detail("candidates")
+        if not isinstance(value, list):
+            return []
+        parsed = (SnapshotCandidate.parse(item) for item in value)
+        return [item for item in parsed if item is not None]
+
+
+#: The most candidates ``NotFoundError.candidates`` returns.
+_MAX_CANDIDATES = 10
 
 
 def _usage_resets_at(body: Any) -> str | None:
@@ -198,7 +311,7 @@ class RateLimitedError(LexAPIError):
 
     Legacy daily-call plans (and the legacy monthly semantic quota) also
     answer 429 when the *quota* is used up: ``code`` is ``QUOTA_EXHAUSTED``
-    (servers before lex-api #304 sent no code; the quota is then recognised
+    (servers before API 2.4.0 sent no code; the quota is then recognised
     by its shape), :attr:`quota_exhausted` is True, :attr:`resets_at` says
     when it refills, and ``retry_after`` is ``None``. Those are not retried
     automatically.
@@ -214,15 +327,19 @@ class RateLimitedError(LexAPIError):
 
     @property
     def quota_exhausted(self) -> bool:
-        """True when the 429 reports an exhausted quota, not a rate limit."""
-        if self.code == "QUOTA_EXHAUSTED":
+        """True when the 429 reports an exhausted quota, not a rate limit.
+
+        Decided by the same rule as the retry decision
+        (:func:`lexapi._retry.is_quota_exhausted`): the client records that
+        decision on the error it raises. An error built by hand (no
+        headers) is judged from its code and body."""
+        if self.code == "QUOTA_EXHAUSTED":  # on any status
             return True
-        # Fallback for servers before lex-api #304 (no top-level code).
-        return (
-            isinstance(self.body, dict)
-            and "retryAfter" not in self.body
-            and self.resets_at is not None
-        )
+        decided = self.__dict__.get("_quota_exhausted")
+        if isinstance(decided, bool):
+            return decided
+        # The shape test applies to a 429 only; every other error is not a quota.
+        return self.status == 429 and is_quota_exhausted(429, httpx.Headers(), self.body)
 
 
 class TierForbiddenError(LexAPIError):
@@ -233,6 +350,35 @@ class TierForbiddenError(LexAPIError):
     """
 
     default_code = "TIER_FORBIDDEN"
+
+
+class PaymentPastDueError(TierForbiddenError):
+    """403 ``PAYMENT_PAST_DUE`` — a subscription payment failed and was not
+    completed in time, so API requests are refused until the payment
+    succeeds. Pay the open invoice in the dashboard (:attr:`billing_url`).
+    Never retried.
+
+    Legacy-shape body with top-level ``accessEndedAt`` and ``billingUrl``;
+    both attributes read ``details`` first, then the raw ``body``. Before
+    API 2.27.0 a failed payment was refused at once with a 403 without a
+    code, raised as :class:`TierForbiddenError`; this class derives from it,
+    so ``except TierForbiddenError`` keeps catching a failed payment. Catch
+    ``PaymentPastDueError`` first to tell the two apart.
+    """
+
+    default_code = "PAYMENT_PAST_DUE"
+
+    @property
+    def access_ended_at(self) -> str | None:
+        """When API access ended (ISO-8601); ``None`` when not known."""
+        value = _field(self, "accessEndedAt")
+        return value if isinstance(value, str) else None
+
+    @property
+    def billing_url(self) -> str | None:
+        """Where to pay the open invoice (absolute URL)."""
+        value = _field(self, "billingUrl")
+        return value if isinstance(value, str) else None
 
 
 class CreditsExhaustedError(LexAPIError):
@@ -259,7 +405,10 @@ class CreditsExhaustedError(LexAPIError):
         value = self.details.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        return int(value)
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        number = int(value)
+        return number if abs(number) <= 9_007_199_254_740_991 else None
 
     @property
     def operation(self) -> str | None:
@@ -325,7 +474,10 @@ class NationalAllowanceExhaustedError(LexAPIError):
         value = self.details.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        return int(value)
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        number = int(value)
+        return number if abs(number) <= 9_007_199_254_740_991 else None
 
     @property
     def jurisdiction(self) -> str | None:
@@ -416,8 +568,8 @@ class UpstreamError(LexAPIError):
 
 
 class ServiceUnavailableError(UpstreamError):
-    """503 — the API is briefly unavailable (e.g. a deploy draining
-    connections). Retryable. SDK-side code ``SERVICE_UNAVAILABLE``; a
+    """503 — the API is briefly unavailable (e.g. while the service
+    restarts). Retryable. SDK-side code ``SERVICE_UNAVAILABLE``; a
     subclass of :class:`UpstreamError` so code written against 0.1.0
     (where 503 mapped to ``UPSTREAM_ERROR``) keeps catching it."""
 
@@ -515,7 +667,10 @@ class TimeoutError(LexAPIError):  # noqa: A001 - mirrors the API's TIMEOUT code
         value = _field(self, "timeoutMs")
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        return int(value)
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        number = int(value)
+        return number if abs(number) <= 9_007_199_254_740_991 else None
 
 
 class InternalServerError(LexAPIError):
@@ -525,8 +680,22 @@ class InternalServerError(LexAPIError):
 
 
 class InvalidResponseError(LexAPIError):
-    """A 2xx response whose body is not JSON (e.g. an HTML interstitial from
-    a proxy). Raised instead of returning an empty, "successful" result."""
+    """A 2xx response that is not the documented shape (SDK contract §1.3):
+    no body (except on the webhook delete), a body that is not strict UTF-8
+    JSON (e.g. an HTML interstitial from a proxy), JSON that is not an
+    object, ``success: false`` without an error, a documented field that is
+    missing or of the wrong kind (e.g. ``document`` on a document read), or
+    a list field that is not a list of objects. Raised instead of returning
+    an empty, "successful" result: catch it to tell a malformed answer from
+    an empty one.
+
+    The message names what was expected and what arrived (kind of JSON
+    value, field name, media type, byte length) and never quotes the body.
+    For a body that is not JSON, :attr:`body_excerpt` holds its first 200
+    characters; for JSON, :attr:`body` holds the parsed value. Both are raw
+    response content that may contain document text: do not show them to a
+    model or log them by default.
+    """
 
     default_code = "INVALID_RESPONSE"
 
@@ -567,6 +736,7 @@ CODE_TO_ERROR: dict[str, type[LexAPIError]] = {
     "RATE_LIMITED": RateLimitedError,
     "QUOTA_EXHAUSTED": RateLimitedError,
     "TIER_FORBIDDEN": TierForbiddenError,
+    "PAYMENT_PAST_DUE": PaymentPastDueError,
     "CREDITS_EXHAUSTED": CreditsExhaustedError,
     "NATIONAL_ALLOWANCE_EXHAUSTED": NationalAllowanceExhaustedError,
     "NATIONAL_SEMANTIC_NOT_ENABLED": NationalSemanticNotEnabledError,
@@ -601,53 +771,79 @@ def _extract_resets_at(details: Any, body: Any) -> str | None:
     return None
 
 
-def error_from_response(status: int, body: Any, retry_after: float | None = None) -> LexAPIError:
+def _nonempty_str(value: Any) -> str | None:
+    """``value`` when it is a non-empty string; anything else is absent."""
+    return value if isinstance(value, str) and value else None
+
+
+def error_from_response(
+    status: int,
+    body: Any,
+    retry_after: float | None = None,
+    *,
+    body_excerpt: str | None = None,
+    quota: bool | None = None,
+) -> LexAPIError:
     """Map a non-2xx response to the most specific typed error.
 
-    Tolerates both envelope shapes (PLAN.md §1.3):
+    Tolerates both envelope shapes (SDK contract §1.3):
 
     - typed: ``{"success": false, "error": {"code", "message", "details"}}``
       — ``code`` is authoritative;
     - legacy: ``{"error": "<text>", "message": "...", "details": [...]}`` —
       ``error`` is human text, never parsed as a code; the code is the
-      top-level string ``code`` when present (lex-api #304), else derived
+      top-level string ``code`` when present (API 2.4.0), else derived
       from the HTTP status. ``message`` / ``details`` at the top level are
       kept (also on bodies that carry no ``error`` at all).
 
     Unknown ``error.code`` values fall back to the base :class:`LexAPIError`
-    with the raw code preserved.
+    with the raw code preserved. Only string codes and messages are read
+    (anything else counts as absent), and a body that is not JSON is never
+    quoted in the message (``"HTTP <status>"``); ``body_excerpt`` keeps it,
+    off the message.
+
+    ``quota`` is the quota-429 decision of
+    :func:`lexapi._retry.is_quota_exhausted` (judged from the body alone
+    when not given).
     """
     code = STATUS_TO_CODE.get(status, "INTERNAL")
     message = f"HTTP {status}"
     details: Any | None = None
     if isinstance(body, dict):
         err = body.get("error")
+        top_code = _nonempty_str(body.get("code"))
+        top_message = _nonempty_str(body.get("message"))
         if isinstance(err, dict):  # typed envelope
-            code = err.get("code") or code
-            message = err.get("message") or message
+            code = _nonempty_str(err.get("code")) or code
+            message = _nonempty_str(err.get("message")) or message
             details = err.get("details")
-        elif isinstance(err, str):  # legacy bare {"error": "...", "message": "..."}
-            if isinstance(body.get("code"), str) and body["code"]:
-                code = body["code"]
-            legacy_message = body.get("message")
+        elif isinstance(err, str) and err:  # legacy bare {"error": "...", "message": "..."}
+            code = top_code or code
             message = err
-            if isinstance(legacy_message, str) and legacy_message != err:
-                message = f"{err}: {legacy_message}"
+            if top_message is not None and top_message != err:
+                message = f"{err}: {top_message}"
             details = body.get("details")
         else:
-            if isinstance(body.get("code"), str) and body["code"]:
-                code = body["code"]
-            if isinstance(body.get("message"), str):
-                message = body["message"]
+            code = top_code or code
+            message = top_message or message
             details = body.get("details")
 
-    error_cls = CODE_TO_ERROR.get(code, LexAPIError)
+    if quota is None:
+        quota = is_quota_exhausted(status, httpx.Headers(), body)
+    if quota:
+        # A quota 429 is a rate-limit error with the quota flag, whatever other
+        # code the body carries; a RATE_LIMITED code (sent or derived) stays.
+        code = code if code == "RATE_LIMITED" else "QUOTA_EXHAUSTED"
+        error_cls: type[LexAPIError] = RateLimitedError
+    else:
+        error_cls = CODE_TO_ERROR.get(code, LexAPIError)
     kwargs: dict[str, Any] = {
         "code": code,
         "status": status,
         "details": details,
         "body": body,
         "retry_after": retry_after,
+        "body_excerpt": body_excerpt,
     }
     if error_cls is CreditsExhaustedError or error_cls is NationalAllowanceExhaustedError:
         kwargs["resets_at"] = _extract_resets_at(details, body)

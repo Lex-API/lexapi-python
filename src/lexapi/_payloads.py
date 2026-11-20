@@ -1,7 +1,7 @@
 """Request body / query-param builders shared by the sync and async clients.
 
 ``None`` values are always omitted so the server's own defaults apply and
-older deployments never see parameters they don't know.
+older API versions never see parameters they don't know.
 """
 
 from __future__ import annotations
@@ -41,7 +41,8 @@ def seg(value: object) -> str:
 def iso_date(value: DateLike | None) -> str | None:
     """Normalise a date argument to ``YYYY-MM-DD`` (strings pass through as-is).
 
-    A :class:`datetime.datetime` is reduced to its date part; the server
+    A :class:`datetime.datetime` is cut to its own calendar date, not
+    converted to UTC; the server
     validates the string form and answers 400 on a malformed one.
     """
     if value is None:
@@ -171,12 +172,15 @@ def semantic_search_body(
     include_text: bool = False,
     filters: dict[str, Any] | None = None,
     as_of: DateLike | None = None,
+    in_force: bool | None = None,
 ) -> dict[str, Any]:
     """Body for the semantic endpoints.
 
-    ``hyde`` is only sent when True (additive param — older deployments
+    ``hyde`` is only sent when True (additive param — older API versions
     never see it); ``include_text=True`` maps to ``include: ["text"]``;
-    ``as_of`` (legislation only) is sent as ``asOf`` in ``YYYY-MM-DD`` form.
+    ``as_of`` (legislation only) is sent as ``asOf`` in ``YYYY-MM-DD`` form;
+    ``in_force`` (legislation only) is sent as the top-level ``inForce``
+    when not ``None``, ``False`` included.
     """
     body = drop_none(
         {
@@ -186,6 +190,7 @@ def semantic_search_body(
             "language": language,
             "filters": filters,
             "asOf": iso_date(as_of),
+            "inForce": in_force,
         }
     )
     if hyde:
@@ -193,6 +198,25 @@ def semantic_search_body(
     if include_text:
         body["include"] = ["text"]
     return body
+
+
+def legislation_as_of_body(
+    document: str,
+    as_of: DateLike,
+    *,
+    provision: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Body for ``POST /legislation/as-of`` (``as_of`` sent as ``asOf``,
+    ``YYYY-MM-DD``). The server validates every field."""
+    return drop_none(
+        {
+            "document": document,
+            "asOf": iso_date(as_of),
+            "provision": provision,
+            "language": language,
+        }
+    )
 
 
 def _single(name: str, value: Any) -> str | None:
@@ -227,8 +251,8 @@ def recent_documents_params(
 
     ``document_type`` and ``subdomain`` are single-valued: the endpoint builds
     one EUR-Lex query without the fan-out ``/search`` does, and EUR-Lex honours
-    only the first ``FM_CODED`` / ``DTS_SUBDOM`` (lex-api
-    ``server/utils/urlBuilder.js``). ``author`` lists are sent as repeated params.
+    only the first ``FM_CODED`` / ``DTS_SUBDOM``. ``author`` lists are sent as
+    repeated params.
     """
     return drop_none(
         {

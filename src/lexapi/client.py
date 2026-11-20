@@ -36,6 +36,7 @@ from lexapi.models import (
     DocumentVersionResponse,
     DocumentVersionsResponse,
     InfoResponse,
+    LegislationAsOfResponse,
     RecentDocumentsResponse,
     ResolveResponse,
     SearchResponse,
@@ -58,12 +59,16 @@ class LexAPI:
             ``https://lex-api.com/api/v1``).
         timeout: per-attempt response timeout in seconds — the longest wait
             for the next bytes of a response (its head, then each body chunk);
-            not a deadline for the whole call. Default 95: above the API's
-            90 s budget for one upstream EUR-Lex fetch, below Cloudflare's
-            100 s limit. Or a full ``httpx.Timeout``.
+            not a deadline for the whole call. The 95 s default sits above the
+            API's 90 s deadline on document reads, so that timeout comes back
+            as a typed, refunded 504; the CDN ends any wait at 100 s. Or a
+            full ``httpx.Timeout``.
         connect_timeout: connect timeout in seconds (TCP + TLS, and the wait
             for a pooled connection); ignored when ``timeout`` is an
-            ``httpx.Timeout``.
+            ``httpx.Timeout``. Both are numbers >= 0; a value longer than the
+            timers support (``inf`` included) is clamped to about 24.8 days
+            (2**31 - 1 ms), and ``nan`` or a negative value is a
+            ``ValueError``.
         max_retries: retry budget for 429/502/503/504/520-524 and connect
             errors (default 3). ``0`` disables retries.
         retry_config: full :class:`~lexapi._retry.RetryConfig` override;
@@ -385,8 +390,10 @@ class LexAPI:
     # ── Point-in-time versions ────────────────────────────────────────
     # Versions are LexAPI observation snapshots (content-hash changes
     # between fetches), NOT legal in-force reconstructions; history begins
-    # at first ingestion. For the text in force on a date, use
-    # semantic_legislation_search(as_of=...) or a consolidated CELEX.
+    # at first ingestion.
+    # For the version of an act listed for a date, use legislation_as_of(...);
+    # semantic_legislation_search(as_of=...) searches the text in force on a
+    # date; or read a consolidated CELEX.
 
     def list_document_versions(
         self, celex: str, *, language: str | None = None
@@ -416,12 +423,16 @@ class LexAPI:
     def get_document_at_date(
         self, celex: str, date: DateLike, *, language: str | None = None
     ) -> DocumentVersionResponse:
-        """GET /documents/{celex}/at/{date} — the snapshot observed as current on ``date``.
+        """GET /documents/{celex}/at/{date} — the snapshot LexAPI held at the
+        end of ``date`` (UTC), from its own fetch history: not the law in force
+        on that date (for that, :meth:`legislation_as_of`).
 
-        ``date`` is ``YYYY-MM-DD`` or a :class:`datetime.date` (end-of-day UTC
-        inclusive). Dates before the document entered the corpus raise
-        :class:`NotFoundError` with the tracking start date in the message.
-        1 credit.
+        ``date`` is ``YYYY-MM-DD`` or a :class:`datetime.date`. The answer has
+        ``kind``, ``date_in_future`` and ``in_force_lookup``, and the snapshot
+        ``observed_from`` / ``observed_until`` (API 2.28.0). A date LexAPI
+        holds no snapshot for raises :class:`NotFoundError`; its ``reason`` is
+        ``before_tracking`` (before the document entered the corpus) or
+        ``boundary_unknown`` (refunded; see ``candidates``). 1 credit.
         """
         params = _payloads.drop_none({"language": language})
         return self._request(
@@ -466,7 +477,8 @@ class LexAPI:
                 covers ``en fr de es it sl el nl pt pl``).
             include_text: receive full document text per hit (``hit.text``)
                 instead of the default ~600-char ``hit.snippet`` (10-50x
-                payload increase).
+                payload increase) for each hit whose text LexAPI holds;
+                ``hit.text_availability`` says which (API 2.30.0).
             filters: free-form filter object forwarded to the backend.
 
         The response exposes ``hint`` (low-confidence signal), ``hyde``
@@ -496,6 +508,7 @@ class LexAPI:
         include_text: bool = False,
         filters: dict[str, Any] | None = None,
         as_of: DateLike | None = None,
+        in_force: bool | None = None,
     ) -> SemanticLegislationResponse:
         """POST /legislation/semantic — embedding-based EU legislation search.
 
@@ -509,13 +522,22 @@ class LexAPI:
 
         Args:
             as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01 to
-                today UTC. Each hit answers with the version in force on that
+                today UTC. Pass a ``date`` or a ``YYYY-MM-DD`` string; a
+                ``datetime`` is cut to its own calendar date, not converted to
+                UTC. Each hit answers with the version in force on that
                 date — the act as published before its first consolidation,
                 otherwise the consolidated version in force — after checking
                 the act was in force then. Hits that cannot be answered keep
                 their latest text with ``as_of_resolved=False`` and an
                 ``as_of_reason``. A malformed or out-of-range date is a 400
                 (refunded).
+            in_force: sent as the top-level ``inForce`` when not ``None``
+                (API 2.19.0). ``True`` returns only hits whose act is known to
+                be in force today (UTC); hits not in force and hits with an
+                unknown status are removed and counted in the response's
+                ``in_force_filter``, so the page can come back shorter than
+                ``limit``. ``False`` filters nothing. About today, also with
+                ``as_of``.
 
         **Cost:** 5 credits for the search. With ``as_of``, each version the
         corpus doesn't hold is fetched live (at most 3 per request by
@@ -535,12 +557,77 @@ class LexAPI:
             include_text=include_text,
             filters=filters,
             as_of=as_of,
+            in_force=in_force,
         )
         return self._request(
             "POST",
             "/legislation/semantic",
             json=body,
             cast=SemanticLegislationResponse,
+            read_only=True,
+        )
+
+    # ── Legislation on a date ─────────────────────────────────────────
+    def legislation_as_of(
+        self,
+        document: str,
+        as_of: DateLike,
+        *,
+        provision: str | None = None,
+        language: str | None = None,
+    ) -> LegislationAsOfResponse:
+        """POST /legislation/as-of — the version of an EU act listed for a
+        date and, optionally, one provision of it. Needs LexAPI API 2.26.0.
+
+        The answer is the newest consolidated version dated on or before
+        ``as_of``, or the act as published in the Official Journal when none
+        is.
+
+        Args:
+            document: CELEX number of an EU regulation, directive or decision
+                (``32016R0679``). A consolidated id is read as its act. Send
+                the bare number: a ``CELEX:`` prefix is a 400
+                (:class:`~lexapi.InvalidCelexError`). For an ELI or a URL,
+                call :meth:`resolve` first.
+            as_of: ``YYYY-MM-DD`` (or a :class:`datetime.date`), 1952-01-01
+                to today UTC. Pass a ``date`` or a ``YYYY-MM-DD`` string; a
+                ``datetime`` is cut to its own calendar date, not converted to
+                UTC. For today pass ``datetime.now(timezone.utc).date()``.
+            provision: a whole article (``art_17``, ``17``, ``Article 17``),
+                an annex by its numeral or letter (``anx_III``), or recitals
+                (``rct_26``, ``rct_26-28``, at most 50). Paragraphs and
+                points are not addressable. Omit it to get the version only.
+            language: language of the text (default ``en``).
+
+        **Unresolved is a normal return, not an error.** When the version or
+        the text cannot be established, the response has
+        ``as_of_resolved == False``, an ``as_of_reason`` (see
+        :data:`~lexapi.AS_OF_LOOKUP_REASONS`) and no ``provision``. Use
+        ``response.provision.text`` only when ``as_of_resolved`` is ``True``.
+
+        Consolidated texts have no legal force: when ``response.consolidated``
+        is ``True``, ``base_celex`` names the authentic act. The answer does
+        not say whether an individual provision applied on that date.
+
+        A ``document`` that is not the CELEX number of an EU act raises
+        :class:`~lexapi.InvalidCelexError`; any other invalid input
+        :class:`~lexapi.InvalidParamsError` (both refunded); an unknown act
+        :class:`~lexapi.NotFoundError`.
+
+        **Cost:** 1 credit when no text is fetched; when the provision's
+        text has to be fetched, 4 (5 when it is fetched live from EUR-Lex),
+        whatever the answer, and 1 if the fetch fails or finds no text. A
+        fetch reserves up to 5 credits: a pool holding fewer gets
+        ``as_of_reason == "insufficient_credits"``.
+        """
+        body = _payloads.legislation_as_of_body(
+            document, as_of, provision=provision, language=language
+        )
+        return self._request(
+            "POST",
+            "/legislation/as-of",
+            json=body,
+            cast=LegislationAsOfResponse,
             read_only=True,
         )
 
@@ -579,7 +666,7 @@ class LexAPI:
                     handle(row["celex"], row.get("parsedContent"))
                 print(stream.done, stream.truncated)
 
-        Filters (requires lex-api API 2.3.0; list values are sent
+        Filters (requires API 2.3.0; list values are sent
         comma-separated and ORed):
 
         - ``document_type``: the stored label, matched exactly ignoring case
@@ -682,7 +769,7 @@ class LexAPI:
         ``read_only`` marks a POST that changes nothing (eligible for
         ``RetryConfig.retry_read_only_posts``); ``free`` marks a 0-credit
         operation, for which any transport failure or 5xx is billing-safe to
-        retry (PLAN.md §1.2).
+        retry (SDK contract §1.2).
         """
         request_kwargs: dict[str, Any] = {"params": params, "json": json}
         request_kwargs.update(self._timeout_kwargs(timeout))
