@@ -6,8 +6,81 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-22
+
+Targets LexAPI API 3.0.0. API 2.19.0–2.30.0 were not released on their own;
+they are all part of 3.0.0, and items that need a newer API name the version
+that introduced the feature. Works against API 2.18.1 as well: features of
+later versions are then absent (`legislation_as_of` raises `NotFoundError`).
+
+### Upgrading from 0.4.0
+
+- **Malformed 2xx answers raise.** A 2xx that is empty (except for
+  `webhooks.delete`), not strict UTF-8 JSON, not an object, `success: false`,
+  or without a documented required field (`results` on the searches,
+  `document` on document reads) raises `InvalidResponseError` (before: it
+  could read as an empty result); a `success: false` that carries the API's
+  error envelope raises the mapped API error instead, and `webhooks.test`
+  still returns its `success: false` as `ok == False`. `NaN` / `Infinity`,
+  UTF-16/32 bodies and JSON nested deeper than 512 levels count as not JSON.
+  Catch it; the call may have been charged.
+- **Failed payments.** A 403 `PAYMENT_PAST_DUE` (API 2.27.0) raises
+  `PaymentPastDueError` (0.4.0: base `LexAPIError`), a subclass of
+  `TierForbiddenError`: an `except TierForbiddenError` clause now catches it;
+  put `except PaymentPastDueError` first. Never retried.
+- **Iterators can raise** `InvalidResponseError` when the server stops
+  advancing: `citations.iter_cited_by` / `iter_cites` when it echoes another
+  `offset` than the one asked for, or, on answers with neither `totalEdges`
+  nor an echoed `offset`, on the third page in a row equal to the page
+  before; `webhooks.iter_deliveries`, only when the answer has no usable
+  `total`, on the third page in a row with no delivery not seen yet;
+  `national.iter_documents` on a cursor already sent in the walk, or one
+  that is not a string while the walk would continue. A `page_size` /
+  `limit` that is not a positive integer up to 2**53 − 1 raises
+  `ValueError` at the first `next()`, before any request.
+- **Webhook verification.** The body must be a UTF-8 JSON object and the
+  header, once trimmed of spaces, tabs, CR and LF, exactly 64 hex digits; `timestamp` must
+  be `YYYY-MM-DDTHH:MM:SS[.f]` with `Z` or `±HH:MM`. `tolerance=nan` raises
+  `ValueError`; `tolerance=None` switches the window off (`0` is a zero-width
+  window: only a timestamp equal to now, to the microsecond, passes).
+- **Export.** Lines end at `\n` only and must be UTF-8 JSON objects, else they
+  count in `invalid_lines` (before: bad bytes replaced, row yielded).
+- **`RetryConfig` and timeouts.** `backoff_base` / `backoff_cap` must be
+  finite and ≥ 0: `backoff_cap=float("inf")` now raises `ValueError`, pass a
+  large number. `timeout` / `connect_timeout` of `nan`, below 0 or not a
+  number raise `ValueError`; `inf` is clamped to about 24.9 days (`None` is
+  still "no limit").
+- **Retries.** An app-origin 520/524 on a billed GET is no longer retried.
+  Unusable retry hints count as absent. A 429 whose typed envelope carries
+  `error.code: "QUOTA_EXHAUSTED"` was already reported as `quota_exhausted`
+  but was retried; it is no longer retried, so on a 429 `quota_exhausted`
+  now always matches the retry decision. A top-level
+  `code: "QUOTA_EXHAUSTED"` beside another typed code is now a quota 429 too
+  (0.4.0: a plain `LexAPIError`, or, beside a typed `RATE_LIMITED`, a
+  `RateLimitedError` without `quota_exhausted`).
+- **Values that now read `None`.** A `bool` case-law `score` (was
+  `1.0`/`0.0`), a non-integral number in an integer field of a response
+  model such as `SearchResponse.total_results` or
+  `CitationDocumentGroup.citation_count` (`2.9` was `2`; finite floats in the `credits` / `usage` /
+  `subscription` blocks still truncate), an integer above 2**53 − 1, an
+  empty error body (`err.body` was `{}`).
+- **Construct models by keyword.** `NationalSemanticLegislationResult` and
+  `NationalSemanticCaseLawResult` built with positional arguments must use
+  keywords (new base-class fields, `text_availability` on the case-law one
+  among them, shift positions).
+
 ### Added
 
+- **`SemanticCaseLawResult.text_availability`**
+  (`SemanticHitTextAvailability`: `available`, `reason`, `raw`; API 2.30.0):
+  with `semantic_search(..., include_text=True)` every hit says whether it
+  carries `text`. When it does not, `reason` is `not_in_corpus` (LexAPI does
+  not hold the document's text in the hit's language) or `unknown` (a retry
+  may return the text; `SemanticHitTextUnavailableReason`, kept as `str`),
+  and the hit keeps its `snippet`, the head of the machine-written summary.
+  `None` without `include_text`, and when the value is not an object with a
+  boolean `available`. A separate type from a document's `TextAvailability`,
+  which has other reasons.
 - **`client.legislation_as_of(document, as_of, *, provision=None, language=None)`**
   (sync + async) — `POST /legislation/as-of`: the version of an EU
   regulation, directive or decision listed for a date and, with
@@ -53,6 +126,12 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `from_legislation_as_of`). On an `as_of` search, the text of a hit that is
   not resolved for the date is withheld by default (`text=None`, with the
   `as_of_reason`); `unresolved="drop"` or `"keep_labelled"` change that.
+  In every converter, a text that is empty or holds only whitespace or
+  invisible format characters (such as a zero-width space) counts as no
+  text: `text` is `None`, `has_text` is False and `text_status` is
+  `"absent"` (on a hit not established for `as_of`, the date status, as for
+  a missing text); a blank `fullText` of a document read gives no passage,
+  and a `Passage` built by hand is not normalised.
   `Passage.metadata()` gives the citation as a flat dictionary (never the
   text), `Passage.id` a stable identifier, `format_citation(passage)` the
   citation as one line and `format_passage(passage)` the content followed by
@@ -94,25 +173,18 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 - **In force today** (API 2.19.0): `in_force`, `not_in_force_reason`,
   `end_of_validity`, `entry_into_force` on `Document` (document reads,
   batch, by-URL, metadata) and `SemanticLegislationResult`;
-  `SemanticLegislationResponse.in_force_filter` (`InForceFilter`:
-  `removed_not_in_force`, `removed_unknown`).
+  `NotInForceReason` lists the `not_in_force_reason` values.
+  `semantic_legislation_search(..., in_force=...)` (sync + async) is sent as
+  the top-level `inForce` when not `None` (`False` included); `True` returns
+  only hits whose act is known to be in force today, and the removed hits
+  are counted in `SemanticLegislationResponse.in_force_filter`
+  (`InForceFilter`: `removed_not_in_force`, `removed_unknown`).
 - **Provenance** (API 2.20.0): `provenance` (`Provenance`) and
   `field_provenance` (`FieldProvenance`) on `Document`,
   `SemanticLegislationResult` and `SemanticCaseLawResult`;
   `SemanticSearchResponse.field_provenance`; `Document.version`.
 - `SubscriptionInfo.max_semantic_results` /
   `.max_semantic_legislation_results` (`get_info`, API 2.24.0).
-- **`semantic_legislation_search(..., in_force=...)`** (sync + async, API
-  2.19.0): sent as the top-level `inForce` when not `None` (`False`
-  included). `True` returns only hits whose act is known to be in force
-  today; the removed hits are counted in `in_force_filter`. `NotInForceReason`
-  lists the `not_in_force_reason` values.
-- `lexapi.passages`: in every converter, a text that is empty or holds only
-  whitespace or invisible format characters (such as a zero-width space)
-  counts as no text: `text` is `None`, `has_text` is False and
-  `text_status` is `"absent"` (on a hit not established for `as_of`, the
-  date status, as for a missing text). A blank `fullText` of a document read
-  gives no passage. A `Passage` built by hand is not normalised.
 
 ### Changed
 
@@ -130,8 +202,12 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   UTF-8, raises `WebhookSignatureError` (`reason="missing_secret"`) from
   every helper; the error never holds the secret. A secret that is neither
   `str` nor bytes-like raises `TypeError`. A missing or empty header is now
-  `"missing webhook signature"` (`missing_signature`). A body that is JSON
-  but not a JSON object is `malformed_body`. The signed `timestamp` must be
+  `"missing webhook signature"` (`missing_signature`). `verify_webhook`
+  decodes the body as strict UTF-8 (one leading byte order mark allowed)
+  before parsing it, like every response body; a body in another encoding
+  (UTF-16, UTF-32) is "not JSON" (it used to be handed to the parser as
+  bytes, which guessed the encoding), and a body that is JSON but not a JSON
+  object is `malformed_body`. The signed `timestamp` must be
   `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by `Z` or `±HH:MM` (the same on
   every Python version) and name a real date and time in years 0001–9999;
   the timestamp is read to the microsecond (fraction digits beyond the
@@ -140,12 +216,18 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `tolerance=nan` raises `ValueError`.
 - **Quota 429s.** A 429 with the code `QUOTA_EXHAUSTED` (top-level, or
   `error.code` on the typed envelope) is a `RateLimitedError` with
-  `quota_exhausted`, whatever other code the body carries; its code is
-  `QUOTA_EXHAUSTED` unless the body's code is `RATE_LIMITED`. The shape test
-  for servers before API 2.4.0 applies only when the code is `RATE_LIMITED`
-  (sent or derived from the status), and only on a 429: `quota_exhausted` is
-  false on every other error unless the code is `QUOTA_EXHAUSTED`, which
-  sets it on any status.
+  `quota_exhausted`, whatever other code the body carries, and is not
+  retried; its code is `QUOTA_EXHAUSTED` unless the body's code is
+  `RATE_LIMITED`. A 429 whose typed envelope carries
+  `error.code: "QUOTA_EXHAUSTED"` was already reported as `quota_exhausted`
+  but was retried; it is no longer retried, so on a 429 `quota_exhausted`
+  now always matches the retry decision. A top-level
+  `code: "QUOTA_EXHAUSTED"` beside another typed code is now a quota 429 too
+  (0.4.0: a plain `LexAPIError`, or, beside a typed `RATE_LIMITED`, a
+  `RateLimitedError` without `quota_exhausted`). The shape test for servers before API 2.4.0 applies only
+  when the code is `RATE_LIMITED` (sent or derived from the status), and
+  only on a 429: `quota_exhausted` is false on every other error unless the
+  code is `QUOTA_EXHAUSTED`, which sets it on any status.
 - **520 and 524 are retried only on free GETs.** An app-origin 520 or 524
   (the response carries `X-LexAPI-Version` or `RateLimit-Limit`) on a billed
   GET was retried since 0.4.0; it is no longer, as for a proxy's 520 / 524.
@@ -161,34 +243,38 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   a number >= 0: the top-level field, else `error.details` on the typed
   envelope or the top-level `details` on the legacy shape. Anything else
   counts as absent: the normal backoff applies, and a national 503
-  `SEARCH_INCOMPLETE` whose only hint is unusable is not retried. A 429 with
-  code `QUOTA_EXHAUSTED` in `error.code` of the typed envelope is a quota 429
-  too, and `RateLimitedError.quota_exhausted` always matches the retry
-  decision.
+  `SEARCH_INCOMPLETE` whose only hint is unusable is not retried.
 - **`RetryConfig` refuses unusable waits.** `backoff_base` and `backoff_cap`
   must be finite numbers >= 0; anything else (`inf`, `nan`, a negative value,
   a number too large for a float) raises `ValueError`. 0.4.0 accepted
   `backoff_cap=float("inf")` as "no cap"; pass a large finite value instead.
 - **Timeouts.** `timeout` and `connect_timeout` longer than the timers
-  support (`inf` included) are clamped to 2**31 - 1 milliseconds (about 24.8
+  support (`inf` included) are clamped to 2**31 - 1 milliseconds (about 24.9
   days); `nan`, a negative value or a non-number raises `ValueError` when the
   client is created (`None` still means no limit). Any real number is
   accepted (`int`, `float`, `Decimal`, numpy numbers).
-- **A JSON text nested deeper than 512 levels is refused** (a response body,
-  error body, export line or webhook body), on every Python version, before
-  it is parsed: it is "not JSON".
-- **Webhook bodies are strict UTF-8.** `verify_webhook` decodes the body as
-  UTF-8 (one leading byte order mark allowed) before parsing it, like every
-  response body; a body in another encoding (UTF-16, UTF-32) raises
-  `WebhookSignatureError` ("not JSON"). It used to be handed to the parser
-  as bytes, which guessed the encoding.
+- **Deeply nested JSON is refused.** A response body, error body, export
+  line or webhook body nested deeper than 512 levels — and, on Python older
+  than 3.12, deeper than the recursion limit leaves room for where it is
+  parsed (less a small reserve; a text without brackets is never refused) —
+  is refused before it is parsed, as not JSON: `InvalidResponseError`, an
+  error without a body (`HTTP <status>`), an invalid export line counted in
+  `invalid_lines`, or `WebhookSignatureError`. Before, a body deeper than
+  512 levels but within the parser's limits was parsed; a deeper one raised
+  `RecursionError` or could abort the interpreter. `verify_webhook` also
+  treats a `RecursionError` as "not JSON". Each response body is parsed at
+  most once (the retry decision and the error share it). In a thread whose
+  stack is far smaller than the default, the interpreter itself can still
+  run out of stack before any check runs; the SDK cannot detect that.
 - **Unusable figures read as absent.** An integer header (`RateLimit-*`,
   `X-National-*`, `X-Corpus-Version`, `X-Export-*`, the batch and post-filter
   counts) must be ASCII digits (leading zeros allowed) with a value up to
   2**53 - 1 (`+5`, `1e3`, `1_000` are absent). An integer read through a
-  typed accessor (credits, usage, totals, counts) above 2**53 - 1 is absent;
-  finite floats still truncate. A float field must be a finite number; a
-  `bool` case-law `score` is now `None` (it was `1.0` / `0.0`).
+  typed accessor (credits, usage, totals, counts) above 2**53 − 1 is absent;
+  finite floats in the `credits` / `usage` / `subscription` blocks still
+  truncate (other integer fields: see Fixed). A float field must be a
+  finite number; a `bool` case-law `score` is now `None` (it was `1.0` /
+  `0.0`).
 - **Iterators raise when the server stops advancing.**
   `citations.iter_cited_by` / `iter_cites` yield every document group,
   `webhooks.iter_deliveries` every delivery and `national.iter_documents`
@@ -238,7 +324,7 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `docs/sdk-contract.md` §1.3.
 - **Construct models by keyword.** New fields on `SemanticLegislationResult`
   and `SemanticCaseLawResult` (in-force labels, `provenance`,
-  `field_provenance`) come before the fields that
+  `field_provenance`, `text_availability`) come before the fields that
   `NationalSemanticLegislationResult` and `NationalSemanticCaseLawResult` add,
   and `NationalSemanticLegislationResult.in_force` now takes the position of
   the base class's field. Code that built these two national models with
@@ -253,7 +339,11 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 - `verify_webhook` refuses `NaN`, `Infinity` and `-Infinity` in the body as
   "not JSON" (`WebhookSignatureError`, `malformed_body`), like every other
-  JSON the SDK reads.
+  JSON the SDK reads. A `str` payload that cannot be encoded as UTF-8 (a lone
+  surrogate) has no bytes to verify: `verify_signature` returns `False` and
+  `verify_webhook` fails with `invalid_signature` (never `malformed_body`),
+  instead of raising `UnicodeEncodeError`. `compute_signature` given such a
+  payload raises `UnicodeEncodeError` and returns no signature.
 - An export stream that declares `charset=utf-16` or `utf-32` (or any other
   charset) no longer raises a raw `UnicodeError`: lines are read as UTF-8,
   so a stream that really is UTF-16/32 has no readable line, ends without a
@@ -262,11 +352,6 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   longer lost: 0.4.0 split the line there, counted both halves as invalid
   and still reported the export complete. A lone carriage return, vertical
   tab or form feed is no longer a line break either.
-- A `str` payload that cannot be encoded as UTF-8 (a lone surrogate) has no
-  bytes to verify: `verify_signature` returns `False` and `verify_webhook`
-  fails with `invalid_signature` (never `malformed_body`), instead of raising
-  `UnicodeEncodeError`. `compute_signature` given such a payload raises
-  `UnicodeEncodeError` and returns no signature.
 - A `Retry-After`, `RateLimit-Reset` or `retryAfter` hint that is negative or
   not finite (`nan`, `inf`, a number too large for a float) no longer makes a
   call raise `ValueError` or `OverflowError`, never makes the async client
@@ -274,22 +359,11 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   `nan`, a negative or an overflowing value, whatever `max_retries` is.
 - An asctime `Retry-After` date (`Sun Nov  6 08:49:37 1994`) is read as UTC;
   it was read in local time.
-- On Python older than 3.12, a response body, error body, export line or
-  webhook body nested deeper than the recursion limit leaves room for where
-  it is parsed (less a small reserve; a text without brackets is never
-  refused) is refused before it is parsed (not JSON: `InvalidResponseError`,
-  an error without a body, an invalid export line, `WebhookSignatureError`).
-  Such a body could abort the interpreter. Each response body is parsed at
-  most once (the retry decision and the error share it). `verify_webhook`
-  now also treats a `RecursionError` as "not JSON". In a thread whose stack
-  is far smaller than the default, the interpreter itself can still run out
-  of stack before any check runs; the SDK cannot detect that.
-- A deeply nested export line is counted in `invalid_lines` instead of
-  raising `RecursionError`.
 - A float field (`score`, the national coverage rates and bounds) holding a
   number too large for a float reads as `None` instead of raising
   `OverflowError`.
-- Integer fields of the response models (for example `Document.version`)
+- Integer fields of the response models (for example
+  `SearchResponse.total_results` or `CitationDocumentGroup.citation_count`)
   accept an integer, or a float with an integral value; a non-integral or
   non-finite number (`2.9`, `1e999`) is now `None`, and such an item of
   `WebhookRetryPolicy.delays_minutes` is left out. Before, `2.9` was read
@@ -304,8 +378,6 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
   points.
 - An empty or JSON `null` error body leaves `err.body` as `None` (an empty one
   was `{}`) and sets no excerpt.
-- A deeply nested JSON body is treated as not JSON (`InvalidResponseError`, or
-  `HTTP <status>` on an error status) instead of raising `RecursionError`.
 - An error body whose `code` or `message` is not a non-empty string no longer
   raises `TypeError` or puts that value in the message: it counts as absent.
 - A `LexAPIError` survives a pickle round trip with its message unchanged

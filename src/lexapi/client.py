@@ -477,7 +477,8 @@ class LexAPI:
                 covers ``en fr de es it sl el nl pt pl``).
             include_text: receive full document text per hit (``hit.text``)
                 instead of the default ~600-char ``hit.snippet`` (10-50x
-                payload increase).
+                payload increase) for each hit whose text LexAPI holds;
+                ``hit.text_availability`` says which (API 2.30.0).
             filters: free-form filter object forwarded to the backend.
 
         The response exposes ``hint`` (low-confidence signal), ``hyde``

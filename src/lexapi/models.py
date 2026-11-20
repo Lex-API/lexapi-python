@@ -118,6 +118,11 @@ TextUnavailableReason = Literal[
     "unknown",
 ]
 
+#: ``textAvailability.reason`` values on a semantic case-law hit
+#: (:class:`SemanticHitTextAvailability`, API 2.30.0), copied from
+#: openapi.yaml. A document's reasons are :data:`TextUnavailableReason`.
+SemanticHitTextUnavailableReason = Literal["not_in_corpus", "unknown"]
+
 
 def _s(data: dict[str, Any], key: str) -> str | None:
     value = data.get(key)
@@ -2421,6 +2426,42 @@ class WebhookDeliveriesResponse(APIResponse):
 
 
 @dataclass(frozen=True)
+class SemanticHitTextAvailability:
+    """Whether a semantic case-law hit carries ``text``, and if not, why
+    (``textAvailability`` on ``/search/semantic`` with ``include_text=True``,
+    API 2.30.0).
+
+    ``available`` is True when the hit carries ``text``. When it is False the
+    hit carries ``snippet`` instead (the head of the machine-written
+    ``summary``, not court text) and ``reason`` says why: ``not_in_corpus``
+    (LexAPI does not hold the document's text in the hit's language; read it
+    with ``get_document``) or ``unknown`` (LexAPI could not check its copy for
+    this request; a retry may return the text). ``reason`` is ``None`` when
+    ``available`` is True and is kept as ``str`` for forward compatibility
+    (see :data:`SemanticHitTextUnavailableReason`).
+
+    Not the same type as a document's :class:`TextAvailability`, which has
+    other reasons.
+    """
+
+    available: bool
+    reason: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def parse(cls, data: dict[str, Any]) -> SemanticHitTextAvailability | None:
+        """The hit's ``textAvailability``; ``None`` when it is absent, not an
+        object, or has no boolean ``available`` (the hit's ``raw`` keeps it)."""
+        value = data.get("textAvailability")
+        if not isinstance(value, dict):
+            return None
+        available = value.get("available")
+        if not isinstance(available, bool):
+            return None
+        return cls(available=available, reason=_s(value, "reason"), raw=value)
+
+
+@dataclass(frozen=True)
 class SemanticCaseLawResult:
     """Single case-law match from ``/search/semantic``.
 
@@ -2430,9 +2471,14 @@ class SemanticCaseLawResult:
 
     By default a hit carries a ~600-character ``snippet``; ``text`` (the full
     document text) is present only when the request set
-    ``include_text=True``. Fields the upstream extractor could not populate
-    are omitted by the API, so they come back ``None`` here; the structured
-    analytics block (``outcome``, ``claimed_amount``, ...) stays on ``raw``.
+    ``include_text=True`` and LexAPI holds the text. With
+    ``include_text=True`` every hit also carries ``text_availability``
+    (:class:`SemanticHitTextAvailability`, API 2.30.0); a hit without text
+    keeps its ``snippet``. Without ``include_text``, ``text_availability``
+    is ``None``. A blank ``text`` is passed through as sent and counts as no
+    text. Fields the upstream extractor could not populate are omitted by
+    the API, so they come back ``None`` here; the structured analytics block
+    (``outcome``, ``claimed_amount``, ...) stays on ``raw``.
 
     ``provenance`` (its ``retrieved_at`` and ``content_hash`` are ``None`` on
     a hit) and ``field_provenance`` are set from API 2.20.0.
@@ -2458,6 +2504,7 @@ class SemanticCaseLawResult:
     paragraph_number: int | None = None
     provenance: Provenance | None = None
     field_provenance: FieldProvenance | None = None
+    text_availability: SemanticHitTextAvailability | None = None
 
     @property
     def parties_text(self) -> str | None:
@@ -2494,6 +2541,7 @@ class SemanticCaseLawResult:
             paragraph_number=_i(metadata, "paragraph_number"),
             provenance=Provenance.parse(data),
             field_provenance=FieldProvenance.parse(data),
+            text_availability=SemanticHitTextAvailability.parse(data),
         )
 
 
@@ -3961,7 +4009,9 @@ class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     filled depends on the national source — prefer ``document``.
 
     ``provenance`` is an EU attribute and always ``None`` on a national hit;
-    the provenance of the hit's document is on ``document.raw``."""
+    the provenance of the hit's document is on ``document.raw``.
+    ``text_availability`` is ``None`` too: the national route does not send
+    ``textAvailability`` (it would be read like the EU one if it did)."""
 
     document_id: str | None = None
     document: NationalDocument | None = None
