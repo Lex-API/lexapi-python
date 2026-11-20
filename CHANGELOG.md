@@ -6,8 +6,24 @@ All notable changes to `lexapi-client` (import `lexapi`). The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-22
+
+Syncs with LexAPI API 3.0.0. **Targets LexAPI API 3.0.0**; each item below
+names the API version it needs. Behaviour that differs from 0.4.0 is listed
+under Changed.
+
 ### Added
 
+- **`SemanticCaseLawResult.text_availability`**
+  (`SemanticHitTextAvailability`: `available`, `reason`, `raw`; API 2.30.0):
+  with `semantic_search(..., include_text=True)` every hit says whether it
+  carries `text`. When it does not, `reason` is `not_in_corpus` (LexAPI does
+  not hold the document's text in the hit's language) or `unknown` (a retry
+  may return the text; `SemanticHitTextUnavailableReason`, kept as `str`),
+  and the hit keeps its `snippet`, the head of the machine-written summary.
+  `None` without `include_text`, and when the value is not an object with a
+  boolean `available`. A separate type from a document's `TextAvailability`,
+  which has other reasons.
 - **`client.legislation_as_of(document, as_of, *, provision=None, language=None)`**
   (sync + async) — `POST /legislation/as-of`: the version of an EU
   regulation, directive or decision listed for a date and, with

@@ -121,6 +121,11 @@ for hit in resp.results:
 if resp.hint:  # present only on low-confidence (best-effort) responses
     print(resp.hint)
 
+# include_text=True: the full text of each hit LexAPI holds (API 2.30.0). A hit without
+# it has text_availability.available False, a reason ("not_in_corpus" | "unknown") and
+# keeps its snippet, which is then the head of the machine-written summary, not court text.
+resp = client.semantic_search("adequacy decision", include_text=True)
+
 # HyDE query rewriting for terse/keyword queries — 15 credits instead of 5
 resp = client.semantic_search("credit scoring article 22", hyde=True)
 print(resp.hyde)  # False means the LLM fell back — premium auto-refunded
