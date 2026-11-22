@@ -4,6 +4,8 @@ Official Python SDK for [LexAPI](https://lex-api.com/?ref=pypi-sdk) — European
 
 Covers every documented `/api/v1` endpoint (search, documents, point-in-time versions, semantic search incl. `asOf`, the citation graph, webhooks, bulk export), sync and async, with typed responses, typed errors, retries and credit visibility. Python 3.9+; `httpx` is the only dependency. See the [CHANGELOG](https://github.com/Lex-API/lexapi-python/blob/main/CHANGELOG.md).
 
+Version 0.5.0 targets LexAPI API 3.0.0.
+
 ## Install
 
 ```bash
@@ -22,7 +24,7 @@ info = client.get_info()  # free (0 credits)
 print(info.subscription_info.tier, info.credits_remaining)
 ```
 
-Keys come from the [LexAPI dashboard](https://lex-api.com/dashboard?ref=pypi-sdk) and are prefixed `lex_`. Keep them server-side — never ship them in client-side code.
+Keys come from the [LexAPI dashboard](https://lex-api.com/dashboard?ref=pypi-sdk) and are prefixed `lex_` ([plans and credit costs](https://lex-api.com/pricing?ref=pypi-sdk)). Keep them server-side — never ship them in client-side code.
 
 ### Search
 
@@ -43,7 +45,7 @@ if results.truncated:
 if results.partial:
     print("partial answer:", results.partial_reason)
 if results.post_filtered_by:
-    print("controller post-filter fired on:", results.post_filtered_by)
+    print("server-side post-filter fired on:", results.post_filtered_by)
 print(results.source)  # "soap" | "cellar" | "corpus" | None (EUR-Lex result pages)
 print(results.cache)  # "hit" | "miss" | "bypass" — 60-minute result cache, same price
 
@@ -60,15 +62,21 @@ doc = resp.document
 print(
     doc.title, doc.date_of_document_iso, resp.source
 )  # source: corpus | cellar | cellar-oj | live
-for article in doc.content.articles[:3]:
-    print(article.number, article.title)
+if doc.content:  # None when the text is not available (below)
+    for article in doc.content.articles[:3]:
+        print(article.number, article.title)
 
 # Notice published but no text: a 200 with content=None (billed 1 credit, not 5)
-if not resp.text_available:
+if resp.text_available is False:
     ta = doc.text_availability
     print(ta.reason, ta.retryable, ta.available_languages)  # None = unknown, [] = none
     if ta.latest_consolidated:  # base acts: pointer to CONSLEG
         print("try", ta.latest_consolidated.celex)
+
+# In force today (API 2.19.0) and where the document comes from (API 2.20.0)
+print(doc.in_force, doc.not_in_force_reason, doc.end_of_validity)  # None = unknown
+if doc.provenance:  # None before API 2.20.0
+    print(doc.provenance.source_url, doc.provenance.licence, doc.provenance.content_hash)
 
 # Title not in the requested language? titleLanguage says which language it is in
 print(doc.title_language)
@@ -117,6 +125,16 @@ for hit in resp.results:
 if resp.hint:  # present only on low-confidence (best-effort) responses
     print(resp.hint)
 
+# A snippet is the head of the machine-written summary when the hit has one (not court
+# text), else of the matched text. include_text=True: the full text of each hit LexAPI
+# holds (API 2.30.0). A hit without it has text_availability.available False, a reason
+# ("not_in_corpus" | "unknown") and keeps its snippet; read the text with get_document.
+resp = client.semantic_search("adequacy decision", include_text=True)
+for hit in resp.results:
+    ta = hit.text_availability
+    if ta and not ta.available and hit.celex:
+        print(hit.celex, ta.reason)  # then: client.get_document(hit.celex)
+
 # HyDE query rewriting for terse/keyword queries — 15 credits instead of 5
 resp = client.semantic_search("credit scoring article 22", hyde=True)
 print(resp.hyde)  # False means the LLM fell back — premium auto-refunded
@@ -130,7 +148,21 @@ for hit in laws.results:
     if hit.consolidated:  # merged hit: consolidated text + the authentic act's own match
         print("  consolidated as of", hit.consolidated_as_of, "— cite", hit.base_celex)
         print("  ", hit.consolidated_note)
+
+# Only acts known to be in force today (sent as the top-level inForce)
+current = client.semantic_legislation_search("right to be forgotten", in_force=True)
+if current.in_force_filter:  # None before API 2.19.0
+    print(current.in_force_filter.removed_not_in_force, current.in_force_filter.removed_unknown)
 ```
+
+| Field (documents and legislation hits) | Meaning |
+|---|---|
+| `in_force`, `not_in_force_reason`, `end_of_validity`, `entry_into_force` | Whether the act is in force **today** (UTC), as recorded by the Publications Office; all `None` when unknown. A consolidated text or corrigendum carries the label of its act. Not about amendments, nor about an `as_of` date (API 2.19.0) |
+| `provenance` (`Provenance`) | `publisher`, `source_url`, `source_identifier`, `retrieved_at`, `content_hash`, `version_identifier`, `language`, `licence`; `None` values are not known. On search hits `retrieved_at` and `content_hash` are `None` (API 2.20.0) |
+| `field_provenance` (`FieldProvenance`) | Which fields are the publisher's text (`official_source_text`) and which were derived (API 2.20.0) |
+| `Document.version` | LexAPI's snapshot number of the text |
+| `SemanticLegislationResponse.in_force_filter` | With `semantic_legislation_search(..., in_force=True)` (sent as the top-level `inForce`, not in `filters`): `removed_not_in_force`, `removed_unknown` |
+| `get_info().subscription_info.max_semantic_results` / `.max_semantic_legislation_results` | The most results one semantic search returns on your plan (API 2.24.0) |
 
 #### The text in force on a date (`as_of`)
 
@@ -138,7 +170,7 @@ for hit in laws.results:
 import datetime
 
 laws = client.semantic_legislation_search("own funds requirements", as_of="2019-06-01")
-# as_of also accepts a datetime.date
+# pass a date or a YYYY-MM-DD string; a datetime is cut to its own calendar date, not converted to UTC
 print(laws.as_of, laws.as_of_summary.live_fetches, laws.as_of_summary.unresolved)
 for hit in laws.results:
     if hit.as_of_resolved:
@@ -157,7 +189,111 @@ is fetched live (at most 3 per request by default) and settles at 4 (Cellar),
 5 (browser), 1 (no text) or 0 (failed / timed out). A fetch the pool can't
 cover is skipped (`as_of_reason == "insufficient_credits"`) — only the search
 itself can raise `CreditsExhaustedError`. An invalid date is a 400
-(`InvalidParamsError`, refunded).
+(`InvalidParamsError`, refunded). Pass a `date` or a `YYYY-MM-DD` string; a
+`datetime` is cut to its own calendar date, not converted to UTC.
+
+#### One act on a date (`legislation_as_of`)
+
+```python
+answer = client.legislation_as_of("32016R0679", "2019-06-01", provision="art_17")
+if answer.as_of_resolved:
+    v = answer.as_of_version  # kind: "consolidated" | "as_published"
+    print(v.celex, v.kind, v.date)
+    print(answer.provision.number, answer.provision.text)
+    # no legal force — cite the authentic act (answer.document is always the act)
+    if answer.consolidated:
+        print("cite", answer.base_celex)
+else:
+    print("not established:", answer.as_of_reason)  # see lexapi.AS_OF_LOOKUP_REASONS
+```
+
+The version of an EU regulation, directive or decision listed for a date: the
+newest consolidated version dated on or before it, or the act as published in
+the Official Journal. `provision` adds one article, annex (`anx_III`) or recital
+range (`rct_26-28`); omit it for the version only. `legislation_as_of` reads one
+act you already know by CELEX number; `semantic_legislation_search(as_of=...)`
+is the search by meaning. Needs LexAPI API 2.26.0.
+
+- **Unresolved.** An answer that cannot be established is a normal return with
+  `as_of_resolved == False` and an `as_of_reason` — use the text only when
+  `as_of_resolved` is true. Unresolved answers are returned, not raised, so a
+  retry loop has to look at `as_of_reason`: the `fetch_*` reasons,
+  `request_deadline`, `version_list_unavailable` and `version_lookup_cap` are
+  worth asking again; the others are the answer for that date.
+- **To cite.** `answer.document` is always the act itself;
+  `answer.as_of_version.celex` and `.date` name the version the text comes from
+  (`base_celex` is set on consolidated answers only).
+- **Dates.** `answer.as_of_version.valid_until`, when set, is the last day this
+  version is the one listed. `answer.act.in_force_today` is about today, not
+  about `as_of`. An amendment that applies retroactively counts from the date
+  of the amending act. The answer does not say whether an individual provision
+  applied on that date.
+- **Input.** Send the bare CELEX number: a `CELEX:` prefix is a 400
+  (`InvalidCelexError`).
+- **Errors.** An unknown act raises `NotFoundError`; invalid input raises
+  `InvalidCelexError` / `InvalidParamsError`. An API older than 2.26.0 has no
+  such endpoint and also answers 404 (`NotFoundError`). `err.unknown_endpoint`
+  is False there (the API sends it from 2.27.0): check
+  `err.message.startswith("Unknown API endpoint")`.
+- **Cost.** 1 credit when no text is fetched; when the provision's text has to
+  be fetched, 4 (5 when it is fetched live from EUR-Lex), whatever the answer,
+  and 1 if the fetch fails or finds no text. A fetch reserves up to 5 credits:
+  a pool holding fewer gets `as_of_reason == "insufficient_credits"`.
+
+### Passages for RAG frameworks
+
+`lexapi.passages` turns responses into framework-neutral passages: a text
+together with the citation it must be shown with. It makes no request of its
+own and imports no framework, so an adapter for any RAG framework can be built
+on it.
+
+```python
+from lexapi import LexAPI, passages
+
+with LexAPI() as client:
+    response = client.semantic_legislation_search(
+        "right to erasure", as_of="2019-06-01", include_text=True
+    )
+
+result = passages.from_legislation_search(response, as_of="2019-06-01")
+for p in result.passages:
+    # for an act as published: CELEX 32016R0679, art_17, version for 2019-06-01: 32016R0679
+    print(passages.format_citation(p))
+    print(p.content())  # the text, or a one-line notice when there is none
+print(result.withheld, "withheld;", result.units_charged, "credits")
+```
+
+- **Unresolved text is withheld.** On an `as_of` search, a hit the API could
+  not answer for that date comes back with its latest indexed text. That text
+  is not established as the text for the date, so the passage is kept with
+  `text=None` (`text_status == "withheld"`) and its `as_of_reason`;
+  `content()` is then a notice such as `[No text: CELEX 31995L0046 art_12 is
+  not established as the text for 2019-06-01 (reason: fetch_timeout).]`.
+  `unresolved="drop"` leaves such hits out and counts them in
+  `result.dropped`; `unresolved="keep_labelled"` keeps the latest text, marked
+  `text_status == "not_established_for_date"`. Only the passages are
+  filtered: `response.results` still holds the latest text of unresolved hits.
+- **Citation.** Every passage has a `celex`; `cite_celex` is the number to
+  cite. A consolidated text has `consolidated=True` and, when the API names
+  it, `base_celex`: consolidated texts have no legal force, so cite the act as
+  published in the Official Journal. When the API does not name that act (a
+  document read), `cite_celex` is `None`.
+- **Nothing is guessed.** A field the API did not send is `None`. A text that
+  is empty or holds only whitespace or invisible format characters (such as a
+  zero-width space) counts as no text: `text=None`, `has_text` False.
+- **Converters.** `from_legislation_search`, `from_case_law_search`,
+  `from_document` (one passage per article) and `from_legislation_as_of`
+  each return a `PassageResult`: `passages`, the `withheld` / `dropped`
+  counts, `as_of`, and `units_charged` / `credits_remaining` as the response
+  reports them, once per call. They take the EU responses only; national
+  search responses (`client.national.*`) are not supported.
+- **For a framework.** `p.metadata()` is the citation as a flat dictionary
+  (never the text), `p.id` an identifier that is stable across calls and
+  differs between dates, and `passages.format_passage(p)` the content
+  followed by a `Source:` line.
+- **One act only.** The legislation index reads no `filters` key except
+  `language`; `passages.restrict_to_celex(result, "32016R0679")` keeps the
+  passages of that act and its consolidated texts after the search.
 
 ### Citations
 
@@ -171,7 +307,7 @@ print(inbound.total_edges, "edge rows;", inbound.total_citations, "document pair
 print(inbound.counts_source)  # "stats" or "counted" — both exact for the request
 print(inbound.relation_sync.status)  # Cellar refresh state of amendment/corrigendum/repeal edges
 
-for group in client.citations.iter_cited_by("32008R1272"):  # walks every edge page (1 credit each)
+for group in client.citations.iter_cited_by("32008R1272"):  # every edge page (1 credit each)
     print(group.celex_number, group.citation_count)
 
 outbound = client.citations.cites("32016R0679")
@@ -192,6 +328,29 @@ with_national = client.citations.cited_by("32016R0679", include_national=True)
 print(with_national.include_national)  # present once honoured; None while no jurisdiction is live
 national_edges = client.citations.cites("AT-NOR-10001597")  # a national id works directly
 ```
+
+**Page iterators.** `citations.iter_cited_by` / `iter_cites` yield every
+document group, `webhooks.iter_deliveries` every delivery and
+`national.iter_documents` every page, as the pages arrive.
+
+- **Edge walks** (`iter_cited_by`, `iter_cites`) end at an empty page, at a
+  page shorter than the echoed `limit` (when that is a positive integer; else
+  than the requested `page_size`), or once the offset reaches `total_edges`.
+  They raise `InvalidResponseError` when the server echoes another `offset`
+  than the one asked for, and — only on answers that carry neither
+  `totalEdges` nor an echoed `offset` — on the third page in a row equal to
+  the page before.
+- **Deliveries** (`iter_deliveries`) end at an empty page or once the offset
+  reaches `total`. Only when the answer has no usable `total` (whatever else
+  it echoes), the walk raises on the third page in a row that brings no
+  delivery not seen yet.
+- **National documents** (`iter_documents`) end after a page without a next
+  cursor (or with `has_more` not true, or no results), and raise when the
+  server hands back a cursor already sent in the walk, or one that is not a
+  string while the walk would continue.
+
+Everything yielded before an error stays valid; the page that showed the
+stall is not yielded and is on `err.body`.
 
 Every edge says where it comes from (`provenance`) and how its target was
 identified (`resolution`, national edges only); every node carries `id`,
@@ -290,7 +449,7 @@ result = client.webhooks.test(hook.webhook.id)  # synchronous test delivery
 if not result.ok:  # HTTP 200 either way
     print(result.delivery.error_message)
 
-for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # all pages, deduped on id
+for delivery in client.webhooks.iter_deliveries(hook.webhook.id):  # every page, deduped on id
     print(delivery.status, delivery.response_status)
 
 client.webhooks.delete(hook.webhook.id)
@@ -304,9 +463,12 @@ from lexapi import WebhookSignatureError, verify_webhook
 
 def handle_delivery(raw_body: bytes, signature: str) -> int:
     try:
-        event = verify_webhook(raw_body, signature, secret)  # 5-minute replay window
-    except WebhookSignatureError:
-        return 401
+        event = verify_webhook(raw_body, signature, secret)  # 5-minute replay window;
+        # tolerance=None switches the replay window off
+    except WebhookSignatureError as err:
+        # err.reason: missing_signature, invalid_signature, malformed_body,
+        # stale_timestamp (missing_secret is a configuration error)
+        return 400 if err.reason == "malformed_body" else 401
     if event["event"] == "watchlist.changes":
         for change in event["data"]["changes"]:
             print(change["watchedCelex"], change["relation"], change["document"]["celex"])
@@ -318,7 +480,8 @@ def handle_delivery(raw_body: bytes, signature: str) -> int:
 
 National jurisdictions (member states, and non-EU legal orders such as the UK) live under `client.national`. Call `coverage()`
 first — a jurisdiction that has not launched yet answers every other national
-method with `NotFoundError`, exactly like one that does not exist:
+method with `NotFoundError`, exactly like one that does not exist (and like
+a path the API does not have: `err.unknown_endpoint` is True, API 2.27.0+):
 
 ```python
 coverage = client.national.coverage()  # public, free
@@ -348,6 +511,44 @@ for r in hits.results:
 
 legislation_hits = client.national.legislation_semantic_search("AT", "right to erasure")
 ```
+
+**`as_of` on national legislation search (requires LexAPI API 2.29.0).** The
+search runs over today's texts only, and each hit is labelled for the date:
+
+```python
+from lexapi import NationalAsOfVersion
+
+hits = client.national.legislation_semantic_search(
+    "AT",
+    "Recht auf Auskunft über eigene Daten",
+    as_of="2020-06-01",  # or a date; a datetime is cut to its own calendar date (no UTC conversion)
+)
+print(hits.as_of, hits.as_of_summary.unresolved)
+for hit in hits.results:
+    v = hit.as_of_version
+    if hit.as_of_resolved and isinstance(v, NationalAsOfVersion):
+        print(hit.article_ref, v.valid_from, v.valid_to, v.source_id, v.checked_at)
+    else:
+        print(hit.article_ref, "not established for the date:", hit.as_of_reason)
+```
+
+| Field | Meaning |
+|---|---|
+| `as_of`, `as_of_resolved` | On every hit of an `as_of` search |
+| `as_of_version` (`NationalAsOfVersion`, `kind == "current_unit"`) | On a resolved hit: `valid_from` / `valid_to` (the publisher's dates for today's wording; `valid_to` `None` when open), `source_id` (the publisher's id of the provision), `checked_at` (`YYYY-MM-DD`, the day of the last read of the act that LexAPI recorded) |
+| `as_of_reason` | On an unresolved hit; one of `lexapi.NATIONAL_AS_OF_REASONS`: `provision_amended_since`, `no_longer_in_force`, `provision_dates_unknown`, `asof_not_available` |
+| `response.as_of`, `response.as_of_summary` | The date echoed; `unresolved` counts the unresolved hits (`live_fetches` is always 0) |
+
+A hit is resolved only when the publisher's dates, as of LexAPI's last recorded
+read of the act (`checked_at`), show today's wording already applied on the
+date; a change the publisher made after that read is not reflected. The text is
+never swapped for an earlier one: a provision repealed or replaced since the
+date cannot be found, and an unresolved hit keeps today's wording, which is not
+established as the text for the date. LexAPI holds such dates for Austria and
+Spain; for the other countries every hit is `asof_not_available`. `in_force`
+and the `inForce` filter are still about today. Dates from 1800-01-01; an
+invalid date is a 400 (`InvalidParamsError`, nothing charged). Same cost: 5
+credits.
 
 **One shape for every country (requires LexAPI API 2.8.0).** National
 documents have the same fields, types and formats in every jurisdiction, so
@@ -450,10 +651,11 @@ except NationalSemanticFilterUnreachableError:
 `precision`, `floors`; a rate that is not measured is `None` and its reason
 is in `methods.unmeasured`).
 
-Until 2026-11-12, an account created before 2026-10-16T18:43:20Z that has
-not yet accepted the national-source terms in the dashboard gets
+Since 2026-11-12 the national-source terms apply to every account, so the API
+no longer refuses national requests for terms not accepted.
 `NationalTermsNotAcceptedError` (403; `.accept_url`, `.terms_url`,
-`.terms_version`) from the national citation routes.
+`.terms_version`) stays in the SDK and is raised only if the API answers
+`NATIONAL_TERMS_NOT_ACCEPTED` again.
 
 `get_document` (and the citation methods, for a withdrawn national id)
 raise `DocumentWithdrawnError` (410) for a document its source withdrew —
@@ -516,24 +718,47 @@ retrieval and evaluation.
 
 Versions are LexAPI *observation snapshots* — the document as fetched — not
 legal in-force reconstructions; history begins at first ingestion. (For the
-text *in force* on a date, use `semantic_legislation_search(as_of=...)` or a
-consolidated CELEX such as `02016R0679-20180524`.)
+version of an act listed for a date, use `legislation_as_of(...)`; to search
+the text in force on a date, `semantic_legislation_search(as_of=...)`; or read
+a consolidated CELEX such as `02016R0679-20180524`.)
 
 ```python
+from lexapi import NotFoundError
+
 history = client.list_document_versions("32016R0679")
 print(history.current_version, history.tracked_since)
 for v in history.versions:
-    print(v.version, v.fetched_at, v.content_hash, "(current)" if v.is_current else "")
+    print(v.version, v.observed_from, v.fetched_at, "(current)" if v.is_current else "")
 
 snapshot = client.get_document_version("32016R0679", 2)
-print(snapshot.document.parsed_content)
+print(snapshot.document.parsed_content, snapshot.document.provenance.content_hash)
 
-as_of = client.get_document_at_date("32016R0679", "2026-03-20")  # or a datetime.date
-print(as_of.as_of, as_of.document.version)
+try:
+    at = client.get_document_at_date("32016R0679", "2026-04-01")  # or a datetime.date
+    print(at.kind, at.as_of, at.document.version)  # kind: "observation_snapshot"
+    print(at.document.observed_from, at.document.observed_until)  # until: None = current
+    if at.date_in_future:
+        print("a future date: this is the current version")
+except NotFoundError as err:
+    if err.before_tracking:
+        print("history starts", err.tracked_since)
+    elif err.boundary_unknown:  # refunded
+        for c in err.candidates:  # read them with get_document_version
+            print(c.version, c.observed_from, c.fetched_at)
 ```
 
-Each call costs 1 credit. Dates before the document entered the corpus raise
-`NotFoundError` with the tracking start date in the message.
+| Field (API 2.28.0) | Meaning |
+|---|---|
+| `VersionEntry.observed_from` | When the version began; `None` when LexAPI has no record of it |
+| `VersionEntry.fetched_at` | When the version's text arrived at LexAPI; for a version without `observed_from` (possible for snapshots stored before API 2.28.0) the last fetch of its text, which is not when the version began |
+| `VersionEntry.observed_until` | `get_document_at_date` only: when the next version's text arrived; `None` for the current version |
+| `kind`, `date_in_future`, `in_force_lookup` | `get_document_at_date` only: always `"observation_snapshot"`; True for a date after today (UTC), answered with the current version; a pointer to `legislation_as_of` for an EU act it resolves |
+| `NotFoundError.reason` | `"before_tracking"` (`.before_tracking`, `.tracked_since`, `.in_force_lookup`) or `"boundary_unknown"` (`.boundary_unknown`, `.candidates` of `SnapshotCandidate`: `version`, `fetched_at`, `observed_from`; at most 10, `.candidates_truncated` beyond; can be empty) |
+
+`get_document_at_date` returns the snapshot LexAPI held at the end of that day
+(UTC) — LexAPI's fetch history, not the law in force on the date. Each call
+costs 1 credit; a `404` costs 1 credit, except `boundary_unknown`, which is
+refunded. A document that is not in the corpus is a `404` without a reason.
 
 ### Async
 
@@ -583,18 +808,20 @@ shape are handled; a legacy body's `details` list is kept on `err.details`):
 ```python
 from lexapi import (
     LexAPIError,  # base — code / message / status / details / body / retry_after
-    NotFoundError,  # 404 NOT_FOUND
+    NotFoundError,  # 404 NOT_FOUND — .unknown_endpoint (API 2.27.0+): the API has no such endpoint;
+    # .reason / .before_tracking / .boundary_unknown / .candidates (get_document_at_date, API 2.28.0+)
     InvalidCelexError,  # 400 INVALID_CELEX
     InvalidParamsError,  # 400 INVALID_PARAMS (e.g. an invalid as_of)
     RateLimitedError,  # 429 — .retry_after; code QUOTA_EXHAUSTED / .quota_exhausted / .resets_at on legacy quotas
     CreditsExhaustedError,  # 402 CREDITS_EXHAUSTED — .resets_at, .operation, .weight, .available
     TierForbiddenError,  # 403 TIER_FORBIDDEN — .upgrade_url on legacy tier gates
+    PaymentPastDueError,  # 403 PAYMENT_PAST_DUE (a TierForbiddenError) — .billing_url, .access_ended_at
     UpstreamError,  # 502 UPSTREAM_ERROR
     TimeoutError,  # 504 TIMEOUT (server-side upstream timeout, retry-safe)
     AuthenticationError,  # 401 — missing/invalid/deactivated key
     RequestTimeoutError,  # the SDK's own timeout elapsed
     ServiceUnavailableError,  # 503 (SDK code SERVICE_UNAVAILABLE; subclass of UpstreamError)
-    InvalidResponseError,  # a 2xx whose body is not JSON (e.g. a proxy's HTML page)
+    InvalidResponseError,  # a 2xx that is not the documented shape (e.g. a proxy's HTML page)
     IncompleteExportError,  # export stream ended without a complete _done trailer
 )
 
@@ -604,32 +831,93 @@ except CreditsExhaustedError as err:
     print(f"need {err.weight}, have {err.available}; resets {err.resets_at}")
 except RateLimitedError as err:
     print(f"rate limited, retry in {err.retry_after}s")
+except PaymentPastDueError as err:
+    print(f"payment past due; pay the open invoice: {err.billing_url or 'in the dashboard'}")
 except LexAPIError as err:
     print(err.code, err.status, err.message)
 ```
 
+`PaymentPastDueError`: a subscription payment failed and was not completed in
+time; pay the open invoice in the dashboard (`err.billing_url`). It is not
+retryable. It is a subclass of `TierForbiddenError`: before API 2.27.0 a failed
+payment was refused at once with a 403 without a code, raised as
+`TierForbiddenError`, so an `except TierForbiddenError` handler keeps catching
+it. To tell a failed payment from a plan gate, put the `PaymentPastDueError`
+clause before the `TierForbiddenError` one.
+
+A JSON body (or export line, or webhook body) nested deeper than 512 levels
+is refused before it is parsed, on every Python version, and counts as not
+JSON. In a thread whose stack is far smaller than the default, the
+interpreter itself can run out of stack before any check runs; the SDK cannot
+detect that.
+
+`InvalidResponseError`: a `2xx` answer that is not the documented shape — no
+body, a body that is not strict UTF-8 JSON (e.g. a proxy's HTML page), JSON
+that is not an object, `success: false`, a documented field that is missing or
+of the wrong kind (e.g. `document` on a document read), or a list such as
+`results` that is missing where the endpoint always sends it, is not a list, or
+holds items that are not objects. It is raised so that such an answer is never
+read as an empty result: catch it to tell the two apart. Unknown extra fields
+are accepted. A `success: false` answer that carries the API's error envelope
+raises the mapped error instead, with the answer's status (`err.status ==
+200`; code `INTERNAL` when the body names none).
+
+An `InvalidResponseError` means the answer was not a LexAPI answer in the
+documented shape — for example a proxy's page, an outage page, or a body cut
+off in transit. The client never retries a `2xx` answer, and the call may
+already have been charged, so retrying a paid call yourself can be charged
+again.
+
+Fields the client requires (a missing one raises `InvalidResponseError` with
+`Expected "<field>" in the response; it is missing`, where *missing* means
+absent, `null`, or an empty string where a string is required):
+
+| Call | Required |
+|---|---|
+| `search`, `semantic_search`, `semantic_legislation_search`, `national.semantic_search`, `national.legislation_semantic_search` | `results` (a list) |
+| `get_document`, `get_document_by_url`, `national.get_document`, `get_document_version`, `get_document_at_date` | `document` (an object) |
+| `legislation_as_of` | `document` (a string), `asOfResolved` (a boolean), `act`, `provenance` (objects) |
+
+The full list, including the list fields checked when present, is in the
+[SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md) §1.3.
+
+`InvalidResponseError` does not quote the response body in its message. For a
+body that is not JSON, the first 200 characters are on `err.body_excerpt`.
+That excerpt (like `err.body`) is raw response content and may contain
+document text; do not show it to a model or log it by default.
+
 ### Retries
 
-Retries are automatic (default: up to 3, exponential backoff + full jitter,
-honouring `Retry-After`) **only when a retry cannot charge you twice**. LexAPI
+Retries are automatic (default: up to 3, exponential backoff from a 0.5 s base
+with full jitter, honouring `Retry-After`) **only when a retry cannot charge you twice**. LexAPI
 refunds a failed request only when its own app finishes the error response, so
 the SDK retries:
 
-- a **429** — any call (the rate limiter runs before any charge);
+- a **429** — any call (the rate limiter runs before any charge), except an
+  exhausted quota and a failed payment (`PAYMENT_PAST_DUE`);
 - a 502/503/504 **from the LexAPI app** — GET calls (refunded in full);
 - requests that **never reached the app** — connect errors, a stale
   keep-alive connection closed before any response, Cloudflare 521/522/523 —
   any call;
-- anything else (proxy 502/504, Cloudflare 520/524, a connection dropped
+- anything else (proxy 502/504, Cloudflare 520/524 from any origin, a connection dropped
   mid-response) only for **free** calls (`get_info`, webhook reads).
 
-POSTs, including webhook create/update/test, are never retried on a 5xx by
-default. `RetryConfig(retry_read_only_posts=True)` additionally retries the
-read-only POSTs (search, document reads, resolve, semantic search) on an
-app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
+Writes (POST/PUT/DELETE: webhook create/update/delete/test, `citations.extract`)
+and, by default, the read-only POSTs are retried only on a 429 that is neither an
+exhausted quota nor a failed payment, or when the request never reached the API
+(connect failure, Cloudflare 521/522/523).
+`RetryConfig(retry_read_only_posts=True)` additionally retries the
+read-only POSTs (search, document reads, resolve, semantic search,
+`legislation_as_of`) on an app-origin 502/503/504. A legacy-plan 429 that reports an exhausted *quota*
 (`code == "QUOTA_EXHAUSTED"`) is not retried (it can't succeed before `resets_at`), and neither is a 402.
+A `2xx` answer is never retried, whatever its body.
 Every wait, server-directed ones included, is clamped to `backoff_cap`
 (default 30 s): a cap below the server's requested wait shortens it.
+`backoff_base` and `backoff_cap` must be finite and not negative. A
+`Retry-After`, `RateLimit-Reset` or `retryAfter` hint that is not in a
+documented form (delta-seconds; for `Retry-After` also an HTTP-date)
+counts as absent, and the normal backoff applies. The full
+rules are in the [SDK contract](https://github.com/Lex-API/lexapi-python/blob/main/docs/sdk-contract.md).
 
 ```python
 from lexapi import LexAPI, RetryConfig
@@ -665,12 +953,14 @@ client.with_options(timeout=30, max_retries=0).semantic_legislation_search(
 
 `timeout` is the longest the SDK waits for the next bytes of a response — the
 response head, then each body chunk — on one attempt; it is not a deadline
-for the whole call. The 95 s default sits above the API's 90 s budget for one
-upstream EUR-Lex fetch, so that common timeout comes back as the server's
-typed `TimeoutError` (504, refunded), and below Cloudflare's 100 s limit
-(beyond which you get a 524). A request needing several upstream fetches can
-still run past it and raise a local `RequestTimeoutError`; values above ~100 s
-buy nothing on the public endpoint.
+for the whole call. The 95 s default sits above the API's 90 s deadline on
+document reads, so that timeout comes back as a typed, refunded 504; the CDN
+ends any wait at 100 s. A request can still run past the timeout and raise a
+local `RequestTimeoutError`; values above ~100 s buy nothing on the public
+endpoint. Both timeouts are numbers of seconds >= 0 (`None` means no limit);
+a value longer than the timers support, `inf` included, is clamped to
+2**31 - 1 ms (about 24.9 days), and `nan` or a negative value raises
+`ValueError` when the client is created.
 
 ## Development
 

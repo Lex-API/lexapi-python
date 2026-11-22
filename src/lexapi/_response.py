@@ -26,17 +26,24 @@ figures still show the pre-refund pool and the next call reflects it.
 
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
 
 def _opt_int(value: Any) -> int | None:
+    """An integer figure: finite floats truncate (as released); a value
+    beyond 2**53 - 1 either way is absent."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return int(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    number = int(value)
+    return number if abs(number) <= 9_007_199_254_740_991 else None
 
 
 def _opt_str(value: Any) -> str | None:
@@ -49,13 +56,27 @@ def header(headers: httpx.Headers, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _header_int(value: str | None) -> int | None:
+_HEADER_INT = re.compile(r"[0-9]+")
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+
+def parse_header_int(value: str | None) -> int | None:
+    """An integer header: ASCII digits only after trimming spaces and tabs
+    (leading zeros allowed), with a value of at most 2**53 - 1; anything
+    else (``+5``, ``-5``, ``1_000``, ``1e3``) is absent."""
     if value is None:
         return None
-    try:
-        return int(value)
-    except ValueError:
+    text = value.strip(" \t")
+    if not _HEADER_INT.fullmatch(text):
         return None
+    significant = text.lstrip("0") or "0"  # leading zeros allowed, any length
+    if len(significant) > 16:
+        return None
+    number = int(significant)
+    return number if number <= _MAX_SAFE_INTEGER else None
+
+
+_header_int = parse_header_int
 
 
 @dataclass(frozen=True)
@@ -65,6 +86,11 @@ class SubscriptionInfo:
     Endpoints echo the subset that applies to them (``max_pages`` on search,
     ``max_batch_size`` on batch, ``max_results`` on semantic search), so most
     fields are ``None`` on most responses; ``/info`` carries the full set.
+
+    ``max_semantic_results`` / ``max_semantic_legislation_results``
+    (``/info``, API 2.24.0): the most results one semantic case-law /
+    legislation search returns on this plan, which ``limit`` is clamped to
+    (``0`` on an account without semantic search).
     """
 
     tier: str | None = None
@@ -77,6 +103,8 @@ class SubscriptionInfo:
     monthly_credits: int | None = None
     rate_limit: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    max_semantic_results: int | None = None
+    max_semantic_legislation_results: int | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> SubscriptionInfo | None:
@@ -93,6 +121,8 @@ class SubscriptionInfo:
             monthly_credits=_opt_int(data.get("monthlyCredits")),
             rate_limit=_opt_str(data.get("rateLimit")),
             raw=data,
+            max_semantic_results=_opt_int(data.get("maxSemanticResults")),
+            max_semantic_legislation_results=_opt_int(data.get("maxSemanticLegislationResults")),
         )
 
 
@@ -156,6 +186,22 @@ class APIResponse(Mapping[str, Any]):
     The raw body stays fully accessible (``response["usage"]``,
     ``response.data``) so no information is lost by the typed layer.
     """
+
+    #: The response's list fields (dotted paths for nested ones). When
+    #: present and not ``null``, each must be a list of objects; otherwise
+    #: the SDK raises :class:`~lexapi.errors.InvalidResponseError`.
+    _list_fields: ClassVar[tuple[str, ...]] = ()
+    #: List fields the endpoint always sends: missing or ``null`` is an error.
+    _required_list_fields: ClassVar[tuple[str, ...]] = ()
+    #: Fields the endpoint always sends, with their kind (``"object"``,
+    #: ``"string"`` or ``"boolean"``), in the order they are checked.
+    _required_fields: ClassVar[tuple[tuple[str, str], ...]] = ()
+    #: Fields that, when present and not ``null``, must be a JSON object.
+    _optional_object_fields: ClassVar[tuple[str, ...]] = ()
+    #: ``True`` where a 2xx legitimately carries ``success: false``.
+    _success_false_ok: ClassVar[bool] = False
+    #: ``True`` where a 204 or an empty body is a result (the webhook delete).
+    _allow_empty: ClassVar[bool] = False
 
     def __init__(self, data: Any, headers: httpx.Headers | None = None) -> None:
         self.data: Any = data

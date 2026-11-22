@@ -1,6 +1,6 @@
 """Typed models over LexAPI response payloads.
 
-Design rules (PLAN.md §3):
+Design rules:
 
 - plain dataclasses, no runtime dependencies beyond httpx;
 - every model keeps the raw payload on ``.raw`` — the typed layer never
@@ -18,23 +18,26 @@ are surfaced as attributes — never silently dropped.
 
 from __future__ import annotations
 
+import math
 import sys
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from lexapi._response import APIResponse, header
+from lexapi._response import APIResponse, header, parse_header_int
 
 #: Why a semantic-legislation hit could not be answered for ``asOf``
 #: (``SemanticLegislationResult.as_of_reason``), copied from openapi.yaml.
 #: Typed as ``str`` on the model so a reason added by a newer API version
-#: never breaks parsing; compare against :data:`AS_OF_REASONS`.
+#: never breaks parsing; compare against :data:`AS_OF_REASONS`. For
+#: ``legislation_as_of``, use :data:`AS_OF_LOOKUP_REASONS`.
 AsOfReason = Literal[
     "not_yet_adopted",
     "not_yet_in_force",
     "no_longer_in_force",
     "in_force_dates_unknown",
     "not_in_language",
+    "amendment_not_consolidated",
     "text_unavailable",
     "article_not_in_version",
     "part_not_resolvable",
@@ -54,6 +57,58 @@ AsOfReason = Literal[
 #: Every documented ``asOfReason`` value.
 AS_OF_REASONS: tuple[str, ...] = AsOfReason.__args__  # type: ignore[attr-defined]
 
+#: Why ``POST /legislation/as-of`` could not answer
+#: (``LegislationAsOfResponse.as_of_reason``), copied from openapi.yaml.
+#: Typed as ``str`` on the model so a reason added by a newer API version
+#: never breaks parsing; compare against :data:`AS_OF_LOOKUP_REASONS`. For
+#: ``semantic_legislation_search(as_of=...)`` hits, use :data:`AS_OF_REASONS`.
+AsOfLookupReason = Literal[
+    "not_yet_adopted",
+    "not_yet_in_force",
+    "no_longer_in_force",
+    "in_force_dates_unknown",
+    "act_type_not_supported",
+    "version_list_unavailable",
+    "version_lookup_cap",
+    "not_in_language",
+    "amendment_not_consolidated",
+    "text_unavailable",
+    "article_not_in_version",
+    "provision_ambiguous",
+    "version_not_parsed",
+    "fetch_budget_exhausted",
+    "fetch_pending",
+    "fetch_capacity",
+    "fetch_failed",
+    "fetch_timeout",
+    "request_deadline",
+    "insufficient_credits",
+    "credit_check_failed",
+]
+
+#: Every documented ``asOfReason`` value of ``POST /legislation/as-of``.
+AS_OF_LOOKUP_REASONS: tuple[str, ...] = AsOfLookupReason.__args__  # type: ignore[attr-defined]
+
+#: Why a national legislation hit is not resolved for ``as_of``
+#: (``NationalSemanticLegislationResult.as_of_reason``, API 2.29.0), copied
+#: from openapi.yaml. Typed as ``str`` on the model so a reason added by a
+#: newer API version never breaks parsing; compare against
+#: :data:`NATIONAL_AS_OF_REASONS`.
+NationalAsOfReason = Literal[
+    "provision_amended_since",
+    "no_longer_in_force",
+    "provision_dates_unknown",
+    "asof_not_available",
+]
+
+#: Every documented national ``asOfReason`` value.
+NATIONAL_AS_OF_REASONS: tuple[str, ...] = NationalAsOfReason.__args__  # type: ignore[attr-defined]
+
+#: ``notInForceReason`` values (``Document.not_in_force_reason``,
+#: ``SemanticLegislationResult.not_in_force_reason``), copied from
+#: openapi.yaml. The attributes are typed ``str`` for forward compatibility.
+NotInForceReason = Literal["no_longer_in_force", "not_yet_in_force"]
+
 #: ``textAvailability.reason`` values, copied from openapi.yaml.
 TextUnavailableReason = Literal[
     "not_in_language",
@@ -63,17 +118,36 @@ TextUnavailableReason = Literal[
     "unknown",
 ]
 
+#: ``textAvailability.reason`` values on a semantic case-law hit
+#: (:class:`SemanticHitTextAvailability`, API 2.30.0), copied from
+#: openapi.yaml. A document's reasons are :data:`TextUnavailableReason`.
+SemanticHitTextUnavailableReason = Literal["not_in_corpus", "unknown"]
+
 
 def _s(data: dict[str, Any], key: str) -> str | None:
     value = data.get(key)
     return value if isinstance(value, str) else None
 
 
-def _i(data: dict[str, Any], key: str) -> int | None:
-    value = data.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+
+def _int(value: Any) -> int | None:
+    """An ``int`` (not a ``bool``), or a finite float with an integral value
+    (``3.0``); anything else (``2.9``, ``inf``, ``nan``, strings) is ``None``."""
+    if isinstance(value, bool):
         return None
-    return int(value)
+    if isinstance(value, int):
+        number: int = value
+        return number if abs(number) <= _MAX_SAFE_INTEGER else None
+    # ``is_integer()`` is False for ``inf`` and ``nan``.
+    if isinstance(value, float) and value.is_integer() and abs(value) <= _MAX_SAFE_INTEGER:
+        return int(value)
+    return None
+
+
+def _i(data: dict[str, Any], key: str) -> int | None:
+    return _int(data.get(key))
 
 
 def _b(data: dict[str, Any], key: str) -> bool | None:
@@ -81,11 +155,20 @@ def _b(data: dict[str, Any], key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _f(data: dict[str, Any], key: str) -> float | None:
-    value = data.get(key)
+def _float(value: Any) -> float | None:
+    """A JSON number as a finite float; ``None`` for a ``bool``, a
+    non-number, a non-finite float, or an integer too large for a float."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _f(data: dict[str, Any], key: str) -> float | None:
+    return _float(data.get(key))
 
 
 def _opt_dict(data: dict[str, Any], key: str) -> dict[str, Any] | None:
@@ -129,13 +212,7 @@ def _parse_items(data: dict[str, Any], key: str, cls: Any) -> list[Any]:
     return [cls.from_dict(item) for item in _list(data, key) if isinstance(item, dict)]
 
 
-def _header_int(value: str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
+_header_int = parse_header_int
 
 
 # ── Document building blocks ────────────────────────────────────────────
@@ -306,6 +383,100 @@ class TextAvailability:
 
 
 @dataclass(frozen=True)
+class Provenance:
+    """Where a document comes from (``provenance``, API 2.20.0).
+
+    The API always sends all eight keys; a value LexAPI does not know is
+    ``None``, never estimated. On semantic search hits ``retrieved_at`` and
+    ``content_hash`` are ``None`` (read the document for them).
+
+    - ``publisher``: who publishes the document LexAPI read.
+    - ``source_url``: the document's page at its publisher (never a LexAPI
+      address). It shows what the publisher serves today, which can be a
+      later version than the one LexAPI holds.
+    - ``source_identifier``: the publisher's identifier (EU: the CELEX number).
+    - ``retrieved_at``: when LexAPI fetched from the publisher what this
+      response returns.
+    - ``content_hash``: a SHA-256 fingerprint of the text LexAPI holds;
+      compare values, it cannot be recomputed from the response.
+    - ``version_identifier``: which version of the text this is, in the
+      publisher's terms (EU: the CELEX number of the text served).
+    - ``language``: the language of the text (ISO 639-1).
+    - ``licence``: the source's reuse terms.
+    """
+
+    publisher: str | None
+    source_url: str | None
+    source_identifier: str | None
+    retrieved_at: str | None
+    content_hash: str | None
+    version_identifier: str | None
+    language: str | None
+    licence: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Provenance:
+        return cls(
+            publisher=_s(data, "publisher"),
+            source_url=_s(data, "sourceUrl"),
+            source_identifier=_s(data, "sourceIdentifier"),
+            retrieved_at=_s(data, "retrievedAt"),
+            content_hash=_s(data, "contentHash"),
+            version_identifier=_s(data, "versionIdentifier"),
+            language=_s(data, "language"),
+            licence=_s(data, "licence"),
+            raw=data,
+        )
+
+    @classmethod
+    def parse(cls, data: dict[str, Any], key: str = "provenance") -> Provenance | None:
+        value = data.get(key)
+        return cls.from_dict(value) if isinstance(value, dict) else None
+
+
+@dataclass(frozen=True)
+class FieldProvenance:
+    """Which fields of an object are the publisher's text and which were
+    derived (``fieldProvenance``, API 2.20.0).
+
+    Each attribute lists field paths relative to the object that carries
+    ``fieldProvenance`` (``.`` for a nested key, ``[]`` for each element,
+    e.g. ``content.articles[].content``). A path covers everything under it
+    and a longer path overrides a shorter one. Only classes with a field in
+    the response are sent (the others are ``[]`` here); fields not listed
+    are not classified.
+
+    ``official_source_text`` is the publisher's wording, not a statement that
+    the text is legally authentic: a consolidated text is the publisher's
+    wording and still has no legal force.
+    """
+
+    official_source_text: list[str]
+    machine_extracted_structure: list[str]
+    machine_generated_translation: list[str]
+    machine_generated_interpretation: list[str]
+    editorial_enrichment: list[str]
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FieldProvenance:
+        return cls(
+            official_source_text=_str_list(data, "official_source_text"),
+            machine_extracted_structure=_str_list(data, "machine_extracted_structure"),
+            machine_generated_translation=_str_list(data, "machine_generated_translation"),
+            machine_generated_interpretation=_str_list(data, "machine_generated_interpretation"),
+            editorial_enrichment=_str_list(data, "editorial_enrichment"),
+            raw=data,
+        )
+
+    @classmethod
+    def parse(cls, data: dict[str, Any], key: str = "fieldProvenance") -> FieldProvenance | None:
+        value = data.get(key)
+        return cls.from_dict(value) if isinstance(value, dict) else None
+
+
+@dataclass(frozen=True)
 class Document:
     """A parsed document: normalized metadata plus (optionally) content.
 
@@ -319,6 +490,21 @@ class Document:
     ``latest_consolidated`` / ``upcoming_consolidated`` /
     ``newest_consolidated`` are the metadata endpoint's consolidated-version
     hints (on document reads they live under ``text_availability``).
+
+    **In force today** (API 2.19.0): ``in_force``, ``not_in_force_reason``
+    (``no_longer_in_force`` or ``not_yet_in_force``, only with
+    ``in_force=False``), ``end_of_validity`` and ``entry_into_force``
+    (``YYYY-MM-DD``) say whether the act is in force today (UTC), as
+    recorded by the Publications Office. They are all ``None`` when the
+    status is unknown and on documents that have no in-force status (case
+    law, for example). A consolidated text or a corrigendum carries the
+    label of the act it consolidates or corrects. The label does not cover
+    amendments or dates of application.
+
+    ``version`` is LexAPI's snapshot number of the text (``None`` on a read
+    that had to fetch the document); ``provenance`` and
+    ``field_provenance`` (API 2.20.0) say where the document comes from and
+    which fields are the publisher's text.
     """
 
     celex: str | None
@@ -353,6 +539,13 @@ class Document:
     latest_consolidated: ConsolidatedVersionHint | None = None
     upcoming_consolidated: ConsolidatedVersionHint | None = None
     newest_consolidated: ConsolidatedVersionHint | None = None
+    in_force: bool | None = None
+    not_in_force_reason: str | None = None
+    end_of_validity: str | None = None
+    entry_into_force: str | None = None
+    version: int | None = None
+    provenance: Provenance | None = None
+    field_provenance: FieldProvenance | None = None
 
     @property
     def text_available(self) -> bool | None:
@@ -398,6 +591,13 @@ class Document:
             latest_consolidated=ConsolidatedVersionHint.parse(data, "latestConsolidated"),
             upcoming_consolidated=ConsolidatedVersionHint.parse(data, "upcomingConsolidated"),
             newest_consolidated=ConsolidatedVersionHint.parse(data, "newestConsolidated"),
+            in_force=_b(data, "inForce"),
+            not_in_force_reason=_s(data, "notInForceReason"),
+            end_of_validity=_s(data, "endOfValidity"),
+            entry_into_force=_s(data, "entryIntoForce"),
+            version=_i(data, "version"),
+            provenance=Provenance.parse(data),
+            field_provenance=FieldProvenance.parse(data),
         )
 
 
@@ -479,10 +679,10 @@ def parse_post_filtered_kept(value: str | None) -> dict[str, PostFilterCount]:
         kept, slash, before = counts.partition("/")
         if not (sep and slash and name):
             continue
-        try:
-            result[name.strip()] = PostFilterCount(int(kept), int(before))
-        except ValueError:
+        kept_n, before_n = parse_header_int(kept), parse_header_int(before)
+        if kept_n is None or before_n is None:
             continue
+        result[name.strip()] = PostFilterCount(kept_n, before_n)
     return result
 
 
@@ -494,9 +694,12 @@ class SearchResponse(APIResponse):
 
     Truncation/partial signals are attributes, never hidden: ``truncated``
     (tier-capped, more pages exist), ``partial`` (an upstream page fetch
-    timed out), ``post_filtered_by`` (controller-side post-filter dropped
+    timed out), ``post_filtered_by`` (server-side post-filter dropped
     rows), plus the ``X-Warning`` header via ``.warning``.
     """
+
+    _list_fields = ("results",)
+    _required_list_fields = ("results",)
 
     @property
     def results(self) -> list[SearchHit]:
@@ -542,7 +745,7 @@ class SearchResponse(APIResponse):
 
     @property
     def post_filtered_by(self) -> str | None:
-        """Comma-joined dimensions a controller-side post-filter fired on."""
+        """Comma-joined dimensions a server-side post-filter fired on."""
         return _s(self._map, "postFilteredBy")
 
     @property
@@ -604,6 +807,10 @@ class SearchResponse(APIResponse):
 
 class DocumentResponse(APIResponse):
     """``POST /documentContent`` — one parsed document plus read-path headers."""
+
+    _required_fields = (("document", "object"),)
+    _optional_object_fields = ("document.content",)
+    _list_fields = ("document.content.articles",)
 
     @property
     def document(self) -> Document:
@@ -693,6 +900,8 @@ class DocumentBatchResponse(APIResponse):
     ``X-Warning`` header.
     """
 
+    _list_fields = ("documents", "errors")
+
     @property
     def documents(self) -> list[Document]:
         return _parse_items(self._map, "documents", Document)
@@ -769,6 +978,8 @@ class DocumentBatchResponse(APIResponse):
 
 class RecentDocumentsResponse(APIResponse):
     """``GET /documents/recent`` — recently-published documents."""
+
+    _list_fields = ("results",)
 
     @property
     def results(self) -> list[SearchHit]:
@@ -1216,6 +1427,8 @@ class CitationStatsTransposition(TranspositionCounts):
 class CitationExtractResponse(APIResponse):
     """``POST /citations/extract`` — crawl a document and persist its edges."""
 
+    _list_fields = ("citations",)
+
     @property
     def citation_count(self) -> int | None:
         return _i(self._map, "citationCount")
@@ -1242,8 +1455,20 @@ class CitationExtractResponse(APIResponse):
         return _s(self._map, "message")
 
 
+def _group_edges(group: CitationDocumentGroup) -> int:
+    """A group's edge rows: its ``citationCount`` when that is a count (a
+    non-negative integer up to 2**53 - 1), else the length of its edge
+    list (also for a count of 0, as before)."""
+    count = group.citation_count
+    if count is None or count < 0 or count > 9_007_199_254_740_991:
+        count = 0
+    return count or len(group.citations)
+
+
 class CitedByResponse(APIResponse):
     """``GET /citations/cited-by/{celex}`` — inbound edges, grouped by source."""
+
+    _list_fields = ("citedBy",)
 
     @property
     def target_document(self) -> str | None:
@@ -1293,7 +1518,7 @@ class CitedByResponse(APIResponse):
     def edge_count(self) -> int:
         """Edge rows in this page (sum of the groups' ``citation_count``) —
         the amount to advance ``offset`` by, since paging is in edges."""
-        return sum(group.citation_count or len(group.citations) for group in self.cited_by)
+        return sum(_group_edges(group) for group in self.cited_by)
 
     @property
     def include_national(self) -> bool | None:
@@ -1305,6 +1530,8 @@ class CitedByResponse(APIResponse):
 
 class CitesResponse(APIResponse):
     """``GET /citations/cites/{celex}`` — outbound edges, grouped by target."""
+
+    _list_fields = ("cites", "unresolved")
 
     @property
     def source_document(self) -> str | None:
@@ -1347,7 +1574,7 @@ class CitesResponse(APIResponse):
     @property
     def edge_count(self) -> int:
         """Edges in this page — the amount to advance ``offset`` by."""
-        return sum(group.citation_count or len(group.citations) for group in self.cites)
+        return sum(_group_edges(group) for group in self.cites)
 
     @property
     def include_national(self) -> bool | None:
@@ -1380,6 +1607,8 @@ class CitationNetworkResponse(APIResponse):
     wall-clock budget expires the endpoint still returns 200 with
     ``partial=True`` and empty arrays — check ``.partial``.
     """
+
+    _list_fields = ("network.cites", "network.citedBy", "unresolved")
 
     @property
     def document(self) -> str | None:
@@ -1483,6 +1712,8 @@ class CitationNetworkResponse(APIResponse):
 class CitationStatsResponse(APIResponse):
     """``GET /citations/stats`` — global citation-graph counters."""
 
+    _list_fields = ("stats.mostCited", "stats.mostCiting")
+
     @property
     def total_citations(self) -> int | None:
         return _i(_dict(self._map, "stats"), "totalCitations")
@@ -1557,6 +1788,8 @@ class CitationPathResponse(APIResponse):
     ``found=False`` is a graceful HTTP-200 response, not an error.
     """
 
+    _list_fields = ("path",)
+
     @property
     def found(self) -> bool:
         return _b(self._map, "found") or False
@@ -1596,6 +1829,8 @@ class CitationPathResponse(APIResponse):
 
 class RelatedDocumentsResponse(APIResponse):
     """``GET /citations/related/{celex}`` — bibliographic-coupling neighbours."""
+
+    _list_fields = ("related",)
 
     @property
     def related(self) -> list[RelatedDocument]:
@@ -1806,6 +2041,8 @@ class TranspositionResponse(APIResponse):
     ``source_cellar.attribution`` with anything you republish.
     """
 
+    _list_fields = ("jurisdictions",)
+
     @property
     def document(self) -> CitationNode | None:
         value = self._map.get("document")
@@ -1941,6 +2178,8 @@ class CounterpartsResponse(APIResponse):
     counterparts in the other live jurisdictions, through the EU acts it
     transposes or implements (``via``, at most 200; ``truncated``)."""
 
+    _list_fields = ("via",)
+
     @property
     def document(self) -> CitationNode | None:
         value = self._map.get("document")
@@ -2016,9 +2255,7 @@ class WebhookRetryPolicy:
             max_attempts=_i(data, "maxAttempts"),
             window_hours=_i(data, "windowHours"),
             delays_minutes=[
-                int(v)
-                for v in _list(data, "delaysMinutes")
-                if isinstance(v, (int, float)) and not isinstance(v, bool)
+                n for n in (_int(v) for v in _list(data, "delaysMinutes")) if n is not None
             ],
             raw=data,
         )
@@ -2110,6 +2347,8 @@ class Webhook:
 class WebhookListResponse(APIResponse):
     """``GET /webhooks`` — the caller's subscriptions (no secrets)."""
 
+    _list_fields = ("webhooks",)
+
     @property
     def webhooks(self) -> list[Webhook]:
         return _parse_items(self._map, "webhooks", Webhook)
@@ -2145,6 +2384,8 @@ class WebhookTestResponse(APIResponse):
     ``delivery.error_message``.
     """
 
+    _success_false_ok = True
+
     @property
     def ok(self) -> bool:
         return _b(self._map, "success") or False
@@ -2160,6 +2401,8 @@ class WebhookTestResponse(APIResponse):
 
 class WebhookDeliveriesResponse(APIResponse):
     """``GET /webhooks/{id}/deliveries`` — delivery history, newest first."""
+
+    _list_fields = ("deliveries",)
 
     @property
     def deliveries(self) -> list[WebhookDelivery]:
@@ -2183,6 +2426,42 @@ class WebhookDeliveriesResponse(APIResponse):
 
 
 @dataclass(frozen=True)
+class SemanticHitTextAvailability:
+    """Whether a semantic case-law hit carries ``text``, and if not, why
+    (``textAvailability`` on ``/search/semantic`` with ``include_text=True``,
+    API 2.30.0).
+
+    ``available`` is True when the hit carries ``text``. When it is False the
+    hit carries ``snippet`` instead (the head of the machine-written
+    ``summary``, not court text) and ``reason`` says why: ``not_in_corpus``
+    (LexAPI does not hold the document's text in the hit's language; read it
+    with ``get_document``) or ``unknown`` (LexAPI could not check its copy for
+    this request; a retry may return the text). ``reason`` is ``None`` when
+    ``available`` is True and is kept as ``str`` for forward compatibility
+    (see :data:`SemanticHitTextUnavailableReason`).
+
+    Not the same type as a document's :class:`TextAvailability`, which has
+    other reasons.
+    """
+
+    available: bool
+    reason: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def parse(cls, data: dict[str, Any]) -> SemanticHitTextAvailability | None:
+        """The hit's ``textAvailability``; ``None`` when it is absent, not an
+        object, or has no boolean ``available`` (the hit's ``raw`` keeps it)."""
+        value = data.get("textAvailability")
+        if not isinstance(value, dict):
+            return None
+        available = value.get("available")
+        if not isinstance(available, bool):
+            return None
+        return cls(available=available, reason=_s(value, "reason"), raw=value)
+
+
+@dataclass(frozen=True)
 class SemanticCaseLawResult:
     """Single case-law match from ``/search/semantic``.
 
@@ -2192,9 +2471,17 @@ class SemanticCaseLawResult:
 
     By default a hit carries a ~600-character ``snippet``; ``text`` (the full
     document text) is present only when the request set
-    ``include_text=True``. Fields the upstream extractor could not populate
-    are omitted by the API, so they come back ``None`` here; the structured
-    analytics block (``outcome``, ``claimed_amount``, ...) stays on ``raw``.
+    ``include_text=True`` and LexAPI holds the text. With
+    ``include_text=True`` every hit also carries ``text_availability``
+    (:class:`SemanticHitTextAvailability`, API 2.30.0); a hit without text
+    keeps its ``snippet``. Without ``include_text``, ``text_availability``
+    is ``None``. A blank ``text`` is passed through as sent and counts as no
+    text. Fields the upstream extractor could not populate are omitted by
+    the API, so they come back ``None`` here; the structured analytics block
+    (``outcome``, ``claimed_amount``, ...) stays on ``raw``.
+
+    ``provenance`` (its ``retrieved_at`` and ``content_hash`` are ``None`` on
+    a hit) and ``field_provenance`` are set from API 2.20.0.
     """
 
     score: float | None
@@ -2215,6 +2502,9 @@ class SemanticCaseLawResult:
     jurisdiction: str | None = None
     language: str | None = None
     paragraph_number: int | None = None
+    provenance: Provenance | None = None
+    field_provenance: FieldProvenance | None = None
+    text_availability: SemanticHitTextAvailability | None = None
 
     @property
     def parties_text(self) -> str | None:
@@ -2231,7 +2521,7 @@ class SemanticCaseLawResult:
         metadata = _dict(data, "metadata")
         score = data.get("score")
         return cls(
-            score=float(score) if isinstance(score, (int, float)) else None,
+            score=_float(score) if isinstance(score, (int, float)) else None,
             text=_s(data, "text"),
             case_id=_s(data, "case_id"),
             case_name=_s(data, "case_name"),
@@ -2249,6 +2539,9 @@ class SemanticCaseLawResult:
             jurisdiction=_s(data, "jurisdiction"),
             language=_s(data, "language"),
             paragraph_number=_i(metadata, "paragraph_number"),
+            provenance=Provenance.parse(data),
+            field_provenance=FieldProvenance.parse(data),
+            text_availability=SemanticHitTextAvailability.parse(data),
         )
 
 
@@ -2273,16 +2566,25 @@ class SemanticBaseAct:
 
 @dataclass(frozen=True)
 class AsOfVersion:
-    """The version an ``asOf`` hit's text comes from.
+    """The version an ``asOf`` answer's text comes from.
 
-    ``kind`` is ``consolidated`` or ``as_published``; ``date`` is the
-    consolidation date (``None`` for the act as published).
+    ``kind`` is ``consolidated`` or ``as_published``; ``date`` is the date
+    the consolidated version carries (``None`` for the act as published) —
+    it can be earlier than the act's entry into force.
+
+    ``valid_until`` and ``checked_at`` are set by
+    :meth:`~lexapi.LexAPI.legislation_as_of`, each when known:
+    ``valid_until`` is the day before the next version listed for the act,
+    ``checked_at`` when the list of versions was read. On a national hit the
+    version is a :class:`NationalAsOfVersion`.
     """
 
     celex: str | None
     date: str | None
     kind: str | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
+    valid_until: str | None = None
+    checked_at: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AsOfVersion:
@@ -2291,6 +2593,50 @@ class AsOfVersion:
             date=_s(data, "date"),
             kind=_s(data, "kind"),
             raw=data,
+            valid_until=_s(data, "validUntil"),
+            checked_at=_s(data, "checkedAt"),
+        )
+
+
+@dataclass(frozen=True)
+class NationalAsOfVersion(AsOfVersion):
+    """``asOfVersion`` on a resolved national legislation hit
+    (``kind == "current_unit"``, API 2.29.0): the publisher's dates for the
+    unit's current wording.
+
+    - ``valid_from`` (``YYYY-MM-DD``): the publisher's start date of today's
+      wording, on or before ``as_of``. Always set on a ``current_unit``
+      version; the attribute is optional only because of the dataclass
+      layout.
+    - ``valid_to`` (``YYYY-MM-DD``): its last day in force; ``None`` when
+      open.
+    - ``source_id``: the publisher's id of the provision; ``None`` when not
+      known.
+    - ``checked_at``: here a day (``YYYY-MM-DD``), not a timestamp as on the
+      EU version: the day of the last read of the act that LexAPI recorded
+      (``None`` when not known). LexAPI may have checked the act since without
+      finding a change. Dates and wording are as of that read; a change the
+      publisher made after it is not reflected.
+
+    ``celex``, ``date`` and ``valid_until`` are EU fields and stay ``None``.
+    The text is never swapped: it is today's wording.
+    """
+
+    valid_from: str | None = None
+    valid_to: str | None = None
+    source_id: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NationalAsOfVersion:
+        return cls(
+            celex=None,
+            date=None,
+            kind=_s(data, "kind"),
+            raw=data,
+            checked_at=_s(data, "checkedAt"),
+            valid_from=_s(data, "validFrom"),
+            valid_to=_s(data, "validTo"),
+            source_id=_s(data, "sourceId"),
         )
 
 
@@ -2334,6 +2680,28 @@ class AsOfSummary:
 
 
 @dataclass(frozen=True)
+class InForceFilter:
+    """``inForceFilter`` on a legislation search sent with
+    ``in_force=True`` (API 2.19.0): the hits the filter removed that would
+    otherwise have been seen."""
+
+    #: Removed because their act is not in force today.
+    removed_not_in_force: int | None
+    #: Removed because their in-force status is unknown (then the response
+    #: also carries a ``hint``: unknown can be temporary).
+    removed_unknown: int | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> InForceFilter:
+        return cls(
+            removed_not_in_force=_i(data, "removedNotInForce"),
+            removed_unknown=_i(data, "removedUnknown"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
 class SemanticLegislationResult:
     """Single article-level match from ``/legislation/semantic``.
 
@@ -2355,6 +2723,12 @@ class SemanticLegislationResult:
     text then describe the version in force; ``chapter`` is ``None``). An
     unresolved hit keeps its latest text and says why in ``as_of_reason``
     (one of :data:`AS_OF_REASONS`).
+
+    **In force today** (API 2.19.0): ``in_force``, ``not_in_force_reason``,
+    ``end_of_validity`` and ``entry_into_force``, as on :class:`Document`
+    (``None`` when unknown; about today, also on an ``as_of`` search).
+    ``provenance`` (``retrieved_at`` and ``content_hash`` are ``None`` on a
+    hit) and ``field_provenance``: API 2.20.0.
     """
 
     score: float | None
@@ -2379,6 +2753,12 @@ class SemanticLegislationResult:
     as_of_reason: str | None = None
     as_of_version: AsOfVersion | None = None
     matched_version: MatchedVersion | None = None
+    in_force: bool | None = None
+    not_in_force_reason: str | None = None
+    end_of_validity: str | None = None
+    entry_into_force: str | None = None
+    provenance: Provenance | None = None
+    field_provenance: FieldProvenance | None = None
 
     @property
     def authentic_celex(self) -> str | None:
@@ -2416,10 +2796,19 @@ class SemanticLegislationResult:
                 AsOfVersion.from_dict(as_of_version) if as_of_version is not None else None
             ),
             matched_version=MatchedVersion.from_dict(matched) if matched is not None else None,
+            in_force=_b(data, "inForce"),
+            not_in_force_reason=_s(data, "notInForceReason"),
+            end_of_validity=_s(data, "endOfValidity"),
+            entry_into_force=_s(data, "entryIntoForce"),
+            provenance=Provenance.parse(data),
+            field_provenance=FieldProvenance.parse(data),
         )
 
 
 class _SemanticResponseBase(APIResponse):
+    _list_fields = ("results",)
+    _required_list_fields = ("results",)
+
     @property
     def search_type(self) -> str | None:
         return _s(self._map, "searchType")
@@ -2490,6 +2879,12 @@ class SemanticSearchResponse(_SemanticResponseBase):
         """The LLM-drafted hypothetical passage (present only when HyDE ran)."""
         return _s(self._map, "hypotheticalDocument")
 
+    @property
+    def field_provenance(self) -> FieldProvenance | None:
+        """Present only with :attr:`hypothetical_document`, which it marks as
+        ``machine_generated_interpretation`` (API 2.20.0)."""
+        return FieldProvenance.parse(self._map)
+
 
 class SemanticLegislationResponse(_SemanticResponseBase):
     """``POST /legislation/semantic`` — ranked article-level matches.
@@ -2511,6 +2906,168 @@ class SemanticLegislationResponse(_SemanticResponseBase):
     def as_of_summary(self) -> AsOfSummary | None:
         value = _opt_dict(self._map, "asOfSummary")
         return AsOfSummary.from_dict(value) if value is not None else None
+
+    @property
+    def in_force_filter(self) -> InForceFilter | None:
+        """Set when the search was sent with ``in_force=True`` (API 2.19.0)."""
+        value = _opt_dict(self._map, "inForceFilter")
+        return InForceFilter.from_dict(value) if value is not None else None
+
+
+@dataclass(frozen=True)
+class LegislationAsOfAct:
+    """What the Publications Office records about the act. A field is
+    ``None`` when it is not known.
+
+    ``in_force_today`` is about **today**; it says nothing about the date
+    asked for.
+    """
+
+    celex: str | None
+    date_of_document: str | None = None
+    entry_into_force: str | None = None
+    end_of_validity: str | None = None
+    in_force_today: bool | None = None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LegislationAsOfAct:
+        return cls(
+            celex=_s(data, "celex"),
+            date_of_document=_s(data, "dateOfDocument"),
+            entry_into_force=_s(data, "entryIntoForce"),
+            end_of_validity=_s(data, "endOfValidity"),
+            in_force_today=_b(data, "inForceToday"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class LegislationAsOfProvision:
+    """One article, annex or recital range of the version returned.
+
+    ``id`` is the provision as normalised (``art_17``, ``anx_III``,
+    ``rct_26-28``), ``number`` its heading in the text (``Article 17``;
+    ``None`` when the part has no heading of its own (recitals)), ``title``
+    its title when it has one.
+    """
+
+    id: str | None
+    text: str | None
+    number: str | None = None
+    title: str | None = None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LegislationAsOfProvision:
+        return cls(
+            id=_s(data, "id"),
+            text=_s(data, "text"),
+            number=_s(data, "number"),
+            title=_s(data, "title"),
+            raw=data,
+        )
+
+
+class LegislationAsOfResponse(APIResponse):
+    """``POST /legislation/as-of`` — the version of an EU act listed for a
+    date and, when asked for, one provision of it.
+
+    **Resolved or not.** ``as_of_resolved`` is ``True`` when the version —
+    and, with ``provision``, its text — was established: ``as_of_version``
+    names it and ``provision.text`` carries the text. Otherwise the answer
+    is still a successful response, with ``as_of_reason`` (one of
+    :data:`AS_OF_LOOKUP_REASONS`) and no ``provision``. Use a text only when
+    ``as_of_resolved`` is ``True``.
+
+    **Consolidated texts** have no legal force: when ``consolidated`` is
+    ``True``, ``base_celex`` names the authentic act, as published in the
+    Official Journal, and ``consolidated_note`` says so in words.
+
+    The answer does not say whether an individual provision applied on that
+    date: an act can be in force while some of its provisions apply later.
+    """
+
+    _required_fields = (
+        ("document", "string"),
+        ("asOfResolved", "boolean"),
+        ("act", "object"),
+        ("provenance", "object"),
+    )
+
+    @property
+    def document(self) -> str | None:
+        """CELEX of the act (the base act when a consolidated id was sent)."""
+        return _s(self._map, "document")
+
+    @property
+    def language(self) -> str | None:
+        return _s(self._map, "language")
+
+    @property
+    def as_of(self) -> str | None:
+        """Echo of the date asked for (``YYYY-MM-DD``)."""
+        return _s(self._map, "asOf")
+
+    @property
+    def as_of_resolved(self) -> bool:
+        """``True`` only when the API answered ``asOfResolved: true``."""
+        return self._map.get("asOfResolved") is True
+
+    @property
+    def as_of_reason(self) -> str | None:
+        """Why the answer is unresolved (``None`` on a resolved one). A value
+        this SDK version does not know is passed through unchanged."""
+        return _s(self._map, "asOfReason")
+
+    @property
+    def as_of_version(self) -> AsOfVersion | None:
+        """The version listed for the date. ``None`` when none was
+        established. Can be present on an unresolved answer that asked for a
+        ``provision``."""
+        value = _opt_dict(self._map, "asOfVersion")
+        return AsOfVersion.from_dict(value) if value is not None else None
+
+    @property
+    def act(self) -> LegislationAsOfAct | None:
+        value = _opt_dict(self._map, "act")
+        return LegislationAsOfAct.from_dict(value) if value is not None else None
+
+    @property
+    def provision(self) -> LegislationAsOfProvision | None:
+        """The provision asked for, on a resolved answer; ``None`` when no
+        ``provision`` was requested or the answer is unresolved."""
+        if not self.as_of_resolved:
+            return None
+        value = _opt_dict(self._map, "provision")
+        return LegislationAsOfProvision.from_dict(value) if value is not None else None
+
+    @property
+    def consolidated(self) -> bool:
+        """``True`` when the resolved version is a consolidated version."""
+        return _b(self._map, "consolidated") or False
+
+    @property
+    def consolidated_as_of(self) -> str | None:
+        """Consolidated versions only — the consolidation date."""
+        return _s(self._map, "consolidatedAsOf")
+
+    @property
+    def base_celex(self) -> str | None:
+        """Consolidated versions only — the act; cite it as the authentic
+        source."""
+        return _s(self._map, "baseCelex")
+
+    @property
+    def consolidated_note(self) -> str | None:
+        """Consolidated versions only — says the text is not the authentic
+        one."""
+        return _s(self._map, "consolidatedNote")
+
+    @property
+    def provenance(self) -> dict[str, Any] | None:
+        """The raw ``provenance`` block: publisher, ``sourceUrl``, licence."""
+        return _opt_dict(self._map, "provenance")
 
 
 class ResolveResponse(APIResponse):
@@ -2554,12 +3111,25 @@ class ResolveResponse(APIResponse):
 
 @dataclass(frozen=True)
 class VersionEntry:
-    """One entry in a document's point-in-time version history.
+    """One entry in a document's version history, or the snapshot of
+    :meth:`~lexapi.LexAPI.get_document_version` /
+    :meth:`~lexapi.LexAPI.get_document_at_date`.
 
-    Versions are LexAPI *observation snapshots* (content-hash changes
-    between fetches), not legal in-force reconstructions. ``fetched_at``
-    is when THIS version was fetched — version N is "current" from there
-    until version N+1's ``fetched_at``.
+    Versions are LexAPI's fetch snapshots (content-hash changes between
+    fetches), not the law in force on a date.
+
+    - ``observed_from`` (API 2.28.0): when the version began; ``None`` when
+      LexAPI has no record of it (possible for snapshots stored before API
+      2.28.0, and on older APIs).
+    - ``fetched_at``: when this version's text arrived at LexAPI. For a
+      version without ``observed_from`` it is the last fetch of its text,
+      which is not when the version began.
+    - ``observed_until`` (``get_document_at_date`` only, API 2.28.0): when
+      the next version's text arrived; ``None`` for the current version.
+    - ``provenance`` / ``field_provenance`` (snapshots only, API 2.20.0):
+      ``provenance.content_hash`` and ``retrieved_at`` are the snapshot's
+      own; ``source_url`` is the document's page today, which can show a
+      later text.
     """
 
     version: int | None
@@ -2571,6 +3141,10 @@ class VersionEntry:
     document_type_code: str | None
     parsed_content: dict[str, Any] | None
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
+    observed_from: str | None = None
+    observed_until: str | None = None
+    provenance: Provenance | None = None
+    field_provenance: FieldProvenance | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> VersionEntry:
@@ -2585,11 +3159,67 @@ class VersionEntry:
             document_type_code=_s(data, "documentTypeCode"),
             parsed_content=parsed if isinstance(parsed, dict) else None,
             raw=data,
+            observed_from=_s(data, "observedFrom"),
+            observed_until=_s(data, "observedUntil"),
+            provenance=Provenance.parse(data),
+            field_provenance=FieldProvenance.parse(data),
         )
+
+
+@dataclass(frozen=True)
+class SnapshotCandidate:
+    """A version a date could fall in, on the ``boundary_unknown`` 404 of
+    :meth:`~lexapi.LexAPI.get_document_at_date`
+    (:attr:`~lexapi.NotFoundError.candidates`). Read it with
+    :meth:`~lexapi.LexAPI.get_document_version`. ``fetched_at`` can be the
+    last fetch of the version's text, later than the date asked."""
+
+    version: int
+    fetched_at: str | None
+    observed_from: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def parse(cls, data: Any) -> SnapshotCandidate | None:
+        """``None`` unless ``data`` is an object whose ``version`` is an
+        integer (an ``int``, or a finite float with an integral value)."""
+        if not isinstance(data, dict):
+            return None
+        version = _int(data.get("version"))
+        if version is None:
+            return None
+        return cls(
+            version=version,
+            fetched_at=_s(data, "fetchedAt"),
+            observed_from=_s(data, "observedFrom"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class InForceLookup:
+    """``inForceLookup``: where the version of an act for a date is answered
+    (``POST /api/v1/legislation/as-of``, i.e.
+    :meth:`~lexapi.LexAPI.legislation_as_of`). API 2.28.0."""
+
+    method: str | None
+    path: str | None
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> InForceLookup:
+        return cls(method=_s(data, "method"), path=_s(data, "path"), raw=data)
+
+    @classmethod
+    def parse(cls, data: Any, key: str = "inForceLookup") -> InForceLookup | None:
+        value = data.get(key) if isinstance(data, dict) else None
+        return cls.from_dict(value) if isinstance(value, dict) else None
 
 
 class DocumentVersionsResponse(APIResponse):
     """``GET /documents/{celex}/versions`` — history list, newest first."""
+
+    _list_fields = ("versions",)
 
     @property
     def celex(self) -> str | None:
@@ -2619,7 +3249,18 @@ class DocumentVersionsResponse(APIResponse):
 
 
 class DocumentVersionResponse(APIResponse):
-    """``GET /documents/{celex}/versions/{version}`` and ``/at/{date}``."""
+    """``GET /documents/{celex}/versions/{version}`` and ``/at/{date}``.
+
+    A snapshot from LexAPI's own fetch history, not the law in force on a
+    date; for the version of an EU act for a date use
+    :meth:`~lexapi.LexAPI.legislation_as_of`. On ``/at/{date}`` (API
+    2.28.0): ``kind`` is ``"observation_snapshot"``, ``date_in_future`` is
+    True when the date is after today (UTC; the answer is then the current
+    version), and ``in_force_lookup`` points to ``legislation_as_of`` for an
+    EU act it resolves.
+    """
+
+    _required_fields = (("document", "object"),)
 
     @property
     def celex(self) -> str | None:
@@ -2631,8 +3272,26 @@ class DocumentVersionResponse(APIResponse):
 
     @property
     def as_of(self) -> str | None:
-        """Present on ``/at/{date}`` responses only — the requested date."""
+        """Present on ``/at/{date}`` responses only: the date asked about, in
+        LexAPI's fetch history (not a date of the law)."""
         return _s(self._map, "asOf")
+
+    @property
+    def kind(self) -> str | None:
+        """``"observation_snapshot"`` on ``/at/{date}`` (API 2.28.0)."""
+        return _s(self._map, "kind")
+
+    @property
+    def date_in_future(self) -> bool:
+        """True when the date asked is after today (UTC): the answer is the
+        current version (API 2.28.0; False when absent)."""
+        return _b(self._map, "dateInFuture") or False
+
+    @property
+    def in_force_lookup(self) -> InForceLookup | None:
+        """Present on ``/at/{date}`` for an EU act ``legislation_as_of``
+        resolves (API 2.28.0)."""
+        return InForceLookup.parse(self._map)
 
     @property
     def semantics(self) -> str | None:
@@ -2697,7 +3356,7 @@ class NationalCoverageAvailability:
     documents: int | None
     #: Earliest decision year LexAPI holds (an int year, or ``None``) —
     #: NOT a date string. ``legislation.from_`` is currently always
-    #: ``None`` server-side (the coverage controller hardcodes it); the
+    #: ``None`` server-side; the
     #: field exists because ``caseLaw.from_`` (the subclass below) is the
     #: same field and IS populated.
     from_: int | None
@@ -2977,6 +3636,8 @@ class NationalCoverageResponse(APIResponse):
     """``GET /national/coverage`` — public, free. Call this first: a
     jurisdiction not yet launched answers 404 on every other national
     endpoint, exactly like one that does not exist."""
+
+    _list_fields = ("jurisdictions",)
 
     @property
     def updated_at(self) -> str | None:
@@ -3268,10 +3929,14 @@ class NationalDocumentResponse(APIResponse):
     """``GET /{jurisdiction}/documents/{id}`` — one national document.
 
     No ``success`` key (unlike the EU document endpoints) — the national
-    controller answers ``{"document": {...}}`` directly. 5 credits upfront,
-    settled to 1 (``CORPUS_HIT_WEIGHT``): every national read is a corpus
+    endpoint answers ``{"document": {...}}`` directly. 5 credits upfront,
+    settled to 1: every national read is a corpus
     read, never a live fetch.
     """
+
+    _required_fields = (("document", "object"),)
+    _optional_object_fields = ("document.content",)
+    _list_fields = ("document.content.articles",)
 
     @property
     def document(self) -> NationalDocument:
@@ -3282,6 +3947,8 @@ class NationalDocumentListResponse(APIResponse):
     """``GET /{jurisdiction}/documents`` — a page of one jurisdiction's
     documents. 3 credits flat per call (not per page). Newest-first
     by the document's own date (undated rows last), then by id."""
+
+    _list_fields = ("results",)
 
     @property
     def jurisdiction(self) -> str | None:
@@ -3332,14 +3999,19 @@ class NationalDocumentListResponse(APIResponse):
 @dataclass(frozen=True)
 class NationalSemanticCaseLawResult(SemanticCaseLawResult):
     """A :class:`SemanticCaseLawResult` plus the national extras the
-    controller adds: ``document_id`` / ``jurisdiction`` (also mirrored into
+    API adds: ``document_id`` / ``jurisdiction`` (also mirrored into
     ``metadata.celex_id``), ``document`` (the matched decision as the
     listing returns it — a :class:`NationalDocument` summary with the same
     fields in every jurisdiction, whatever metadata the index carries;
     API 2.8.0), ``valid_to`` / ``in_force`` (only present when the source
     recorded an end of validity) and ``attribution`` (always show it next to
     the content). Which index fields (``court``, ``case_number``, …) are
-    filled depends on the national source — prefer ``document``."""
+    filled depends on the national source — prefer ``document``.
+
+    ``provenance`` is an EU attribute and always ``None`` on a national hit;
+    the provenance of the hit's document is on ``document.raw``.
+    ``text_availability`` is ``None`` too: the national route does not send
+    ``textAvailability`` (it would be read like the EU one if it did)."""
 
     document_id: str | None = None
     document: NationalDocument | None = None
@@ -3373,15 +4045,32 @@ class NationalSemanticLegislationResult(SemanticLegislationResult):
     ``valid_from``, ``valid_to`` and ``law_type`` — ``None`` when the index
     has nothing for the unit (which of them it has differs by jurisdiction).
 
-    Quirk straight from the server: unlike every camelCase field elsewhere
-    in this SDK, these index fields are the server's own snake_case wire
-    names (``in_force`` / ``valid_from`` / ``valid_to`` / ``law_type``) —
-    do not "fix" this, it would stop matching the API.
+    Unlike the camelCase fields elsewhere in this SDK, these index fields
+    have snake_case wire names (``in_force`` / ``valid_from`` /
+    ``valid_to`` / ``law_type``), mirrored here as sent.
 
     ``in_force`` comes from the semantic index, as of today (``None`` when
     unknown). LexAPI's own corpus row only ever forces it to ``False`` (and
     sets ``valid_to``) when it independently confirms a repeal the index has
     not caught up with yet; it never asserts an act IS in force.
+
+    **as_of** (API 2.29.0). The search runs over today's texts only, and the
+    text is never swapped for an earlier one. On an ``as_of`` search every
+    hit carries ``as_of`` and ``as_of_resolved``. A hit is resolved only when
+    the publisher's dates, as of LexAPI's last recorded read of the act
+    (``as_of_version.checked_at``), show today's wording already applied on
+    the date; ``as_of_version`` is then a :class:`NationalAsOfVersion`
+    (``kind == "current_unit"``; a version of another kind is kept as a
+    plain :class:`AsOfVersion`, with everything on ``.raw``). An unresolved
+    hit keeps today's wording, which is not established as the text for the
+    date, and says why in ``as_of_reason`` (one of
+    :data:`NATIONAL_AS_OF_REASONS`). LexAPI holds such dates for Austria and
+    Spain; for the other countries every hit is ``asof_not_available``.
+    The EU consolidated-text and ``matched_version`` fields do not apply.
+
+    ``not_in_force_reason``, ``end_of_validity``, ``entry_into_force`` and
+    ``provenance`` are EU attributes and always ``None`` on a national hit;
+    the provenance of the hit's document is on ``document.raw``.
     """
 
     document_id: str | None = None
@@ -3397,8 +4086,23 @@ class NationalSemanticLegislationResult(SemanticLegislationResult):
     def from_dict(cls, data: dict[str, Any]) -> NationalSemanticLegislationResult:
         base = SemanticLegislationResult.from_dict(data)
         document = _opt_dict(data, "document")
+        version = _opt_dict(data, "asOfVersion")
+        as_of_version: AsOfVersion | None = None
+        if version is not None:
+            as_of_version = (
+                NationalAsOfVersion.from_dict(version)
+                if version.get("kind") == "current_unit"
+                else AsOfVersion.from_dict(version)
+            )
+        # Fields set below from the national wire names, not the EU ones.
+        own = {"as_of_version", "in_force"}
         return cls(
-            **{f.name: getattr(base, f.name) for f in base.__dataclass_fields__.values()},
+            **{
+                f.name: getattr(base, f.name)
+                for f in base.__dataclass_fields__.values()
+                if f.name not in own
+            },
+            as_of_version=as_of_version,
             document_id=_s(data, "documentId"),
             jurisdiction=_s(data, "jurisdiction"),
             document=NationalDocument.from_dict(document) if document is not None else None,
@@ -3461,8 +4165,23 @@ class NationalSemanticSearchResponse(_NationalSemanticResponseBase):
 
 class NationalSemanticLegislationResponse(_NationalSemanticResponseBase):
     """``POST /{jurisdiction}/legislation/semantic`` — national legislation
-    search. 5 credits flat. No ``hyde``, no ``as_of`` (both EU-only)."""
+    search. 5 credits flat (``as_of`` adds nothing). No HyDE.
+
+    On an ``as_of`` search (API 2.29.0), ``as_of`` echoes the date and
+    ``as_of_summary`` counts the unresolved hits (``live_fetches`` is always
+    0: nothing is fetched). See :class:`NationalSemanticLegislationResult`.
+    """
 
     @property
     def results(self) -> list[NationalSemanticLegislationResult]:
         return _parse_items(self._map, "results", NationalSemanticLegislationResult)
+
+    @property
+    def as_of(self) -> str | None:
+        """Echo of the request's ``asOf`` (``as_of`` searches only)."""
+        return _s(self._map, "asOf")
+
+    @property
+    def as_of_summary(self) -> AsOfSummary | None:
+        value = _opt_dict(self._map, "asOfSummary")
+        return AsOfSummary.from_dict(value) if value is not None else None

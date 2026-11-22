@@ -1,4 +1,4 @@
-"""Point-in-time versions surface (requires lex-api PR #72 deployed).
+"""Point-in-time versions surface.
 
 Covers request shapes (paths + language param), typed history/snapshot
 models, the /at/{date} response, and the honest pre-ingestion 404 mapping

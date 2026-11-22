@@ -242,7 +242,7 @@ def test_case_law_hit_snippet_and_record_fields():
                 "decision_date": "2024-09-26",
                 "case_number": "C-768/21",
                 "ecli": "ECLI:EU:C:2024:785",
-                "parties": ["Land Hessen", "TR"],  # clausly sends a list
+                "parties": ["Land Hessen", "TR"],  # the API sends a list
                 "summary": "The Court examined whether...",
                 "snippet": "The Court examined whether, under the GDPR...",
                 "outcome": "dismissed",
